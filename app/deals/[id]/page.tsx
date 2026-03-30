@@ -4,6 +4,7 @@ import { useEffect, useState, useRef } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import Link from 'next/link'
+import { HotelName } from '@/app/components/HotelPanel'
 
 type Deal = {
   id: number
@@ -185,11 +186,26 @@ export default function DealDetailPage() {
   async function markQuoteSent(quoteId:number) {
     await supabase.from('quotes').update({ sent_to_client:true }).eq('id', quoteId)
     await supabase.from('activities').insert({ deal_id:deal!.id, activity_type:'QUOTE_SENT', notes:'Quote sent to client' })
+
+    // Auto-create follow-up sequences (Day 2, 5, 10)
+    const now = new Date()
+    const sequences = [2, 5, 10].map(day => {
+      const scheduled = new Date(now)
+      scheduled.setDate(scheduled.getDate() + day)
+      scheduled.setHours(9, 0, 0, 0) // 9am on the due day
+      return { deal_id: deal!.id, sequence_day: day, status: 'pending', scheduled_for: scheduled.toISOString() }
+    })
+    // Only create if no sequences exist yet for this deal
+    const { data: existing } = await supabase.from('follow_up_sequences').select('id').eq('deal_id', deal!.id)
+    if (!existing || existing.length === 0) {
+      await supabase.from('follow_up_sequences').insert(sequences)
+    }
+
     if (deal?.stage === 'NEW_LEAD') {
       await supabase.from('deals').update({ stage:'QUOTE_SENT' }).eq('id', deal.id)
       await supabase.from('activities').insert({ deal_id:deal.id, activity_type:'STAGE_CHANGE', notes:'Moved to Quote Sent' })
     }
-    showToast('Quote marked as sent ✓')
+    showToast('Quote marked as sent — follow-up sequence created ✓')
     loadDeal()
   }
 
@@ -222,7 +238,7 @@ export default function DealDetailPage() {
       await supabase.from('deals').update({ stage:'BOOKED' }).eq('id', deal.id)
       await supabase.from('activities').insert({ deal_id:deal.id, activity_type:'BOOKING_CREATED', notes:`Booking confirmed — Ref: ${bookingRef}` })
       showToast(`🎉 Booking confirmed! Ref: ${bookingRef}`)
-      setTimeout(() => router.push('/bookings'), 1800)
+      setTimeout(() => { router.refresh(); router.push('/bookings') }, 1800)
     } catch (err:any) {
       showToast('Error creating booking — '+err.message, 'error')
       setMarking(false)
@@ -490,7 +506,7 @@ export default function DealDetailPage() {
                   <a href={`https://wa.me/${client.phone.replace(/\D/g,'')}`} target="_blank" style={{ textDecoration:'none', flex:1, display:'flex', alignItems:'center', justifyContent:'center', padding:'5px 10px', borderRadius:'6px', background:'#e8f9ef', color:'#1a9e52', fontSize:'12px', fontWeight:'500', fontFamily:'DM Sans, sans-serif' }}>💬 WhatsApp</a>
                 </>}
               </div>
-              <Link href={`/clients`} style={{ fontSize:'12.5px', color:'var(--accent)', textDecoration:'none' }}>View full profile →</Link>
+              <Link href={`/clients?id=${client.id}`} style={{ fontSize:'12.5px', color:'var(--accent)', textDecoration:'none' }}>View full profile →</Link>
             </div>
           )}
 
@@ -564,7 +580,9 @@ function QuoteCard({ quote, dealId, isBooked, isLost, expanded, onToggle, onMark
               {quote.sent_to_client && <span style={{ fontSize:'11px', color:'var(--green)', fontWeight:'600' }}>✓ Sent to client</span>}
               <span style={{ fontSize:'11px', color:'var(--text-muted)', marginLeft:'auto' }}>{new Date(quote.created_at).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})}</span>
             </div>
-            <div style={{ fontFamily:'Instrument Serif, serif', fontSize:'18px', color:'var(--text-primary)', marginBottom:'4px' }}>{quote.hotel}</div>
+            <div style={{ fontFamily:'Instrument Serif, serif', fontSize:'18px', color:'var(--text-primary)', marginBottom:'4px' }}>
+              <HotelName name={quote.hotel} style={{ fontFamily:'Instrument Serif, serif', fontSize:'18px' }}/>
+            </div>
             <div style={{ fontSize:'12px', color:'var(--text-muted)', display:'flex', gap:'8px', flexWrap:'wrap' }}>
               {quote.board_basis && <span>{quote.board_basis}</span>}
               {quote.nights && <span>· {quote.nights} nights</span>}

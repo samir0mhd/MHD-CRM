@@ -18,7 +18,8 @@ const NAV = [
       { href: '/pipeline',   label: 'Pipeline',        icon: '⬡' },
       { href: '/deals',      label: 'All Deals',        icon: '≡' },
       { href: '/quotes/new', label: 'Quote Builder',    icon: '◇' },
-      { href: '/templates',  label: 'Email Templates',  icon: '✉' },
+      { href: '/followups',  label: 'Follow-ups',       icon: '✉' },
+      { href: '/templates',  label: 'Email Templates',  icon: '◫' },
     ],
   },
   {
@@ -31,6 +32,12 @@ const NAV = [
     section: 'Bookings',
     items: [
       { href: '/bookings', label: 'Bookings', icon: '✦' },
+    ],
+  },
+  {
+    section: 'Resources',
+    items: [
+      { href: '/hotels', label: 'Hotel Directory', icon: '🏨' },
     ],
   },
 ]

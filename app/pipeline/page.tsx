@@ -49,7 +49,13 @@ export default function PipelinePage() {
   const [search, setSearch]         = useState('')
   const toastTimer = useRef<any>(null)
 
-  useEffect(() => { loadDeals() }, [])
+  useEffect(() => {
+    loadDeals()
+    const onFocus = () => loadDeals()
+    window.addEventListener('focus', onFocus)
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) loadDeals() })
+    return () => window.removeEventListener('focus', onFocus)
+  }, [])
 
   async function loadDeals() {
     setLoading(true)
@@ -181,11 +187,15 @@ export default function PipelinePage() {
                           {deal.deal_value ? (
                             <span style={{ fontSize: '13px', fontWeight: '600', color: 'var(--green)' }}>{fmt(deal.deal_value)}</span>
                           ) : <span />}
-                          {deal.departure_date && (
-                            <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-                              {new Date(deal.departure_date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
-                            </span>
-                          )}
+                          {deal.departure_date && (() => {
+                            const daysUntil = Math.ceil((new Date(deal.departure_date).getTime() - Date.now()) / 86400000)
+                            const col = daysUntil < 30 ? 'var(--red)' : daysUntil < 90 ? 'var(--amber)' : 'var(--text-secondary)'
+                            return (
+                              <span style={{ fontSize: '11.5px', color: col, fontWeight: daysUntil < 90 ? '600' : '400' }}>
+                                ✈ {new Date(deal.departure_date+'T12:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+                              </span>
+                            )
+                          })()}
                         </div>
 
                         {isOverdue && (

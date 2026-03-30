@@ -141,6 +141,16 @@ export default function ClientsPage() {
 
   useEffect(() => { loadClients() }, [])
 
+  // Auto-open client panel if ?id= param is in URL
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const id = Number(new URLSearchParams(window.location.search).get('id'))
+    if (id && clients.length > 0) {
+      const found = clients.find(c => c.id === id)
+      if (found) setSelectedClient(found)
+    }
+  }, [clients])
+
   async function loadClients() {
     setLoading(true)
     const { data } = await supabase
