@@ -449,19 +449,18 @@ textarea.input { resize: vertical; min-height: 80px; line-height: 1.6; }
 
 /* ── KANBAN ── */
 .kanban-board {
-  display: flex;
-  gap: 12px;
-  overflow-x: auto;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
   padding-bottom: 20px;
   align-items: flex-start;
 }
 
 .kanban-col {
-  min-width: 252px;
-  flex: 0 0 252px;
+  min-width: 0;
   background: var(--bg-tertiary);
   border-radius: 14px;
-  padding: 14px;
+  padding: 12px;
   border: 1px solid var(--border);
 }
 

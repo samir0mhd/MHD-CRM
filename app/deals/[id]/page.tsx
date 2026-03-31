@@ -4,7 +4,6 @@ import { useEffect, useState, useRef } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import Link from 'next/link'
-import { HotelName } from '@/app/components/HotelPanel'
 
 type Deal = {
   id: number
@@ -129,6 +128,7 @@ export default function DealDetailPage() {
   const [savingNext, setSavingNext]   = useState(false)
   const [nextSaved, setNextSaved]     = useState(false)
   const [expandedQuote, setExpandedQuote] = useState<number|null>(null)
+  const [celebration, setCelebration] = useState<{ ref: string; value: number; profit: number; clientName: string; hotel: string } | null>(null)
   const toastTimer = useRef<any>(null)
 
   useEffect(() => { loadDeal() }, [id])
@@ -237,8 +237,11 @@ export default function DealDetailPage() {
       }
       await supabase.from('deals').update({ stage:'BOOKED' }).eq('id', deal.id)
       await supabase.from('activities').insert({ deal_id:deal.id, activity_type:'BOOKING_CREATED', notes:`Booking confirmed — Ref: ${bookingRef}` })
-      showToast(`🎉 Booking confirmed! Ref: ${bookingRef}`)
-      setTimeout(() => { router.refresh(); router.push('/bookings') }, 1800)
+      const topQuote = (deal.quotes||[]).sort((a,b)=>(b.profit||0)-(a.profit||0))[0]
+      const clientName = deal.clients ? `${deal.clients.first_name} ${deal.clients.last_name}` : deal.title
+      const topHotel = topQuote?.hotel || ''
+      setCelebration({ ref: bookingRef, value: deal.deal_value||0, profit: topQuote?.profit||0, clientName, hotel: topHotel })
+      setTimeout(() => { router.refresh(); router.push('/bookings') }, 5500)
     } catch (err:any) {
       showToast('Error creating booking — '+err.message, 'error')
       setMarking(false)
@@ -271,6 +274,137 @@ export default function DealDetailPage() {
     { key:'activity',  label:`Activity (${acts.length})`   },
     { key:'booking',   label:'Booking'                     },
   ] as const
+
+  /* ── FIFA-style celebration overlay ──────────────────────── */
+  if (celebration) {
+    const MESSAGES = [
+      'PARADISE CONFIRMED', 'DEAL SEALED — PARADISE AWAITS', 'ISLAND ESCAPE BOOKED',
+      'LUXURY UNLOCKED', 'THEY\'RE GOING TO MAURITIUS', 'COMMISSION EARNED',
+    ]
+    const headline = MESSAGES[Math.floor(Math.random() * MESSAGES.length)]
+    return (
+      <div onClick={() => setCelebration(null)} style={{
+        position:'fixed', inset:0, zIndex:9999,
+        background:'radial-gradient(ellipse at 50% 40%, #0a1628 0%, #000 100%)',
+        display:'flex', alignItems:'center', justifyContent:'center',
+        flexDirection:'column', cursor:'pointer',
+        animation:'celebFadeIn 0.4s ease',
+      }}>
+        <style>{`
+          @keyframes celebFadeIn { from { opacity:0 } to { opacity:1 } }
+          @keyframes cardFlip { 0%{transform:perspective(900px) rotateY(90deg) scale(0.8);opacity:0} 60%{transform:perspective(900px) rotateY(-8deg) scale(1.04);opacity:1} 100%{transform:perspective(900px) rotateY(0deg) scale(1);opacity:1} }
+          @keyframes shimmer { 0%,100%{opacity:0.4} 50%{opacity:0.9} }
+          @keyframes riseUp { from{transform:translateY(24px);opacity:0} to{transform:translateY(0);opacity:1} }
+          @keyframes starBurst { 0%{transform:scale(0) rotate(0deg);opacity:1} 100%{transform:scale(1.8) rotate(180deg);opacity:0} }
+          @keyframes goldPulse { 0%,100%{text-shadow:0 0 30px #f59e0b88} 50%{text-shadow:0 0 60px #f59e0bcc,0 0 100px #f59e0b44} }
+        `}</style>
+
+        {/* Stars background */}
+        {[...Array(24)].map((_,i) => (
+          <div key={i} style={{
+            position:'absolute',
+            left:`${Math.random()*100}%`, top:`${Math.random()*100}%`,
+            width:`${2+Math.random()*3}px`, height:`${2+Math.random()*3}px`,
+            borderRadius:'50%', background:'#f59e0b',
+            animation:`shimmer ${1.5+Math.random()*2}s ease-in-out infinite`,
+            animationDelay:`${Math.random()*2}s`, opacity:0.5,
+          }}/>
+        ))}
+
+        {/* Card */}
+        <div style={{
+          width:'min(460px,90vw)',
+          background:'linear-gradient(145deg,#1a1a2e 0%,#16213e 40%,#0f3460 100%)',
+          border:'1.5px solid #f59e0b55',
+          borderRadius:'24px', padding:'48px 40px 40px',
+          boxShadow:'0 0 80px #f59e0b22, 0 40px 80px rgba(0,0,0,0.6)',
+          animation:'cardFlip 0.7s cubic-bezier(0.23,1,0.32,1) both',
+          position:'relative', overflow:'hidden', textAlign:'center',
+        }}>
+          {/* Gold shimmer line */}
+          <div style={{ position:'absolute', top:0, left:0, right:0, height:'2px', background:'linear-gradient(90deg,transparent,#f59e0b,transparent)', animation:'shimmer 2s ease-in-out infinite' }}/>
+
+          {/* Crown / star burst */}
+          <div style={{ fontSize:'48px', marginBottom:'12px', display:'block', animation:'riseUp 0.5s 0.3s both' }}>✦</div>
+
+          {/* Headline */}
+          <div style={{
+            fontFamily:'Fraunces, serif', fontWeight:300, fontStyle:'italic',
+            fontSize:'13px', letterSpacing:'0.25em', color:'#f59e0b',
+            textTransform:'uppercase', marginBottom:'24px',
+            animation:'riseUp 0.5s 0.4s both', animationFillMode:'both',
+          }}>
+            {headline}
+          </div>
+
+          {/* Client name */}
+          <div style={{
+            fontFamily:'Outfit, sans-serif', fontSize:'15px', color:'#94a3b8',
+            marginBottom:'6px', animation:'riseUp 0.5s 0.5s both',
+          }}>
+            {celebration.clientName}
+            {celebration.hotel && <span style={{ color:'#64748b' }}> · {celebration.hotel}</span>}
+          </div>
+
+          {/* Booking ref */}
+          <div style={{
+            fontFamily:'Outfit, sans-serif', fontSize:'12px', letterSpacing:'0.15em',
+            color:'#f59e0b99', textTransform:'uppercase', marginBottom:'32px',
+            animation:'riseUp 0.5s 0.55s both',
+          }}>
+            Ref: {celebration.ref}
+          </div>
+
+          {/* Divider */}
+          <div style={{ height:'1px', background:'linear-gradient(90deg,transparent,#f59e0b44,transparent)', marginBottom:'32px' }}/>
+
+          {/* Value + Profit */}
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'16px', marginBottom:'40px' }}>
+            <div style={{ animation:'riseUp 0.5s 0.65s both' }}>
+              <div style={{ fontSize:'11px', color:'#64748b', fontFamily:'Outfit, sans-serif', textTransform:'uppercase', letterSpacing:'0.1em', marginBottom:'8px' }}>Booking Value</div>
+              <div style={{ fontFamily:'Fraunces, serif', fontWeight:300, fontSize:'34px', color:'#f59e0b', lineHeight:1, animation:'goldPulse 2s ease-in-out infinite' }}>
+                £{(celebration.value||0).toLocaleString('en-GB',{maximumFractionDigits:0})}
+              </div>
+            </div>
+            {celebration.profit > 0 && (
+              <div style={{ animation:'riseUp 0.5s 0.75s both' }}>
+                <div style={{ fontSize:'11px', color:'#64748b', fontFamily:'Outfit, sans-serif', textTransform:'uppercase', letterSpacing:'0.1em', marginBottom:'8px' }}>Your Profit</div>
+                <div style={{ fontFamily:'Fraunces, serif', fontWeight:300, fontSize:'34px', color:'#10b981', lineHeight:1 }}>
+                  £{(celebration.profit||0).toLocaleString('en-GB',{maximumFractionDigits:0})}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Dismiss hint */}
+          <div style={{ fontSize:'11px', color:'#334155', fontFamily:'Outfit, sans-serif', letterSpacing:'0.05em' }}>
+            tap anywhere to continue
+          </div>
+
+          {/* Progress bar */}
+          <div style={{ position:'absolute', bottom:0, left:0, right:0, height:'3px', background:'#1e293b' }}>
+            <div style={{ height:'100%', background:'linear-gradient(90deg,#f59e0b,#10b981)', width:'100%', animation:'shimmer 1s linear 5s forwards', transformOrigin:'left', transition:'width 5.5s linear' }}/>
+          </div>
+        </div>
+
+        {/* Confetti-style dots bursting out */}
+        {[...Array(12)].map((_,i) => {
+          const angle = (i/12)*360
+          return (
+            <div key={i} style={{
+              position:'absolute', top:'50%', left:'50%',
+              width:'8px', height:'8px', borderRadius:'50%',
+              background:['#f59e0b','#10b981','#3b82f6','#ec4899','#8b5cf6'][i%5],
+              transform:`rotate(${angle}deg) translateX(${160+Math.random()*80}px)`,
+              animation:`shimmer ${1+Math.random()}s ease-in-out infinite`,
+              animationDelay:`${0.3+i*0.06}s`,
+              opacity:0.7,
+            }}/>
+          )
+        })}
+      </div>
+    )
+  }
 
   return (
     <div>
@@ -581,7 +715,7 @@ function QuoteCard({ quote, dealId, isBooked, isLost, expanded, onToggle, onMark
               <span style={{ fontSize:'11px', color:'var(--text-muted)', marginLeft:'auto' }}>{new Date(quote.created_at).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})}</span>
             </div>
             <div style={{ fontFamily:'Instrument Serif, serif', fontSize:'18px', color:'var(--text-primary)', marginBottom:'4px' }}>
-              <HotelName name={quote.hotel} style={{ fontFamily:'Instrument Serif, serif', fontSize:'18px' }}/>
+              {quote.hotel}
             </div>
             <div style={{ fontSize:'12px', color:'var(--text-muted)', display:'flex', gap:'8px', flexWrap:'wrap' }}>
               {quote.board_basis && <span>{quote.board_basis}</span>}

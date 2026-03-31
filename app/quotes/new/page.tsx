@@ -173,29 +173,41 @@ function HotelOptionPanel({option,index,totalOptions,onChange,onRemove,onDuplica
   const flightN=parseFloat(option.flightNet)||0, accN=parseFloat(option.accNet)||0, transN=parseFloat(option.transNet)||0
   const extrasN=option.extras.reduce((a,e)=>a+(e.net||0),0), totalNet=flightN+accN+transN+extrasN
   const sellN=parseFloat(option.sellPrice)||0, profitN=parseFloat(option.profit)||0
-  const marginN=sellN>0?(profitN/sellN)*100:(parseFloat(option.margin)||0)
+  const markupN = parseFloat(option.margin)|| (sellN>0&&profitN>0&&profitN<sellN ? (profitN/(sellN-profitN))*100 : 0)
 
   function onSell(v:string){
     const sell=parseFloat(v)||0
     const mg=parseFloat(option.margin)||0
     const pr=parseFloat(option.profit)||0
-    if(sell>0&&mg>0) onChange({...option,sellPrice:v,profit:((sell*mg)/100).toFixed(2)})
-    else if(sell>0&&pr>0) onChange({...option,sellPrice:v,margin:((pr/sell)*100).toFixed(1)})
-    else onChange({...option,sellPrice:v})
+    if(sell>0&&mg>0){
+      const profit = totalNet>0 ? totalNet*mg/100 : sell*mg/(100+mg)
+      onChange({...option,sellPrice:v,profit:profit.toFixed(2)})
+    } else if(sell>0&&pr>0){
+      const markup = sell>pr ? (pr/(sell-pr))*100 : 0
+      onChange({...option,sellPrice:v,margin:markup.toFixed(1)})
+    } else onChange({...option,sellPrice:v})
   }
   function onMargin(v:string){
     const sell=parseFloat(option.sellPrice)||0
     const mg=parseFloat(v)||0
-    if(sell>0&&mg>0) onChange({...option,margin:v,profit:((sell*mg)/100).toFixed(2)})
-    else if(totalNet>0&&mg>0){const s=totalNet/(1-mg/100);onChange({...option,margin:v,sellPrice:s.toFixed(2),profit:(s*mg/100).toFixed(2)})}
-    else onChange({...option,margin:v})
+    if(totalNet>0&&mg>0){
+      const s=totalNet*(1+mg/100)
+      onChange({...option,margin:v,sellPrice:s.toFixed(2),profit:(totalNet*mg/100).toFixed(2)})
+    } else if(sell>0&&mg>0){
+      const profit = sell*mg/(100+mg)
+      onChange({...option,margin:v,profit:profit.toFixed(2)})
+    } else onChange({...option,margin:v})
   }
   function onProfit(v:string){
     const sell=parseFloat(option.sellPrice)||0
     const pr=parseFloat(v)||0
-    if(sell>0&&pr>0) onChange({...option,profit:v,margin:((pr/sell)*100).toFixed(1)})
-    else if(totalNet>0&&pr>0){const s=totalNet+pr;onChange({...option,profit:v,sellPrice:s.toFixed(2),margin:((pr/s)*100).toFixed(1)})}
-    else onChange({...option,profit:v})
+    if(sell>0&&pr>0){
+      const markup = sell>pr ? (pr/(sell-pr))*100 : 0
+      onChange({...option,profit:v,margin:markup.toFixed(1)})
+    } else if(totalNet>0&&pr>0){
+      const s=totalNet+pr
+      onChange({...option,profit:v,sellPrice:s.toFixed(2),margin:((pr/totalNet)*100).toFixed(1)})
+    } else onChange({...option,profit:v})
   }
 
   const COLORS=['#8b5cf6','#3b82f6','#10b981','#f59e0b','#ec4899']
@@ -208,7 +220,7 @@ function HotelOptionPanel({option,index,totalOptions,onChange,onRemove,onDuplica
           <div style={{width:'26px',height:'26px',borderRadius:'50%',background:color,color:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:'12px',fontWeight:'700',flexShrink:0}}>{index+1}</div>
           <div>
             <div style={{fontFamily:'Fraunces,serif',fontSize:'15px',fontWeight:'300',color:'var(--text-primary)'}}>{option.hotel||`Option ${index+1} — select hotel`}</div>
-            <div style={{fontSize:'11.5px',color:'var(--text-muted)',marginTop:'1px'}}>{option.boardBasis}{option.nights?` · ${option.nights} nights`:''}{sellN>0?` · ${fmtS(sellN)}`:''}{marginN>0?` · ${marginN.toFixed(1)}%`:''}</div>
+            <div style={{fontSize:'11.5px',color:'var(--text-muted)',marginTop:'1px'}}>{option.boardBasis}{option.nights?` · ${option.nights} nights`:''}{sellN>0?` · ${fmtS(sellN)}`:''}{markupN>0?` · ${markupN.toFixed(1)}%`:''}</div>
           </div>
         </div>
         <div style={{display:'flex',gap:'6px',alignItems:'center'}}>
@@ -310,12 +322,12 @@ function HotelOptionPanel({option,index,totalOptions,onChange,onRemove,onDuplica
           {/* Sell price */}
           <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'10px',marginBottom:'10px'}}>
             <div><label className="label">Sell Price (£) *</label><input className="input" type="number" step="1" placeholder="4500" value={option.sellPrice} onChange={e=>onSell(e.target.value)} style={{fontSize:'15px',fontWeight:'500'}}/></div>
-            <div><label className="label">Margin %</label><div style={{position:'relative'}}><input className="input" type="number" step="0.1" placeholder="10" value={option.margin} onChange={e=>onMargin(e.target.value)} style={{paddingRight:'26px'}}/><span style={{position:'absolute',right:'10px',top:'50%',transform:'translateY(-50%)',color:'var(--text-muted)',fontSize:'13px',pointerEvents:'none'}}>%</span></div></div>
+            <div><label className="label">Markup %</label><div style={{position:'relative'}}><input className="input" type="number" step="0.1" placeholder="10" value={option.margin} onChange={e=>onMargin(e.target.value)} style={{paddingRight:'26px'}}/><span style={{position:'absolute',right:'10px',top:'50%',transform:'translateY(-50%)',color:'var(--text-muted)',fontSize:'13px',pointerEvents:'none'}}>%</span></div></div>
             <div><label className="label">Profit (£)</label><input className="input" type="number" step="1" placeholder="Auto" value={option.profit} onChange={e=>onProfit(e.target.value)} style={{color:'var(--gold)',fontWeight:'500'}}/></div>
           </div>
           {sellN>0&&(
             <div style={{display:'flex',gap:'14px',padding:'10px 14px',background:'var(--bg-tertiary)',borderRadius:'8px'}}>
-              {[...(totalNet>0?[{l:'Net',v:fmtS(totalNet),c:'var(--text-primary)'}]:[]),{l:'Sell',v:fmtS(sellN),c:'var(--text-primary)'},{l:'Profit',v:fmtS(profitN),c:'var(--gold)'},{l:'Margin',v:marginN.toFixed(1)+'%',c:marginN>=10?'var(--green)':marginN>=7?'var(--amber)':'var(--red)'}].map(s=>(
+              {[...(totalNet>0?[{l:'Net',v:fmtS(totalNet),c:'var(--text-primary)'}]:[]),{l:'Sell',v:fmtS(sellN),c:'var(--text-primary)'},{l:'Profit',v:fmtS(profitN),c:'var(--gold)'},{l:'Markup',v:markupN.toFixed(1)+'%',c:markupN>=10?'var(--green)':markupN>=7?'var(--amber)':'var(--red)'}].map(s=>(
                 <div key={s.l} style={{textAlign:'center'}}>
                   <div style={{fontSize:'10px',textTransform:'uppercase',letterSpacing:'0.06em',color:'var(--text-muted)',marginBottom:'2px'}}>{s.l}</div>
                   <div style={{fontFamily:'Fraunces,serif',fontSize:'17px',fontWeight:'300',color:s.c}}>{s.v}</div>
@@ -323,7 +335,7 @@ function HotelOptionPanel({option,index,totalOptions,onChange,onRemove,onDuplica
               ))}
               <div style={{flex:1,display:'flex',alignItems:'center',paddingLeft:'6px'}}>
                 <div style={{width:'100%',height:'5px',background:'var(--border)',borderRadius:'3px',overflow:'hidden'}}>
-                  <div style={{height:'100%',width:`${Math.min(marginN,30)/30*100}%`,borderRadius:'3px',background:marginN>=10?'var(--green)':marginN>=7?'var(--amber)':'var(--red)',transition:'all 0.3s'}}/>
+                  <div style={{height:'100%',width:`${Math.min(markupN,30)/30*100}%`,borderRadius:'3px',background:markupN>=10?'var(--green)':markupN>=7?'var(--amber)':'var(--red)',transition:'all 0.3s'}}/>
                 </div>
               </div>
             </div>
@@ -554,27 +566,41 @@ export default function NewQuotePage(){
 
   // Multi-centre pricing
   const mcSellN=parseFloat(mcSellPrice)||0, mcProfitN=parseFloat(mcProfit)||0
-  const mcMarginN=mcSellN>0?(mcProfitN/mcSellN)*100:(parseFloat(mcMargin)||0)
+  const mcMarginN = parseFloat(mcMargin)|| (mcSellN>0&&mcProfitN>0&&mcProfitN<mcSellN ? (mcProfitN/(mcSellN-mcProfitN))*100 : 0)
   const mcTotalNet=centres.reduce((a,c)=>{
     const accN=parseFloat(c.accNet)||0,flightN=parseFloat(c.flightNet)||0,transN=parseFloat(c.transNet)||0
     return a+accN+flightN+transN+c.extras.reduce((x,e)=>x+(e.net||0),0)
   },0)
   function onMcSell(v:string){
     const sell=parseFloat(v)||0,mg=parseFloat(mcMargin)||0,pr=parseFloat(mcProfit)||0
-    if(sell>0&&mg>0) setMcProfit(((sell*mg)/100).toFixed(2))
-    else if(sell>0&&pr>0) setMcMargin(((pr/sell)*100).toFixed(1))
+    if(sell>0&&mg>0){
+      const profit = mcTotalNet>0 ? mcTotalNet*mg/100 : sell*mg/(100+mg)
+      setMcProfit(profit.toFixed(2))
+    } else if(sell>0&&pr>0){
+      const markup = sell>pr ? (pr/(sell-pr))*100 : 0
+      setMcMargin(markup.toFixed(1))
+    }
     setMcSell(v)
   }
   function onMcMargin(v:string){
     const sell=parseFloat(mcSellPrice)||0,mg=parseFloat(v)||0
-    if(sell>0&&mg>0) setMcProfit(((sell*mg)/100).toFixed(2))
-    else if(mcTotalNet>0&&mg>0){const s=mcTotalNet/(1-mg/100);setMcSell(s.toFixed(2));setMcProfit((s*mg/100).toFixed(2))}
+    if(mcTotalNet>0&&mg>0){
+      const s=mcTotalNet*(1+mg/100)
+      setMcSell(s.toFixed(2)); setMcProfit((mcTotalNet*mg/100).toFixed(2))
+    } else if(sell>0&&mg>0){
+      const profit = sell*mg/(100+mg)
+      setMcProfit(profit.toFixed(2))
+    }
     setMcMargin(v)
   }
   function onMcProfit(v:string){
     const sell=parseFloat(mcSellPrice)||0,pr=parseFloat(v)||0
-    if(sell>0&&pr>0) setMcMargin(((pr/sell)*100).toFixed(1))
-    else if(mcTotalNet>0&&pr>0){const s=mcTotalNet+pr;setMcSell(s.toFixed(2));setMcMargin(((pr/s)*100).toFixed(1))}
+    if(sell>0&&pr>0){
+      const markup = sell>pr ? (pr/(sell-pr))*100 : 0
+      setMcMargin(markup.toFixed(1))
+    } else if(mcTotalNet>0&&pr>0){
+      const s=mcTotalNet+pr; setMcSell(s.toFixed(2)); setMcMargin(((pr/mcTotalNet)*100).toFixed(1))
+    }
     setMcProfit(v)
   }
 
@@ -600,7 +626,7 @@ export default function NewQuotePage(){
       if(quoteMode==='single'){
         const o=hotelOptions[0]
         const sellN=parseFloat(o.sellPrice)||0,profitN=parseFloat(o.profit)||0
-        const marginN=sellN>0?(profitN/sellN)*100:(parseFloat(o.margin)||0)
+        const marginN = sellN>0&&profitN>0&&profitN<sellN ? (profitN/(sellN-profitN))*100 : (parseFloat(o.margin)||0)
         const flightN=parseFloat(o.flightNet)||0,accN=parseFloat(o.accNet)||0,transN=parseFloat(o.transNet)||0
         const extrasN=o.extras.reduce((a,e)=>a+(e.net||0),0)
         await supabase.from('quotes').update({
@@ -635,7 +661,7 @@ export default function NewQuotePage(){
       for(let i=0;i<hotelOptions.length;i++){
         const o=hotelOptions[i], ref=genRef(initials,quoteCount+i); refs.push(ref)
         const sellN=parseFloat(o.sellPrice)||0,profitN=parseFloat(o.profit)||0
-        const marginN=sellN>0?(profitN/sellN)*100:(parseFloat(o.margin)||0)
+        const marginN = sellN>0&&profitN>0&&profitN<sellN ? (profitN/(sellN-profitN))*100 : (parseFloat(o.margin)||0)
         const flightN=parseFloat(o.flightNet)||0,accN=parseFloat(o.accNet)||0,transN=parseFloat(o.transNet)||0
         const extrasN=o.extras.reduce((a,e)=>a+(e.net||0),0)
         const{error:qErr}=await supabase.from('quotes').insert({
@@ -830,12 +856,12 @@ export default function NewQuotePage(){
                   </div>
                   <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'12px',marginBottom:'14px'}}>
                     <div><label className="label">Sell Price (£) *</label><input className="input" type="number" step="1" placeholder="8500" value={mcSellPrice} onChange={e=>onMcSell(e.target.value)} style={{fontSize:'15px',fontWeight:'500'}}/></div>
-                    <div><label className="label">Margin %</label><div style={{position:'relative'}}><input className="input" type="number" step="0.1" placeholder="10" value={mcMargin} onChange={e=>onMcMargin(e.target.value)} style={{paddingRight:'26px'}}/><span style={{position:'absolute',right:'10px',top:'50%',transform:'translateY(-50%)',color:'var(--text-muted)',fontSize:'13px',pointerEvents:'none'}}>%</span></div></div>
+                    <div><label className="label">Markup %</label><div style={{position:'relative'}}><input className="input" type="number" step="0.1" placeholder="10" value={mcMargin} onChange={e=>onMcMargin(e.target.value)} style={{paddingRight:'26px'}}/><span style={{position:'absolute',right:'10px',top:'50%',transform:'translateY(-50%)',color:'var(--text-muted)',fontSize:'13px',pointerEvents:'none'}}>%</span></div></div>
                     <div><label className="label">Profit (£)</label><input className="input" type="number" step="1" placeholder="Auto" value={mcProfit} onChange={e=>onMcProfit(e.target.value)} style={{color:'var(--gold)',fontWeight:'500'}}/></div>
                   </div>
                   {mcSellN>0&&(
                     <div style={{display:'flex',gap:'16px',padding:'12px 14px',background:'var(--bg-tertiary)',borderRadius:'8px'}}>
-                      {[...(mcTotalNet>0?[{l:'Net',v:fmtS(mcTotalNet),c:'var(--text-primary)'}]:[]),{l:'Sell',v:fmtS(mcSellN),c:'var(--text-primary)'},{l:'Profit',v:fmtS(mcProfitN),c:'var(--gold)'},{l:'Margin',v:mcMarginN.toFixed(1)+'%',c:mcMarginN>=10?'var(--green)':mcMarginN>=7?'var(--amber)':'var(--red)'}].map(s=>(
+                      {[...(mcTotalNet>0?[{l:'Net',v:fmtS(mcTotalNet),c:'var(--text-primary)'}]:[]),{l:'Sell',v:fmtS(mcSellN),c:'var(--text-primary)'},{l:'Profit',v:fmtS(mcProfitN),c:'var(--gold)'},{l:'Markup',v:mcMarginN.toFixed(1)+'%',c:mcMarginN>=10?'var(--green)':mcMarginN>=7?'var(--amber)':'var(--red)'}].map(s=>(
                         <div key={s.l} style={{textAlign:'center'}}>
                           <div style={{fontSize:'10px',textTransform:'uppercase',letterSpacing:'0.06em',color:'var(--text-muted)',marginBottom:'2px'}}>{s.l}</div>
                           <div style={{fontFamily:'Fraunces,serif',fontSize:'18px',fontWeight:'300',color:s.c}}>{s.v}</div>
@@ -863,7 +889,7 @@ export default function NewQuotePage(){
             {/* Live summary */}
             {quoteMode==='single'&&hotelOptions.map((o,i)=>{
               const sellN=parseFloat(o.sellPrice)||0,profitN=parseFloat(o.profit)||0
-              const marginN=sellN>0?(profitN/sellN)*100:(parseFloat(o.margin)||0)
+              const marginN = sellN>0&&profitN>0&&profitN<sellN ? (profitN/(sellN-profitN))*100 : (parseFloat(o.margin)||0)
               const COLORS=['#8b5cf6','#3b82f6','#10b981','#f59e0b','#ec4899']
               const col=COLORS[i%COLORS.length]
               return(
@@ -936,7 +962,7 @@ export default function NewQuotePage(){
             </div>
 
             <div style={{background:'var(--gold-light)',borderRadius:'10px',padding:'12px 14px',border:'1px solid var(--border)'}}>
-              <div style={{fontSize:'10.5px',fontWeight:'700',color:'var(--gold)',marginBottom:'6px',textTransform:'uppercase',letterSpacing:'0.06em'}}>Margin Guide</div>
+              <div style={{fontSize:'10.5px',fontWeight:'700',color:'var(--gold)',marginBottom:'6px',textTransform:'uppercase',letterSpacing:'0.06em'}}>Markup Guide</div>
               <div style={{fontSize:'12px',color:'var(--text-secondary)',lineHeight:'1.8'}}>
                 <div>🟢 10%+ great margin</div><div>🟡 7–10% acceptable</div><div>🔴 Under 7% review</div>
               </div>

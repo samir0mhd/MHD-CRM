@@ -207,6 +207,20 @@ export default function ClientsPage() {
         <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
           <input className="input" style={{ width: '240px' }} placeholder="Search name, phone, email…"
             value={search} onChange={e => setSearch(e.target.value)} />
+          <div style={{ display: 'flex', background: 'var(--bg-tertiary)', border: '1px solid var(--border)', borderRadius: '8px', padding: '3px', gap: '2px' }}>
+            {(['grid', 'list'] as const).map(v => (
+              <button key={v} onClick={() => setView(v)} style={{
+                padding: '5px 10px', borderRadius: '6px', border: 'none', cursor: 'pointer',
+                fontSize: '12px', fontFamily: 'Outfit, sans-serif', fontWeight: '500',
+                background: view === v ? 'var(--surface)' : 'transparent',
+                color: view === v ? 'var(--text-primary)' : 'var(--text-muted)',
+                boxShadow: view === v ? 'var(--shadow-sm)' : 'none',
+                transition: 'all 0.15s',
+              }}>
+                {v === 'grid' ? '⊞ Cards' : '≡ List'}
+              </button>
+            ))}
+          </div>
           <button className="btn btn-primary" onClick={() => { setEditClient(null); setShowModal(true) }}>
             + New Client
           </button>
@@ -257,85 +271,201 @@ export default function ClientsPage() {
           </div>
         )}
 
-        {/* Client grid */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '16px' }}>
-          {filtered.map(client => (
-            <div key={client.id} className="card"
-              style={{ padding: '20px', cursor: 'pointer', transition: 'all 0.15s' }}
-              onClick={() => setSelectedClient(client)}
-              onMouseEnter={e => (e.currentTarget.style.boxShadow = 'var(--shadow-md)')}
-              onMouseLeave={e => (e.currentTarget.style.boxShadow = 'var(--shadow-sm)')}>
+        {/* ── CARD VIEW ── */}
+        {view === 'grid' && (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '16px' }}>
+            {filtered.map(client => (
+              <div key={client.id} className="card"
+                style={{ padding: '20px', cursor: 'pointer', transition: 'all 0.15s' }}
+                onClick={() => setSelectedClient(client)}
+                onMouseEnter={e => (e.currentTarget.style.boxShadow = 'var(--shadow-md)')}
+                onMouseLeave={e => (e.currentTarget.style.boxShadow = 'var(--shadow-sm)')}>
 
-              {/* Avatar + name */}
-              <div style={{ display: 'flex', alignItems: 'flex-start', gap: '12px', marginBottom: '12px' }}>
-                <div style={{ width: '44px', height: '44px', borderRadius: '50%', background: avatarColor(client.id), color: 'white',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontFamily: 'Instrument Serif, serif', fontSize: '17px', flexShrink: 0 }}>
-                  {initials(client)}
-                </div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontFamily: 'Instrument Serif, serif', fontSize: '18px', color: 'var(--text-primary)', marginBottom: '1px' }}>
-                    {client.first_name} {client.last_name}
+                {/* Avatar + name */}
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: '12px', marginBottom: '12px' }}>
+                  <div style={{ width: '44px', height: '44px', borderRadius: '50%', background: avatarColor(client.id), color: 'white',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontFamily: 'Instrument Serif, serif', fontSize: '17px', flexShrink: 0 }}>
+                    {initials(client)}
                   </div>
-                  <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
-                    {client.phone && <span>{client.phone}</span>}
-                    {client.phone && client.email && <span> · </span>}
-                    {client.email && <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-block', maxWidth: '160px', verticalAlign: 'bottom' }}>{client.email}</span>}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontFamily: 'Instrument Serif, serif', fontSize: '18px', color: 'var(--text-primary)', marginBottom: '1px' }}>
+                      {client.first_name} {client.last_name}
+                    </div>
+                    <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                      {client.phone && <span>{client.phone}</span>}
+                      {client.phone && client.email && <span> · </span>}
+                      {client.email && <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-block', maxWidth: '160px', verticalAlign: 'bottom' }}>{client.email}</span>}
+                    </div>
                   </div>
+                  {client.behaviour_tags?.includes('vip') && (
+                    <span style={{ fontSize: '18px' }}>⭐</span>
+                  )}
                 </div>
-                {client.behaviour_tags?.includes('vip') && (
-                  <span style={{ fontSize: '18px' }}>⭐</span>
+
+                {/* Behaviour tags */}
+                {(client.behaviour_tags || []).length > 0 && (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginBottom: '12px' }}>
+                    {(client.behaviour_tags || []).slice(0, 4).map(key => {
+                      const tag = tagInfo(key)
+                      if (!tag) return null
+                      return (
+                        <span key={key} style={{ fontSize: '11px', padding: '2px 8px', borderRadius: '10px', background: tag.color + '18', color: tag.color, fontWeight: '500' }}>
+                          {tag.icon} {tag.label}
+                        </span>
+                      )
+                    })}
+                    {(client.behaviour_tags || []).length > 4 && (
+                      <span style={{ fontSize: '11px', padding: '2px 8px', borderRadius: '10px', background: 'var(--bg-tertiary)', color: 'var(--text-muted)' }}>
+                        +{client.behaviour_tags.length - 4}
+                      </span>
+                    )}
+                  </div>
                 )}
-              </div>
 
-              {/* Behaviour tags */}
-              {(client.behaviour_tags || []).length > 0 && (
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginBottom: '12px' }}>
-                  {(client.behaviour_tags || []).slice(0, 4).map(key => {
+                {/* Budget + occasions */}
+                {(client.budget_min || client.budget_max) && (
+                  <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '8px' }}>
+                    Budget: <strong style={{ color: 'var(--text-primary)' }}>{budgetLabel(client.budget_min, client.budget_max)}</strong>
+                  </div>
+                )}
+                {client.special_occasions && (
+                  <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '8px' }}>
+                    {client.special_occasions}
+                  </div>
+                )}
+
+                {/* Stats */}
+                <div style={{ display: 'flex', gap: '0', paddingTop: '12px', borderTop: '1px solid var(--border)', marginTop: '4px' }}>
+                  {[
+                    { label: 'Enquiries', val: client.dealCount },
+                    { label: 'Booked', val: client.bookedCount },
+                    { label: 'Lifetime', val: client.lifetimeValue > 0 ? fmt(client.lifetimeValue) : '£0' },
+                  ].map((s, i) => (
+                    <div key={s.label} style={{ flex: 1, textAlign: 'center', borderLeft: i > 0 ? '1px solid var(--border)' : 'none' }}>
+                      <div style={{ fontFamily: 'Instrument Serif, serif', fontSize: '18px', color: i === 2 && client.lifetimeValue > 0 ? 'var(--green)' : 'var(--text-primary)' }}>{s.val}</div>
+                      <div style={{ fontSize: '10.5px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{s.label}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* ── LIST VIEW ── */}
+        {view === 'list' && filtered.length > 0 && (
+          <div>
+            {/* Header */}
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: '200px 1fr 180px 110px 80px 100px 85px',
+              gap: '12px', padding: '0 16px 8px',
+              borderBottom: '2px solid var(--border)',
+            }}>
+              {['Client', 'Tags', 'Contact', 'Budget', 'Deals', 'Lifetime', 'Source'].map(h => (
+                <div key={h} style={{ fontSize: '10px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', fontFamily: 'Outfit, sans-serif' }}>{h}</div>
+              ))}
+            </div>
+
+            {filtered.map(client => (
+              <div key={client.id}
+                onClick={() => setSelectedClient(client)}
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: '200px 1fr 180px 110px 80px 100px 85px',
+                  gap: '12px', padding: '11px 16px',
+                  borderBottom: '1px solid var(--border)',
+                  background: 'var(--surface)',
+                  alignItems: 'center',
+                  cursor: 'pointer',
+                  borderRadius: '0',
+                  marginBottom: '2px',
+                  borderTopRightRadius: '8px', borderBottomRightRadius: '8px',
+                  borderLeft: client.behaviour_tags?.includes('vip')
+                    ? '3px solid var(--gold)'
+                    : client.lifetimeValue > 0
+                    ? '3px solid var(--green)'
+                    : '3px solid var(--border)',
+                  transition: 'background 0.1s',
+                }}
+                onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-tertiary)')}
+                onMouseLeave={e => (e.currentTarget.style.background = 'var(--surface)')}
+              >
+                {/* Client name + avatar */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '9px', minWidth: 0 }}>
+                  <div style={{
+                    width: '32px', height: '32px', borderRadius: '50%', flexShrink: 0,
+                    background: avatarColor(client.id), color: 'white',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontFamily: 'Outfit, sans-serif', fontSize: '11px', fontWeight: '700',
+                  }}>
+                    {initials(client)}
+                  </div>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: '13.5px', fontWeight: '600', color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {client.first_name} {client.last_name}
+                    </div>
+                    {client.lastDealDate && (
+                      <div style={{ fontSize: '10.5px', color: 'var(--text-muted)' }}>
+                        Last enquiry {new Date(client.lastDealDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Tags */}
+                <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
+                  {(client.behaviour_tags || []).slice(0, 3).map(key => {
                     const tag = tagInfo(key)
                     if (!tag) return null
                     return (
-                      <span key={key} style={{ fontSize: '11px', padding: '2px 8px', borderRadius: '10px', background: tag.color + '18', color: tag.color, fontWeight: '500' }}>
-                        {tag.icon} {tag.label}
+                      <span key={key} style={{ fontSize: '10px', padding: '1px 6px', borderRadius: '8px', background: tag.color + '18', color: tag.color, fontWeight: '600', whiteSpace: 'nowrap' }}>
+                        {tag.label}
                       </span>
                     )
                   })}
-                  {(client.behaviour_tags || []).length > 4 && (
-                    <span style={{ fontSize: '11px', padding: '2px 8px', borderRadius: '10px', background: 'var(--bg-tertiary)', color: 'var(--text-muted)' }}>
-                      +{client.behaviour_tags.length - 4}
-                    </span>
+                  {(client.behaviour_tags || []).length > 3 && (
+                    <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>+{client.behaviour_tags.length - 3}</span>
                   )}
                 </div>
-              )}
 
-              {/* Budget + occasions */}
-              {(client.budget_min || client.budget_max) && (
-                <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '8px' }}>
-                  💷 Budget: <strong style={{ color: 'var(--text-primary)' }}>{budgetLabel(client.budget_min, client.budget_max)}</strong>
+                {/* Contact */}
+                <div style={{ minWidth: 0 }}>
+                  {client.phone && (
+                    <div style={{ fontSize: '12px', color: 'var(--text-secondary)', fontFamily: 'Outfit, sans-serif', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{client.phone}</div>
+                  )}
+                  {client.email && (
+                    <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'Outfit, sans-serif', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{client.email}</div>
+                  )}
                 </div>
-              )}
-              {client.special_occasions && (
-                <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '8px' }}>
-                  🎉 {client.special_occasions}
-                </div>
-              )}
 
-              {/* Stats */}
-              <div style={{ display: 'flex', gap: '0', paddingTop: '12px', borderTop: '1px solid var(--border)', marginTop: '4px' }}>
-                {[
-                  { label: 'Enquiries', val: client.dealCount },
-                  { label: 'Booked', val: client.bookedCount },
-                  { label: 'Lifetime', val: client.lifetimeValue > 0 ? fmt(client.lifetimeValue) : '£0' },
-                ].map((s, i) => (
-                  <div key={s.label} style={{ flex: 1, textAlign: 'center', borderLeft: i > 0 ? '1px solid var(--border)' : 'none' }}>
-                    <div style={{ fontFamily: 'Instrument Serif, serif', fontSize: '18px', color: i === 2 && client.lifetimeValue > 0 ? 'var(--green)' : 'var(--text-primary)' }}>{s.val}</div>
-                    <div style={{ fontSize: '10.5px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{s.label}</div>
-                  </div>
-                ))}
+                {/* Budget */}
+                <div style={{ fontSize: '12px', color: 'var(--text-secondary)', fontFamily: 'Outfit, sans-serif' }}>
+                  {budgetLabel(client.budget_min, client.budget_max) ?? <span style={{ color: 'var(--text-muted)' }}>—</span>}
+                </div>
+
+                {/* Deals */}
+                <div style={{ textAlign: 'center' }}>
+                  <div style={{ fontSize: '14px', fontWeight: '700', color: 'var(--text-primary)', fontFamily: 'Outfit, sans-serif' }}>{client.dealCount}</div>
+                  {client.bookedCount > 0 && (
+                    <div style={{ fontSize: '10px', color: 'var(--green)', fontWeight: '600' }}>{client.bookedCount} booked</div>
+                  )}
+                </div>
+
+                {/* Lifetime value */}
+                <div style={{ fontSize: '13.5px', fontWeight: '700', fontFamily: 'Outfit, sans-serif', color: client.lifetimeValue > 0 ? 'var(--green)' : 'var(--text-muted)' }}>
+                  {client.lifetimeValue > 0 ? fmt(client.lifetimeValue) : '—'}
+                </div>
+
+                {/* Source */}
+                <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'Outfit, sans-serif' }}>
+                  {client.source ?? '—'}
+                </div>
               </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Client detail panel */}

@@ -18,13 +18,61 @@ const SOURCES = [
   'Repeat Client','Phone Enquiry','Email Enquiry','Google','CPC','SEO','Other',
 ]
 
+const TEMP_COLORS = { hot: '#ef4444', warm: '#f59e0b', cold: '#60a5fa', frozen: '#94a3b8' }
+const TEMP_LABELS = { hot: 'Hot', warm: 'Warm', cold: 'Cold', frozen: 'Frozen' }
+const ACT_DISPLAY: Record<string, string> = {
+  CALL: 'Call', EMAIL: 'Email', WHATSAPP: 'WhatsApp',
+  NOTE: 'Note', MEETING: 'Meeting', FOLLOW_UP: 'Follow-up',
+}
+
+function getDealSignals(deal: DealWithClient) {
+  const now = Date.now()
+
+  let daysUntilDeparture: number | null = null
+  if (deal.departure_date) {
+    daysUntilDeparture = Math.ceil(
+      (new Date(deal.departure_date + 'T12:00').getTime() - now) / 86400000
+    )
+  }
+
+  let isOverdue = false, overdueBy = 0, daysUntilActivity: number | null = null
+  if (deal.next_activity_at) {
+    const diff = (new Date(deal.next_activity_at).getTime() - now) / 86400000
+    if (diff < 0) { isOverdue = true; overdueBy = Math.floor(Math.abs(diff)) }
+    else daysUntilActivity = Math.ceil(diff)
+  }
+
+  let temp: 'hot' | 'warm' | 'cold' | 'frozen'
+  if (overdueBy >= 7) {
+    temp = 'frozen'
+  } else if (overdueBy >= 3 || !deal.next_activity_at) {
+    temp = 'cold'
+  } else if (
+    (daysUntilDeparture !== null && daysUntilDeparture <= 45) ||
+    (isOverdue && overdueBy <= 2) ||
+    (daysUntilActivity !== null && daysUntilActivity <= 1)
+  ) {
+    temp = 'hot'
+  } else if (
+    (daysUntilDeparture !== null && daysUntilDeparture <= 120) ||
+    (daysUntilActivity !== null && daysUntilActivity <= 7)
+  ) {
+    temp = 'warm'
+  } else {
+    temp = 'cold'
+  }
+
+  let valueTier: null | 'whale' | 'high' = null
+  if (deal.deal_value >= 8000) valueTier = 'whale'
+  else if (deal.deal_value >= 4000) valueTier = 'high'
+
+  return { daysUntilDeparture, isOverdue, overdueBy, daysUntilActivity, temp, valueTier }
+}
+
 function fmt(n: number) {
   return '£' + (n || 0).toLocaleString('en-GB', { maximumFractionDigits: 0 })
 }
 
-function daysOverdue(date: string) {
-  return Math.floor((Date.now() - new Date(date).getTime()) / 86400000)
-}
 
 type DealWithClient = Deal & {
   clients?: { first_name: string; last_name: string }
@@ -47,6 +95,8 @@ export default function PipelinePage() {
   const [showNewDeal, setShowNewDeal] = useState(false)
   const [newDealStage, setNewDealStage] = useState('NEW_LEAD')
   const [search, setSearch]         = useState('')
+  const [view, setView]             = useState<'kanban' | 'list'>('kanban')
+  const [sort, setSort]             = useState<'created' | 'value' | 'departure'>('created')
   const toastTimer = useRef<any>(null)
 
   useEffect(() => {
@@ -92,6 +142,15 @@ export default function PipelinePage() {
     }
   }
 
+  async function snoozeDeal(dealId: number, days: number) {
+    const at = new Date()
+    at.setDate(at.getDate() + days)
+    const iso = at.toISOString()
+    await supabase.from('deals').update({ next_activity_at: iso }).eq('id', dealId)
+    setDeals(prev => prev.map(d => d.id === dealId ? { ...d, next_activity_at: iso } : d))
+    showToast(`Snoozed ${days} day${days > 1 ? 's' : ''}`)
+  }
+
   const filtered = search
     ? deals.filter(d =>
         d.title?.toLowerCase().includes(search.toLowerCase()) ||
@@ -101,6 +160,22 @@ export default function PipelinePage() {
     : deals
 
   const totalPipeline = deals.reduce((a, d) => a + (d.deal_value || 0), 0)
+
+  const sortedFiltered = view === 'list' ? [...filtered].sort((a, b) => {
+    if (sort === 'value') return (b.deal_value || 0) - (a.deal_value || 0)
+    if (sort === 'departure') {
+      if (!a.departure_date && !b.departure_date) return 0
+      if (!a.departure_date) return 1
+      if (!b.departure_date) return -1
+      return new Date(a.departure_date).getTime() - new Date(b.departure_date).getTime()
+    }
+    return 0
+  }) : filtered
+
+  function isRotten(d: DealWithClient) {
+    if (!d.next_activity_at) return false
+    return (Date.now() - new Date(d.next_activity_at).getTime()) / 86400000 >= 5
+  }
 
   if (loading) {
     return (
@@ -122,19 +197,61 @@ export default function PipelinePage() {
         <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
           <input className="input" style={{ width: '220px' }} placeholder="Search deals…"
             value={search} onChange={e => setSearch(e.target.value)} />
+          {/* View toggle */}
+          <div style={{ display: 'flex', background: 'var(--bg-tertiary)', border: '1px solid var(--border)', borderRadius: '8px', padding: '3px', gap: '2px' }}>
+            {(['kanban', 'list'] as const).map(v => (
+              <button key={v} onClick={() => setView(v)} style={{
+                padding: '5px 10px', borderRadius: '6px', border: 'none', cursor: 'pointer',
+                fontSize: '12px', fontFamily: 'Outfit, sans-serif', fontWeight: '500',
+                background: view === v ? 'var(--surface)' : 'transparent',
+                color: view === v ? 'var(--text-primary)' : 'var(--text-muted)',
+                boxShadow: view === v ? 'var(--shadow-sm)' : 'none',
+                transition: 'all 0.15s',
+              }}>
+                {v === 'kanban' ? '⊞ Board' : '≡ List'}
+              </button>
+            ))}
+          </div>
           <button className="btn btn-primary" onClick={() => { setNewDealStage('NEW_LEAD'); setShowNewDeal(true) }}>
             + New Deal
           </button>
         </div>
       </div>
 
+      {/* Stage funnel / distribution */}
+      <div style={{ padding: '0 24px 16px' }}>
+        <div style={{ display: 'flex', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '12px', overflow: 'hidden' }}>
+          {STAGES.map((stage, i) => {
+            const count = deals.filter(d => d.stage === stage.key).length
+            const pct   = deals.length > 0 ? Math.round(count / deals.length * 100) : 0
+            const rotten = deals.filter(d => d.stage === stage.key && isRotten(d)).length
+            return (
+              <div key={stage.key} style={{ flex: 1, padding: '12px 14px', borderLeft: i > 0 ? '1px solid var(--border)' : 'none', position: 'relative', paddingBottom: '16px' }}>
+                <div style={{ fontSize: '9.5px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.07em', color: stage.color, marginBottom: '5px', fontFamily: 'Outfit, sans-serif' }}>{stage.label}</div>
+                <div style={{ fontFamily: 'Fraunces, serif', fontSize: '22px', fontWeight: '300', color: 'var(--text-primary)', lineHeight: 1 }}>{count}</div>
+                <div style={{ fontSize: '10.5px', color: 'var(--text-muted)', marginTop: '3px', fontFamily: 'Outfit, sans-serif' }}>{pct}% of pipeline</div>
+                {rotten > 0 && (
+                  <div style={{ fontSize: '10px', color: 'var(--red)', fontWeight: '600', marginTop: '3px', fontFamily: 'Outfit, sans-serif' }}>
+                    {rotten} rotten ({count > 0 ? Math.round(rotten / count * 100) : 0}%)
+                  </div>
+                )}
+                <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: '3px', background: 'var(--border)' }}>
+                  <div style={{ height: '100%', width: `${pct * 2}%`, maxWidth: '100%', background: stage.color, opacity: 0.5 }} />
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
       {/* Kanban board */}
-      <div style={{ padding: '20px 24px', overflowX: 'auto' }}>
+      {view === 'kanban' && <div style={{ padding: '0 24px 20px', overflowX: 'auto' }}>
         <div className="kanban-board">
           {STAGES.map(stage => {
-            const stageDeals = filtered.filter(d => d.stage === stage.key)
-            const stageVal   = stageDeals.reduce((a, d) => a + (d.deal_value || 0), 0)
-            const isDragOver = dragOverStage === stage.key
+            const stageDeals   = filtered.filter(d => d.stage === stage.key)
+            const stageVal     = stageDeals.reduce((a, d) => a + (d.deal_value || 0), 0)
+            const rottenInStage = stageDeals.filter(isRotten).length
+            const isDragOver   = dragOverStage === stage.key
 
             return (
               <div key={stage.key} className="kanban-col"
@@ -147,6 +264,11 @@ export default function PipelinePage() {
                   <div>
                     <div className="kanban-col-title" style={{ color: stage.color }}>{stage.label}</div>
                     {stageVal > 0 && <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>{fmt(stageVal)}</div>}
+                    {rottenInStage > 0 && (
+                      <div style={{ fontSize: '10px', color: 'var(--red)', fontWeight: '600', marginTop: '2px', fontFamily: 'Outfit, sans-serif' }}>
+                        {rottenInStage} rotten ({Math.round(rottenInStage / stageDeals.length * 100)}%)
+                      </div>
+                    )}
                   </div>
                   <span style={{ background: stage.color+'22', color: stage.color, borderRadius: '12px', padding: '2px 8px', fontSize: '11.5px', fontWeight: '600' }}>
                     {stageDeals.length}
@@ -159,62 +281,161 @@ export default function PipelinePage() {
                   transition: 'all 0.15s' }}>
 
                   {stageDeals.map(deal => {
-                    const client     = deal.clients
-                    const isOverdue  = deal.next_activity_at && new Date(deal.next_activity_at) < new Date()
-                    const overdueDays = isOverdue ? daysOverdue(deal.next_activity_at!) : 0
-                    const isRotten   = overdueDays >= 5
+                    const client = deal.clients
+                    const sig    = getDealSignals(deal)
+                    const tc     = TEMP_COLORS[sig.temp]
 
                     return (
                       <div key={deal.id} className={`deal-card ${draggingId === deal.id ? 'dragging' : ''}`}
                         draggable
                         onDragStart={() => setDraggingId(deal.id)}
                         onDragEnd={() => { setDraggingId(null); setDragOverStage(null) }}
-                        style={{ borderLeft: isRotten ? '3px solid var(--red)' : undefined }}>
+                        style={{
+                          borderLeft: `3px solid ${tc}`,
+                          ...(sig.temp === 'hot' ? { boxShadow: `0 0 0 1.5px ${tc}28, var(--shadow-sm)` } : {}),
+                        }}>
 
-                        <Link href={`/deals/${deal.id}`} style={{ textDecoration: 'none' }}>
-                          <div style={{ fontFamily: 'Instrument Serif, serif', fontSize: '14.5px', color: 'var(--text-primary)', marginBottom: '4px', lineHeight: '1.3' }}>
+                        {/* Client row + temperature pill */}
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '7px', gap: '6px' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0, flex: 1 }}>
+                            <div style={{
+                              width: '22px', height: '22px', borderRadius: '50%', flexShrink: 0,
+                              background: stage.color + '18', border: `1.5px solid ${stage.color}50`,
+                              display: 'flex', alignItems: 'center', justifyContent: 'center',
+                              fontSize: '8.5px', fontWeight: '700', color: stage.color,
+                              fontFamily: 'Outfit, sans-serif', letterSpacing: '0.02em',
+                            }}>
+                              {client ? `${client.first_name[0]}${client.last_name?.[0] ?? ''}` : '?'}
+                            </div>
+                            <span style={{ fontSize: '12px', color: 'var(--text-secondary)', fontFamily: 'Outfit, sans-serif', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {client ? `${client.first_name} ${client.last_name}` : '—'}
+                            </span>
+                          </div>
+                          {/* Temperature pill */}
+                          <div style={{
+                            display: 'flex', alignItems: 'center', gap: '4px', flexShrink: 0,
+                            background: tc + '15', border: `1px solid ${tc}40`,
+                            borderRadius: '20px', padding: '2px 7px',
+                          }}>
+                            <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: tc, display: 'inline-block', flexShrink: 0 }} />
+                            <span style={{ fontSize: '9.5px', fontWeight: '700', color: tc, textTransform: 'uppercase', letterSpacing: '0.05em', fontFamily: 'Outfit, sans-serif' }}>
+                              {TEMP_LABELS[sig.temp]}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Title */}
+                        <Link href={`/deals/${deal.id}`} style={{ textDecoration: 'none', display: 'block', marginBottom: '9px' }}>
+                          <div style={{ fontFamily: 'Fraunces, serif', fontSize: '14px', fontWeight: '300', color: 'var(--text-primary)', lineHeight: '1.35', letterSpacing: '-0.01em' }}>
                             {deal.title}
                           </div>
                         </Link>
 
-                        {client && (
-                          <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '6px' }}>
-                            {client.first_name} {client.last_name}
+                        {/* Divider */}
+                        <div style={{ height: '1px', background: 'var(--border)', marginBottom: '9px' }} />
+
+                        {/* Value + tier */}
+                        {deal.deal_value > 0 && (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px' }}>
+                            <span style={{ fontSize: '14.5px', fontWeight: '700', color: 'var(--text-primary)', fontFamily: 'Outfit, sans-serif', letterSpacing: '-0.02em' }}>
+                              {fmt(deal.deal_value)}
+                            </span>
+                            {sig.valueTier === 'whale' && (
+                              <span style={{ fontSize: '9px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--gold)', background: 'var(--gold-light)', padding: '1px 6px', borderRadius: '4px', border: '1px solid var(--gold)', fontFamily: 'Outfit, sans-serif' }}>
+                                ◈ High Value
+                              </span>
+                            )}
+                            {sig.valueTier === 'high' && (
+                              <span style={{ fontSize: '9px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--green)', background: 'var(--green-light)', padding: '1px 6px', borderRadius: '4px', fontFamily: 'Outfit, sans-serif' }}>
+                                ◆ Strong
+                              </span>
+                            )}
                           </div>
                         )}
 
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
-                          {deal.deal_value ? (
-                            <span style={{ fontSize: '13px', fontWeight: '600', color: 'var(--green)' }}>{fmt(deal.deal_value)}</span>
-                          ) : <span />}
-                          {deal.departure_date && (() => {
-                            const daysUntil = Math.ceil((new Date(deal.departure_date).getTime() - Date.now()) / 86400000)
-                            const col = daysUntil < 30 ? 'var(--red)' : daysUntil < 90 ? 'var(--amber)' : 'var(--text-secondary)'
-                            return (
-                              <span style={{ fontSize: '11.5px', color: col, fontWeight: daysUntil < 90 ? '600' : '400' }}>
-                                ✈ {new Date(deal.departure_date+'T12:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+                        {/* Departure */}
+                        {deal.departure_date && sig.daysUntilDeparture !== null && (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '5px' }}>
+                            <span style={{
+                              fontSize: '11.5px', fontFamily: 'Outfit, sans-serif',
+                              fontWeight: sig.daysUntilDeparture > 0 && sig.daysUntilDeparture <= 90 ? '600' : '400',
+                              color: sig.daysUntilDeparture <= 0 ? 'var(--text-muted)'
+                                : sig.daysUntilDeparture <= 30 ? 'var(--red)'
+                                : sig.daysUntilDeparture <= 90 ? 'var(--amber)'
+                                : 'var(--text-muted)',
+                            }}>
+                              ✈ {sig.daysUntilDeparture <= 0
+                                ? 'Departed'
+                                : sig.daysUntilDeparture === 1 ? 'Tomorrow'
+                                : sig.daysUntilDeparture <= 14 ? `${sig.daysUntilDeparture}d away`
+                                : `${new Date(deal.departure_date + 'T12:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })} · ${sig.daysUntilDeparture}d`}
+                            </span>
+                          </div>
+                        )}
+
+                        {/* Activity status */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '9px' }}>
+                          {sig.isOverdue ? (
+                            <>
+                              <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: sig.overdueBy >= 5 ? 'var(--red)' : 'var(--amber)', display: 'inline-block', flexShrink: 0 }} />
+                              <span style={{ fontSize: '11.5px', fontWeight: '600', fontFamily: 'Outfit, sans-serif', color: sig.overdueBy >= 5 ? 'var(--red)' : 'var(--amber)' }}>
+                                {deal.next_activity_type ? (ACT_DISPLAY[deal.next_activity_type] ?? deal.next_activity_type) + ' · ' : ''}
+                                {sig.overdueBy === 0 ? 'due today' : `${sig.overdueBy}d overdue`}
                               </span>
-                            )
-                          })()}
+                            </>
+                          ) : deal.next_activity_at ? (
+                            <>
+                              <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'var(--text-muted)', display: 'inline-block', flexShrink: 0, opacity: 0.5 }} />
+                              <span style={{ fontSize: '11.5px', color: 'var(--text-secondary)', fontFamily: 'Outfit, sans-serif' }}>
+                                {deal.next_activity_type ? (ACT_DISPLAY[deal.next_activity_type] ?? deal.next_activity_type) + ' · ' : ''}
+                                {sig.daysUntilActivity === 0 ? 'today'
+                                  : sig.daysUntilActivity === 1 ? 'tomorrow'
+                                  : new Date(deal.next_activity_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
+                              </span>
+                            </>
+                          ) : (
+                            <>
+                              <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'var(--border-strong)', display: 'inline-block', flexShrink: 0 }} />
+                              <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontStyle: 'italic', fontFamily: 'Outfit, sans-serif' }}>No action scheduled</span>
+                            </>
+                          )}
                         </div>
 
-                        {isOverdue && (
-                          <div style={{ fontSize: '11px', color: isRotten ? 'var(--red)' : 'var(--amber)', fontWeight: '500', marginBottom: '6px' }}>
-                            {isRotten ? `🔴 ${overdueDays}d overdue` : `⚠ ${overdueDays}d overdue`}
-                          </div>
-                        )}
-
-                        <div style={{ marginTop: '8px', display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
+                        {/* Footer: source chip + quick-move buttons */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexWrap: 'wrap' }}>
+                          {deal.source && (
+                            <span style={{
+                              fontSize: '9.5px', color: 'var(--text-muted)', fontFamily: 'Outfit, sans-serif',
+                              background: 'var(--bg-tertiary)', border: '1px solid var(--border)',
+                              borderRadius: '4px', padding: '1px 5px', letterSpacing: '0.02em',
+                            }}>
+                              {deal.source}
+                            </span>
+                          )}
                           {STAGES.filter(s => s.key !== deal.stage).slice(0, 2).map(s => (
                             <button key={s.key}
                               onClick={e => { e.stopPropagation(); moveDeal(deal.id, s.key) }}
-                              style={{ fontSize: '10px', padding: '2px 7px', borderRadius: '4px', border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', transition: 'all 0.12s' }}
+                              style={{ fontSize: '9.5px', padding: '1px 6px', borderRadius: '4px', border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', transition: 'all 0.12s', fontFamily: 'Outfit, sans-serif' }}
                               onMouseEnter={e => { e.currentTarget.style.background = s.color+'22'; e.currentTarget.style.color = s.color; e.currentTarget.style.borderColor = s.color }}
                               onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-muted)'; e.currentTarget.style.borderColor = 'var(--border)' }}>
                               → {s.label}
                             </button>
                           ))}
                         </div>
+                        {/* Snooze row */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '3px', marginTop: '6px', paddingTop: '6px', borderTop: '1px solid var(--border)' }}>
+                          <span style={{ fontSize: '9.5px', color: 'var(--text-muted)', fontFamily: 'Outfit, sans-serif', marginRight: '2px' }}>Snooze:</span>
+                          {[1, 3, 7].map(d => (
+                            <button key={d}
+                              onClick={e => { e.stopPropagation(); snoozeDeal(deal.id, d) }}
+                              style={{ fontSize: '9.5px', padding: '1px 7px', borderRadius: '4px', border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', fontFamily: 'Outfit, sans-serif', transition: 'all 0.1s' }}
+                              onMouseEnter={e => { e.currentTarget.style.background = 'var(--accent-light)'; e.currentTarget.style.color = 'var(--accent)'; e.currentTarget.style.borderColor = 'var(--accent)' }}
+                              onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-muted)'; e.currentTarget.style.borderColor = 'var(--border)' }}>
+                              {d}d
+                            </button>
+                          ))}
+                        </div>
+
                       </div>
                     )
                   })}
@@ -229,7 +450,177 @@ export default function PipelinePage() {
             )
           })}
         </div>
-      </div>
+      </div>}
+
+      {/* List view */}
+      {view === 'list' && (
+        <div style={{ padding: '0 24px 24px' }}>
+          {/* Sort bar */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '14px' }}>
+            <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'Outfit, sans-serif' }}>Sort by:</span>
+            {([['created','Newest'],['value','Value ↓'],['departure','Departure']] as const).map(([key, label]) => (
+              <button key={key} onClick={() => setSort(key)} style={{
+                fontSize: '11.5px', padding: '3px 11px', borderRadius: '6px', border: '1px solid', cursor: 'pointer', fontFamily: 'Outfit, sans-serif', transition: 'all 0.12s',
+                borderColor: sort === key ? 'var(--accent)' : 'var(--border)',
+                background:  sort === key ? 'var(--accent-light)' : 'transparent',
+                color:       sort === key ? 'var(--accent)' : 'var(--text-muted)',
+              }}>{label}</button>
+            ))}
+          </div>
+          {/* Header row */}
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: '80px 145px 1fr 140px 110px 150px 150px',
+            gap: '12px', padding: '0 16px 8px',
+            borderBottom: '2px solid var(--border)',
+          }}>
+            {['Signal', 'Client', 'Deal', 'Stage', 'Value', 'Departure', 'Next Action'].map(h => (
+              <div key={h} style={{ fontSize: '10px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', fontFamily: 'Outfit, sans-serif' }}>{h}</div>
+            ))}
+          </div>
+
+          {filtered.length === 0 && (
+            <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '14px' }}>No deals match your search.</div>
+          )}
+
+          {sortedFiltered.map(deal => {
+            const client    = deal.clients
+            const sig       = getDealSignals(deal)
+            const tc        = TEMP_COLORS[sig.temp]
+            const stageInfo = STAGES.find(s => s.key === deal.stage)
+
+            return (
+              <div key={deal.id} style={{
+                display: 'grid',
+                gridTemplateColumns: '80px 145px 1fr 140px 110px 150px 150px',
+                gap: '12px', padding: '11px 16px',
+                borderLeft: `3px solid ${tc}`,
+                borderBottom: '1px solid var(--border)',
+                background: 'var(--surface)',
+                borderRadius: '0',
+                alignItems: 'center',
+                transition: 'background 0.1s',
+                marginBottom: '2px',
+                borderTopRightRadius: '8px', borderBottomRightRadius: '8px',
+              }}
+                onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-tertiary)')}
+                onMouseLeave={e => (e.currentTarget.style.background = 'var(--surface)')}
+              >
+
+                {/* Temperature pill */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '4px',
+                  background: tc + '15', border: `1px solid ${tc}40`,
+                  borderRadius: '20px', padding: '3px 8px', width: 'fit-content' }}>
+                  <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: tc, display: 'inline-block', flexShrink: 0 }} />
+                  <span style={{ fontSize: '9.5px', fontWeight: '700', color: tc, textTransform: 'uppercase', letterSpacing: '0.05em', fontFamily: 'Outfit, sans-serif' }}>
+                    {TEMP_LABELS[sig.temp]}
+                  </span>
+                </div>
+
+                {/* Client */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '7px', minWidth: 0 }}>
+                  <div style={{
+                    width: '26px', height: '26px', borderRadius: '50%', flexShrink: 0,
+                    background: (stageInfo?.color ?? '#888') + '18', border: `1.5px solid ${stageInfo?.color ?? '#888'}50`,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: '9px', fontWeight: '700', color: stageInfo?.color ?? 'var(--text-muted)',
+                    fontFamily: 'Outfit, sans-serif',
+                  }}>
+                    {client ? `${client.first_name[0]}${client.last_name?.[0] ?? ''}` : '?'}
+                  </div>
+                  <span style={{ fontSize: '12.5px', color: 'var(--text-secondary)', fontFamily: 'Outfit, sans-serif', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {client ? `${client.first_name} ${client.last_name}` : '—'}
+                  </span>
+                </div>
+
+                {/* Deal title */}
+                <Link href={`/deals/${deal.id}`} style={{ textDecoration: 'none', minWidth: 0 }}>
+                  <div style={{ fontFamily: 'Fraunces, serif', fontSize: '13.5px', fontWeight: '300', color: 'var(--text-primary)', letterSpacing: '-0.01em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {deal.title}
+                  </div>
+                  {deal.source && (
+                    <div style={{ fontSize: '10px', color: 'var(--text-muted)', fontFamily: 'Outfit, sans-serif', marginTop: '1px' }}>{deal.source}</div>
+                  )}
+                </Link>
+
+                {/* Stage — select for quick move */}
+                <select value={deal.stage} onChange={e => moveDeal(deal.id, e.target.value)}
+                  style={{
+                    fontSize: '11px', fontWeight: '600', padding: '4px 8px', borderRadius: '6px',
+                    border: `1.5px solid ${stageInfo?.color ?? 'var(--border)'}55`,
+                    background: (stageInfo?.color ?? '#888') + '15',
+                    color: stageInfo?.color ?? 'var(--text-primary)',
+                    cursor: 'pointer', fontFamily: 'Outfit, sans-serif',
+                    outline: 'none', width: '100%',
+                  }}>
+                  {STAGES.map(s => <option key={s.key} value={s.key}>{s.label}</option>)}
+                </select>
+
+                {/* Value */}
+                <div>
+                  {deal.deal_value > 0 ? (
+                    <>
+                      <div style={{ fontSize: '13.5px', fontWeight: '700', color: 'var(--text-primary)', fontFamily: 'Outfit, sans-serif', letterSpacing: '-0.02em' }}>
+                        {fmt(deal.deal_value)}
+                      </div>
+                      {sig.valueTier === 'whale' && (
+                        <div style={{ fontSize: '9px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--gold)', fontFamily: 'Outfit, sans-serif', marginTop: '1px' }}>◈ High Value</div>
+                      )}
+                      {sig.valueTier === 'high' && (
+                        <div style={{ fontSize: '9px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--green)', fontFamily: 'Outfit, sans-serif', marginTop: '1px' }}>◆ Strong</div>
+                      )}
+                    </>
+                  ) : <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>—</span>}
+                </div>
+
+                {/* Departure */}
+                <div style={{ fontSize: '11.5px', fontFamily: 'Outfit, sans-serif',
+                  fontWeight: sig.daysUntilDeparture !== null && sig.daysUntilDeparture > 0 && sig.daysUntilDeparture <= 90 ? '600' : '400',
+                  color: !sig.daysUntilDeparture || sig.daysUntilDeparture <= 0 ? 'var(--text-muted)'
+                    : sig.daysUntilDeparture <= 30 ? 'var(--red)'
+                    : sig.daysUntilDeparture <= 90 ? 'var(--amber)'
+                    : 'var(--text-muted)',
+                }}>
+                  {sig.daysUntilDeparture === null ? '—'
+                    : sig.daysUntilDeparture <= 0 ? 'Departed'
+                    : sig.daysUntilDeparture === 1 ? '✈ Tomorrow'
+                    : sig.daysUntilDeparture <= 14 ? `✈ ${sig.daysUntilDeparture}d away`
+                    : `✈ ${new Date(deal.departure_date + 'T12:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}`}
+                </div>
+
+                {/* Activity */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                  {sig.isOverdue ? (
+                    <>
+                      <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: sig.overdueBy >= 5 ? 'var(--red)' : 'var(--amber)', display: 'inline-block', flexShrink: 0 }} />
+                      <span style={{ fontSize: '11.5px', fontWeight: '600', fontFamily: 'Outfit, sans-serif', color: sig.overdueBy >= 5 ? 'var(--red)' : 'var(--amber)' }}>
+                        {deal.next_activity_type ? (ACT_DISPLAY[deal.next_activity_type] ?? deal.next_activity_type) + ' · ' : ''}
+                        {sig.overdueBy === 0 ? 'due today' : `${sig.overdueBy}d overdue`}
+                      </span>
+                    </>
+                  ) : deal.next_activity_at ? (
+                    <>
+                      <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'var(--text-muted)', display: 'inline-block', flexShrink: 0, opacity: 0.5 }} />
+                      <span style={{ fontSize: '11.5px', color: 'var(--text-secondary)', fontFamily: 'Outfit, sans-serif' }}>
+                        {deal.next_activity_type ? (ACT_DISPLAY[deal.next_activity_type] ?? deal.next_activity_type) + ' · ' : ''}
+                        {sig.daysUntilActivity === 0 ? 'today'
+                          : sig.daysUntilActivity === 1 ? 'tomorrow'
+                          : new Date(deal.next_activity_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'var(--border-strong)', display: 'inline-block', flexShrink: 0 }} />
+                      <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontStyle: 'italic', fontFamily: 'Outfit, sans-serif' }}>None scheduled</span>
+                    </>
+                  )}
+                </div>
+
+              </div>
+            )
+          })}
+        </div>
+      )}
 
       {showNewDeal && (
         <NewDealModal
@@ -269,6 +660,11 @@ function NewDealModal({ defaultStage, onClose, onSaved }: {
   const [departureDate, setDeparture]   = useState('')
   const [source, setSource]             = useState('Website')
   const [stage, setStage]               = useState(defaultStage)
+  // Qualification
+  const [adults, setAdults]             = useState('2')
+  const [children, setChildren]         = useState('0')
+  const [travelType, setTravelType]     = useState('')
+  const [budgetConf, setBudgetConf]     = useState('TBC')
 
   const [saving, setSaving] = useState(false)
   const [error, setError]   = useState('')
@@ -339,15 +735,29 @@ function NewDealModal({ defaultStage, onClose, onSaved }: {
       }
 
       // Create deal
-      const { error: dErr } = await supabase.from('deals').insert({
+      const { data: newDeal, error: dErr } = await supabase.from('deals').insert({
         title:          title.trim(),
         client_id:      clientId,
         stage,
         deal_value:     dealValue ? parseFloat(dealValue) : null,
         departure_date: departureDate || null,
         source,
-      })
-      if (dErr) { setError('Failed to create deal'); setSaving(false); return }
+      }).select('id').single()
+      if (dErr || !newDeal) { setError('Failed to create deal'); setSaving(false); return }
+      // Save qualification as an activity note
+      const qualParts = [
+        `Adults: ${adults}`,
+        parseInt(children) > 0 ? `Children: ${children}` : null,
+        travelType ? `Type: ${travelType}` : null,
+        `Budget: ${budgetConf}`,
+      ].filter(Boolean)
+      if (qualParts.length) {
+        await supabase.from('activities').insert({
+          deal_id: newDeal.id,
+          activity_type: 'NOTE',
+          notes: `Qualification — ${qualParts.join(' · ')}`,
+        })
+      }
       onSaved()
     } catch {
       setError('Something went wrong')
@@ -499,7 +909,39 @@ function NewDealModal({ defaultStage, onClose, onSaved }: {
           </div>
         </div>
 
-        <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end', marginTop: '22px', paddingTop: '16px', borderTop: '1px solid var(--border)' }}>
+        {/* Lead qualification */}
+        <div style={{ marginTop: '16px', padding: '14px', background: 'var(--bg-tertiary)', borderRadius: '10px', border: '1px solid var(--border)' }}>
+          <div style={{ fontSize: '11px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.07em', color: 'var(--text-muted)', marginBottom: '12px', fontFamily: 'Outfit, sans-serif' }}>
+            Lead Qualification
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: '10px' }}>
+            <div>
+              <label className="label">Adults</label>
+              <input className="input" type="number" min="1" max="20" value={adults} onChange={e => setAdults(e.target.value)} />
+            </div>
+            <div>
+              <label className="label">Children</label>
+              <input className="input" type="number" min="0" max="10" value={children} onChange={e => setChildren(e.target.value)} />
+            </div>
+            <div>
+              <label className="label">Travel Type</label>
+              <select className="input" value={travelType} onChange={e => setTravelType(e.target.value)}>
+                <option value="">Unknown</option>
+                {['Beach Escape','Honeymoon','Anniversary','Family','Group','Luxury','Other'].map(t => <option key={t}>{t}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="label">Budget</label>
+              <select className="input" value={budgetConf} onChange={e => setBudgetConf(e.target.value)}>
+                <option>TBC</option>
+                <option>Confirmed</option>
+                <option>Approx</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end', marginTop: '18px', paddingTop: '16px', borderTop: '1px solid var(--border)' }}>
           <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
           <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
             {saving ? 'Saving…' : 'Create Deal'}

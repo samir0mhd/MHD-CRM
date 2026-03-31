@@ -18,6 +18,7 @@ const NAV = [
     items: [
       { href: '/pipeline',   label: 'Pipeline',        icon: '⬡' },
       { href: '/deals',      label: 'All Deals',        icon: '≡' },
+      { href: '/lost',       label: 'Lost Deals',       icon: '◌' },
       { href: '/quotes/new', label: 'Quote Builder',    icon: '◇' },
       { href: '/followups',  label: 'Follow-ups',       icon: '✉' },
       { href: '/templates',  label: 'Email Templates',  icon: '◫' },
