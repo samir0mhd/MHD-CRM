@@ -1,12 +1,13 @@
-import { Resend } from 'resend'
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
+import { Resend } from 'resend'
 
-const resend = new Resend(process.env.RESEND_API_KEY)
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 )
+
+const resend = new Resend(process.env.RESEND_API_KEY!)
 
 export async function POST(req: NextRequest) {
   try {
@@ -16,25 +17,27 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 })
     }
 
-    // Send via Resend
+    // Send the email via Resend
     const { data, error } = await resend.emails.send({
-      from: 'Samir Abattouy <onboarding@resend.dev>',
+      from: 'noreply@mhd-crm.com', // Replace with your verified domain
       to,
       subject,
       html: body,
     })
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 })
+      console.error('Resend error:', error)
+      return NextResponse.json({ error: 'Failed to send email' }, { status: 500 })
     }
 
-    // Mark as sent in DB
+    console.log(`[Follow-up] Sent to: ${to} | Subject: ${subject}`)
+
     await supabase
       .from('follow_up_sequences')
       .update({ status: 'sent', sent_at: new Date().toISOString() })
       .eq('id', follow_up_id)
 
-    return NextResponse.json({ success: true, id: data?.id })
+    return NextResponse.json({ success: true, note: 'Email sent successfully' })
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 })
   }

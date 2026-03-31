@@ -1,3 +1,4 @@
+'use client'
 
 import { useEffect, useState, useRef } from 'react'
 import { supabase } from '@/lib/supabase'
@@ -52,6 +53,8 @@ export default function HotelsPage() {
 
   // Form state
   const [form, setForm] = useState<Partial<Hotel & { room_types_text: string; meal_plans_text: string; highlights_text: string }>>({})
+  const [isNew, setIsNew] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState<number|null>(null)
 
   useEffect(() => { load() }, [])
 
@@ -75,11 +78,19 @@ export default function HotelsPage() {
       meal_plans_text:  (hotel.meal_plans  || []).join('\n'),
       highlights_text:  (hotel.highlights  || []).join('\n'),
     })
+    setIsNew(false)
     setEditing(hotel)
+  }
+
+  function openNew() {
+    setForm({ room_types_text: '', meal_plans_text: '', highlights_text: '' })
+    setIsNew(true)
+    setEditing({} as Hotel)
   }
 
   async function handleSave() {
     if (!editing) return
+    if (isNew && !(form.name?.trim())) { showToast('Hotel name is required', 'error'); return }
     setSaving(true)
     const { room_types_text, meal_plans_text, highlights_text, ...rest } = form
     const payload = {
@@ -88,11 +99,25 @@ export default function HotelsPage() {
       meal_plans:  meal_plans_text ? meal_plans_text.split('\n').map(s => s.trim()).filter(Boolean) : [],
       highlights:  highlights_text ? highlights_text.split('\n').map(s => s.trim()).filter(Boolean) : [],
     }
-    const { error } = await supabase.from('hotel_list').update(payload).eq('id', editing.id)
-    if (error) { showToast('Failed: ' + error.message, 'error'); setSaving(false); return }
-    showToast('Hotel updated ✓')
+    if (isNew) {
+      const { error } = await supabase.from('hotel_list').insert(payload)
+      if (error) { showToast('Failed: ' + error.message, 'error'); setSaving(false); return }
+      showToast('Hotel added ✓')
+    } else {
+      const { error } = await supabase.from('hotel_list').update(payload).eq('id', editing.id)
+      if (error) { showToast('Failed: ' + error.message, 'error'); setSaving(false); return }
+      showToast('Hotel updated ✓')
+    }
     setSaving(false)
     setEditing(null)
+    setIsNew(false)
+    load()
+  }
+
+  async function handleDelete(id: number) {
+    await supabase.from('hotel_list').delete().eq('id', id)
+    showToast('Hotel deleted')
+    setConfirmDelete(null)
     load()
   }
 
@@ -112,16 +137,16 @@ export default function HotelsPage() {
       <div>
         <div className="page-header">
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <button onClick={() => setEditing(null)} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: '13px', cursor: 'pointer', fontFamily: 'Outfit,sans-serif' }}>← Hotels</button>
+            <button onClick={() => { setEditing(null); setIsNew(false) }} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: '13px', cursor: 'pointer', fontFamily: 'Outfit,sans-serif' }}>← Hotels</button>
             <div style={{ width: '1px', height: '20px', background: 'var(--border)' }} />
             <div>
-              <div className="page-title">{editing.name}</div>
-              <div style={{ fontSize: '12.5px', color: 'var(--text-muted)' }}>Edit hotel profile</div>
+              <div className="page-title">{isNew ? 'Add Hotel' : editing.name}</div>
+              <div style={{ fontSize: '12.5px', color: 'var(--text-muted)' }}>{isNew ? 'Create a new hotel profile' : 'Edit hotel profile'}</div>
             </div>
           </div>
           <div style={{ display: 'flex', gap: '8px' }}>
-            <button className="btn btn-secondary" onClick={() => setEditing(null)}>Cancel</button>
-            <button className="btn btn-cta" onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : 'Save Profile'}</button>
+            <button className="btn btn-secondary" onClick={() => { setEditing(null); setIsNew(false) }}>Cancel</button>
+            <button className="btn btn-cta" onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : isNew ? 'Add Hotel' : 'Save Profile'}</button>
           </div>
         </div>
 
@@ -132,6 +157,12 @@ export default function HotelsPage() {
             <div className="card" style={{ padding: '20px 22px', gridColumn: '1/-1' }}>
               <div style={{ fontFamily: 'Fraunces,serif', fontSize: '17px', fontWeight: '300', marginBottom: '16px' }}>Basic Information</div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                {isNew && (
+                  <div style={{ gridColumn: '1/-1' }}>
+                    <label className="label">Hotel Name *</label>
+                    <input className="input" placeholder="e.g. One&Only Le Saint Geran" value={form.name || ''} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} autoFocus />
+                  </div>
+                )}
                 <div>
                   <label className="label">Star Rating</label>
                   <select className="input" value={form.star_rating || ''} onChange={e => setForm(p => ({ ...p, star_rating: e.target.value ? Number(e.target.value) : null }))}>
@@ -218,8 +249,8 @@ export default function HotelsPage() {
           </div>
 
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '8px' }}>
-            <button className="btn btn-secondary" onClick={() => setEditing(null)}>Cancel</button>
-            <button className="btn btn-cta" onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : 'Save Profile'}</button>
+            <button className="btn btn-secondary" onClick={() => { setEditing(null); setIsNew(false) }}>Cancel</button>
+            <button className="btn btn-cta" onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : isNew ? 'Add Hotel' : 'Save Profile'}</button>
           </div>
         </div>
 
@@ -238,6 +269,7 @@ export default function HotelsPage() {
             {hotels.length} hotels · {withProfile.length} with profiles · <span style={{ color: 'var(--amber)' }}>{withoutProfile} need info</span>
           </div>
         </div>
+        <button className="btn btn-cta" onClick={openNew}>+ Add Hotel</button>
       </div>
 
       <div className="page-body">
@@ -263,32 +295,47 @@ export default function HotelsPage() {
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '10px' }}>
             {filtered.map(h => {
               const hasProfile = !!(h.description || h.star_rating || h.room_types?.length)
+              const isConfirming = confirmDelete?.id === h.id
               return (
-                <div key={h.id} className="card" style={{ padding: '16px 18px', cursor: 'pointer', transition: 'all 0.14s', borderLeft: `3px solid ${hasProfile ? 'var(--green)' : 'var(--border)'}` }}
-                  onClick={() => openEdit(h)}
-                  onMouseEnter={e => (e.currentTarget.style.boxShadow = 'var(--shadow-md)')}
-                  onMouseLeave={e => (e.currentTarget.style.boxShadow = 'var(--shadow-sm)')}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '6px' }}>
-                    <div style={{ fontFamily: 'Fraunces,serif', fontSize: '15px', fontWeight: '300', color: 'var(--text-primary)', lineHeight: '1.3', flex: 1, marginRight: '8px' }}>{h.name}</div>
-                    <Stars rating={h.star_rating} />
+                <div key={h.id} className="card" style={{ padding:'16px 18px', transition:'all 0.14s', borderLeft:`3px solid ${hasProfile?'var(--green)':'var(--border)'}` }}
+                  onMouseEnter={e=>(e.currentTarget.style.boxShadow='var(--shadow-md)')}
+                  onMouseLeave={e=>(e.currentTarget.style.boxShadow='var(--shadow-sm)')}>
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:'6px' }}>
+                    <div style={{ fontFamily:'Fraunces,serif', fontSize:'15px', fontWeight:'300', color:'var(--text-primary)', lineHeight:'1.3', flex:1, marginRight:'8px', cursor:'pointer' }}
+                      onClick={() => openEdit(h)}>{h.name}</div>
+                    <Stars rating={h.star_rating}/>
                   </div>
-                  {h.region && <div style={{ fontSize: '11.5px', color: 'var(--accent-mid)', fontWeight: '500', marginBottom: '4px' }}>📍 {h.region}</div>}
+                  {h.region && <div style={{ fontSize:'11.5px', color:'var(--accent-mid)', fontWeight:'500', marginBottom:'4px' }}>📍 {h.region}</div>}
                   {h.highlights?.length ? (
-                    <div style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: '1.6' }}>
-                      {h.highlights.slice(0, 2).map((hi, i) => <div key={i}>· {hi}</div>)}
-                      {h.highlights.length > 2 && <div style={{ color: 'var(--accent)', fontSize: '11px' }}>+{h.highlights.length - 2} more</div>}
+                    <div style={{ fontSize:'12px', color:'var(--text-muted)', lineHeight:'1.6', marginBottom:'8px' }}>
+                      {h.highlights.slice(0,2).map((hi,i)=><div key={i}>· {hi}</div>)}
+                      {h.highlights.length>2&&<div style={{ color:'var(--accent)', fontSize:'11px' }}>+{h.highlights.length-2} more</div>}
                     </div>
                   ) : h.description ? (
-                    <div style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: '1.5' }}>{h.description.slice(0, 100)}{h.description.length > 100 ? '…' : ''}</div>
+                    <div style={{ fontSize:'12px', color:'var(--text-muted)', lineHeight:'1.5', marginBottom:'8px' }}>{h.description.slice(0,100)}{h.description.length>100?'…':''}</div>
                   ) : (
-                    <div style={{ fontSize: '12px', color: 'var(--text-muted)', fontStyle: 'italic' }}>No profile yet — click to add</div>
+                    <div style={{ fontSize:'12px', color:'var(--text-muted)', fontStyle:'italic', marginBottom:'8px' }}>No profile yet — click Edit to add</div>
                   )}
-                  <div style={{ display: 'flex', gap: '6px', marginTop: '8px', flexWrap: 'wrap' }}>
-                    {h.room_types?.length && <span style={{ fontSize: '10.5px', color: 'var(--blue)', background: 'var(--blue-light)', padding: '2px 7px', borderRadius: '4px' }}>{h.room_types.length} room types</span>}
-                    {h.meal_plans?.length && <span style={{ fontSize: '10.5px', color: 'var(--teal)', background: 'var(--teal-light)', padding: '2px 7px', borderRadius: '4px' }}>{h.meal_plans.length} meal plans</span>}
-                    {h.website_url && <span style={{ fontSize: '10.5px', color: 'var(--text-muted)', background: 'var(--bg-tertiary)', padding: '2px 7px', borderRadius: '4px' }}>🔗 Website</span>}
-                    {h.brochure_url && <span style={{ fontSize: '10.5px', color: 'var(--text-muted)', background: 'var(--bg-tertiary)', padding: '2px 7px', borderRadius: '4px' }}>📄 Brochure</span>}
+                  <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', marginBottom:'10px' }}>
+                    {h.room_types?.length&&<span style={{ fontSize:'10.5px', color:'var(--blue)', background:'var(--blue-light)', padding:'2px 7px', borderRadius:'4px' }}>{h.room_types.length} room types</span>}
+                    {h.meal_plans?.length&&<span style={{ fontSize:'10.5px', color:'var(--teal)', background:'var(--teal-light)', padding:'2px 7px', borderRadius:'4px' }}>{h.meal_plans.length} meal plans</span>}
+                    {h.website_url&&<span style={{ fontSize:'10.5px', color:'var(--text-muted)', background:'var(--bg-tertiary)', padding:'2px 7px', borderRadius:'4px' }}>🔗 Website</span>}
+                    {h.brochure_url&&<span style={{ fontSize:'10.5px', color:'var(--text-muted)', background:'var(--bg-tertiary)', padding:'2px 7px', borderRadius:'4px' }}>📄 Brochure</span>}
                   </div>
+
+                  {/* Actions */}
+                  {isConfirming ? (
+                    <div style={{ display:'flex', gap:'6px', alignItems:'center', padding:'8px 10px', background:'var(--red-light)', borderRadius:'8px' }}>
+                      <span style={{ fontSize:'12px', color:'var(--red)', flex:1 }}>Delete this hotel?</span>
+                      <button className="btn btn-danger btn-xs" onClick={()=>handleDelete(h)}>Yes, delete</button>
+                      <button className="btn btn-ghost btn-xs" onClick={()=>setConfirmDelete(null)}>Cancel</button>
+                    </div>
+                  ) : (
+                    <div style={{ display:'flex', gap:'6px', borderTop:'1px solid var(--border)', paddingTop:'10px' }}>
+                      <button className="btn btn-secondary btn-xs" onClick={()=>openEdit(h)}>✏ Edit</button>
+                      <button className="btn btn-ghost btn-xs" style={{ color:'var(--red)' }} onClick={()=>setConfirmDelete(h)}>Delete</button>
+                    </div>
+                  )}
                 </div>
               )
             })}

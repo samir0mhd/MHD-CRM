@@ -61,6 +61,8 @@ export default function AllDealsPage() {
   const [activeOnly, setActiveOnly]     = useState(true)
   const [sortBy, setSortBy]             = useState<'created_at' | 'deal_value' | 'departure_date'>('created_at')
   const [sortDir, setSortDir]           = useState<'desc' | 'asc'>('desc')
+  const [reopening, setReopening]       = useState<number | null>(null)
+  const [toast, setToast]               = useState<string | null>(null)
 
   useEffect(() => { loadDeals() }, [])
 
@@ -72,6 +74,20 @@ export default function AllDealsPage() {
       .order('created_at', { ascending: false })
     setDeals(data || [])
     setLoading(false)
+  }
+
+  async function reopenDeal(deal: Deal) {
+    setReopening(deal.id)
+    await supabase.from('deals').update({ stage: 'NEW_LEAD', lost_reason: null }).eq('id', deal.id)
+    await supabase.from('activities').insert({
+      deal_id: deal.id,
+      activity_type: 'STAGE_CHANGE',
+      notes: 'Deal reopened — moved back to New Lead',
+    })
+    setToast(`${deal.title} reopened ✓`)
+    setTimeout(() => setToast(null), 3000)
+    setReopening(null)
+    loadDeals()
   }
 
   function toggleSort(field: typeof sortBy) {
@@ -113,6 +129,15 @@ export default function AllDealsPage() {
   const convRate      = deals.length > 0 ? ((allBooked.length / deals.length) * 100).toFixed(1) : '0'
   const filteredVal   = filtered.reduce((a, d) => a + (d.deal_value || 0), 0)
   const filteredAvg   = filtered.length > 0 ? Math.round(filteredVal / filtered.length) : 0
+
+  // Lost reasons breakdown
+  const lostReasonMap: Record<string, number> = {}
+  allLost.forEach(d => {
+    const r = d.lost_reason?.trim()
+    if (r) lostReasonMap[r] = (lostReasonMap[r] || 0) + 1
+  })
+  const lostReasons  = Object.entries(lostReasonMap).sort((a, b) => b[1] - a[1])
+  const maxLostCount = lostReasons[0]?.[1] || 1
 
   const SortIcon = ({ field }: { field: typeof sortBy }) => (
     <span style={{ marginLeft: '4px', opacity: sortBy === field ? 1 : 0.3, fontSize: '10px' }}>
@@ -213,6 +238,26 @@ export default function AllDealsPage() {
             {' '}shown with coloured border
           </span>}
         </div>
+
+        {/* Lost reasons — only shown when Lost filter is active */}
+        {stageFilter === 'LOST' && lostReasons.length > 0 && (
+          <div className="card" style={{ padding: '18px 20px', marginBottom: '16px' }}>
+            <div style={{ fontFamily: 'Instrument Serif, serif', fontSize: '17px', marginBottom: '14px' }}>Lost Reasons</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              {lostReasons.map(([reason, count]) => (
+                <div key={reason}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', marginBottom: '4px' }}>
+                    <span style={{ color: 'var(--text-primary)' }}>{reason}</span>
+                    <span style={{ color: 'var(--red)', fontWeight: '600' }}>{count} deal{count !== 1 ? 's' : ''}</span>
+                  </div>
+                  <div style={{ height: '5px', background: 'var(--border)', borderRadius: '3px', overflow: 'hidden' }}>
+                    <div style={{ height: '100%', width: `${(count / maxLostCount) * 100}%`, background: 'var(--red)', opacity: 0.6, borderRadius: '3px' }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Table */}
         {filtered.length === 0 ? (
@@ -362,7 +407,14 @@ export default function AllDealsPage() {
 
                       {/* Action */}
                       <td style={{ padding: '12px 14px' }}>
-                        {isBooked && bookingRef ? (
+                        {isLost ? (
+                          <button
+                            onClick={e => { e.stopPropagation(); reopenDeal(deal) }}
+                            disabled={reopening === deal.id}
+                            style={{ padding: '4px 10px', borderRadius: '6px', border: '1.5px solid var(--green)', background: 'var(--green-light)', color: 'var(--green)', fontSize: '11.5px', cursor: 'pointer', fontFamily: 'Outfit, sans-serif', fontWeight: '600', whiteSpace: 'nowrap' }}>
+                            {reopening === deal.id ? '…' : '↩ Reopen'}
+                          </button>
+                        ) : isBooked && bookingRef ? (
                           <Link href="/bookings" onClick={e => e.stopPropagation()}
                             style={{ fontSize: '11.5px', color: 'var(--green)', textDecoration: 'none', fontWeight: '500', whiteSpace: 'nowrap' }}>
                             {bookingRef} →
@@ -393,6 +445,8 @@ export default function AllDealsPage() {
           </div>
         )}
       </div>
+
+      {toast && <div className="toast success">{toast}</div>}
     </div>
   )
 }

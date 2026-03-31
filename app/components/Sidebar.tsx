@@ -8,8 +8,9 @@ const NAV = [
   {
     section: 'Overview',
     items: [
-      { href: '/',      label: 'Dashboard',       icon: '◈' },
-      { href: '/today', label: "Today's Actions",  icon: '◎' },
+      { href: '/',        label: 'Dashboard',       icon: '◈' },
+      { href: '/today',   label: "Today's Actions",  icon: '◎' },
+      { href: '/reports', label: 'Reports',          icon: '📊' },
     ],
   },
   {

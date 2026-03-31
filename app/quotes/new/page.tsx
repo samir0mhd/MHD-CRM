@@ -20,7 +20,7 @@ const CONTACT = {
 }
 
 // ── TYPES ─────────────────────────────────────────────────
-type FlightLeg  = { id:string; date:string; depart_time:string; checkin_time:string; arrival_time:string; airline:string; from:string; to:string; cabin:string; overnight:boolean }
+type FlightLeg  = { id:string; date:string; depart_time:string; checkin_time:string; arrival_time:string; airline:string; from:string; to:string; cabin:string; overnight:boolean; flight_number:string }
 type ExtraItem  = { id:string; label:string; net:number }
 type DealInfo   = { id:number; title:string; departure_date:string|null; clients?:{ first_name:string; last_name:string; email?:string; phone?:string } }
 
@@ -48,7 +48,7 @@ function genRef(initials:string, count:number) {
   return `${d}${m}${y}${(initials||'SA').toUpperCase()}${String(count+1).padStart(2,'0')}`
 }
 function newLeg(dir:'out'|'ret'|'in'): FlightLeg {
-  return { id:uid(), date:'', depart_time:'', checkin_time:'', arrival_time:'', airline:'Air Mauritius', from:dir==='out'?'LGW':'MRU', to:dir==='out'?'MRU':'LGW', cabin:'Economy', overnight:false }
+  return { id:uid(), date:'', depart_time:'', checkin_time:'', arrival_time:'', airline:'Air Mauritius', from:dir==='out'?'LGW':'MRU', to:dir==='out'?'MRU':'LGW', cabin:'Economy', overnight:false, flight_number:'' }
 }
 function addDays(dateStr:string, days:number): string {
   if (!dateStr) return ''
@@ -137,7 +137,8 @@ function LegRow({leg,legs,setLegs,canRemove}:{leg:FlightLeg;legs:FlightLeg[];set
   const upd=(field:keyof FlightLeg,val:any)=>setLegs(legs.map(l=>l.id===leg.id?{...l,[field]:val}:l))
   return(
     <div style={{background:'var(--bg-tertiary)',border:'1px solid var(--border)',borderRadius:'10px',padding:'12px 14px',marginBottom:'8px'}}>
-      <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:'8px',marginBottom:'8px'}}>
+      <div style={{display:'grid',gridTemplateColumns:'1fr repeat(4,1fr)',gap:'8px',marginBottom:'8px'}}>
+        <div><label className="label">Flight No.</label><input className="input" placeholder="MK053" value={leg.flight_number||''} onChange={e=>upd('flight_number',e.target.value)} style={{fontFamily:'monospace',textTransform:'uppercase'}}/></div>
         <div><label className="label">Date</label><input className="input" type="date" value={leg.date} onChange={e=>upd('date',e.target.value)}/></div>
         <div><label className="label">Departs</label><input className="input" placeholder="16:00" maxLength={5} value={leg.depart_time} onChange={e=>upd('depart_time',e.target.value)} style={{fontFamily:'monospace',textAlign:'center'}}/></div>
         <div><label className="label">Check-in by</label><input className="input" placeholder="13:00" maxLength={5} value={leg.checkin_time} onChange={e=>upd('checkin_time',e.target.value)} style={{fontFamily:'monospace',textAlign:'center'}}/></div>
@@ -174,9 +175,28 @@ function HotelOptionPanel({option,index,totalOptions,onChange,onRemove,onDuplica
   const sellN=parseFloat(option.sellPrice)||0, profitN=parseFloat(option.profit)||0
   const marginN=sellN>0?(profitN/sellN)*100:(parseFloat(option.margin)||0)
 
-  function onSell(v:string){ const sell=parseFloat(v)||0,mg=parseFloat(option.margin)||0; onChange({...option,sellPrice:v,profit:sell>0&&mg>0?((sell*mg)/100).toFixed(2):option.profit}) }
-  function onMargin(v:string){ const sell=parseFloat(option.sellPrice)||0,mg=parseFloat(v)||0; if(sell>0&&mg>0)onChange({...option,margin:v,profit:((sell*mg)/100).toFixed(2)}); else if(totalNet>0&&mg>0){const s=totalNet/(1-mg/100);onChange({...option,margin:v,sellPrice:s.toFixed(2),profit:(s*mg/100).toFixed(2)})}else onChange({...option,margin:v}) }
-  function onProfit(v:string){ const sell=parseFloat(option.sellPrice)||0,pr=parseFloat(v)||0; onChange({...option,profit:v,margin:sell>0&&pr>0?((pr/sell)*100).toFixed(1):option.margin}) }
+  function onSell(v:string){
+    const sell=parseFloat(v)||0
+    const mg=parseFloat(option.margin)||0
+    const pr=parseFloat(option.profit)||0
+    if(sell>0&&mg>0) onChange({...option,sellPrice:v,profit:((sell*mg)/100).toFixed(2)})
+    else if(sell>0&&pr>0) onChange({...option,sellPrice:v,margin:((pr/sell)*100).toFixed(1)})
+    else onChange({...option,sellPrice:v})
+  }
+  function onMargin(v:string){
+    const sell=parseFloat(option.sellPrice)||0
+    const mg=parseFloat(v)||0
+    if(sell>0&&mg>0) onChange({...option,margin:v,profit:((sell*mg)/100).toFixed(2)})
+    else if(totalNet>0&&mg>0){const s=totalNet/(1-mg/100);onChange({...option,margin:v,sellPrice:s.toFixed(2),profit:(s*mg/100).toFixed(2)})}
+    else onChange({...option,margin:v})
+  }
+  function onProfit(v:string){
+    const sell=parseFloat(option.sellPrice)||0
+    const pr=parseFloat(v)||0
+    if(sell>0&&pr>0) onChange({...option,profit:v,margin:((pr/sell)*100).toFixed(1)})
+    else if(totalNet>0&&pr>0){const s=totalNet+pr;onChange({...option,profit:v,sellPrice:s.toFixed(2),margin:((pr/s)*100).toFixed(1)})}
+    else onChange({...option,profit:v})
+  }
 
   const COLORS=['#8b5cf6','#3b82f6','#10b981','#f59e0b','#ec4899']
   const color=COLORS[index%COLORS.length]
@@ -204,8 +224,32 @@ function HotelOptionPanel({option,index,totalOptions,onChange,onRemove,onDuplica
             <div style={{gridColumn:'1/-1'}}><label className="label">Hotel Name *</label><DBSearch table="hotel_list" value={option.hotel} onChange={v=>upd('hotel',v)} placeholder="Search or type hotel name…"/></div>
             <div style={{gridColumn:'1/-1'}}><label className="label">Room Type</label><input className="input" placeholder="e.g. Deluxe Ocean Suite…" value={option.roomType} onChange={e=>upd('roomType',e.target.value)}/></div>
             <div><label className="label">Meal Plan</label><DBSearch table="meal_plan_list" value={option.boardBasis} onChange={v=>upd('boardBasis',v)} placeholder="Search meal plan…"/></div>
-            <div><label className="label">Nights</label><input className="input" type="number" min="1" value={option.nights} onChange={e=>upd('nights',e.target.value)}/></div>
-            <div><label className="label">Check-in Date</label><input className="input" type="date" value={option.checkinDate} onChange={e=>upd('checkinDate',e.target.value)}/></div>
+            <div><label className="label">Nights</label><input className="input" type="number" min="1" value={option.nights} onChange={e=>{
+              const nights=e.target.value
+              upd('nights',nights)
+              // Auto-populate return flight date
+              if(option.checkinDate&&nights){
+                const retDate=new Date(option.checkinDate+'T12:00')
+                retDate.setDate(retDate.getDate()+parseInt(nights)||0)
+                const retStr=retDate.toISOString().split('T')[0]
+                const updatedRetLegs=option.retLegs.map((l,i)=>i===0&&!l.date?{...l,date:retStr}:l)
+                onChange({...option,nights,retLegs:updatedRetLegs})
+              }
+            }}/></div>
+            <div><label className="label">Check-in Date</label><input className="input" type="date" value={option.checkinDate} onChange={e=>{
+              const checkin=e.target.value
+              // Auto-populate outbound flight date if empty
+              const updatedOutLegs=option.outLegs.map((l,i)=>i===0&&!l.date?{...l,date:checkin}:l)
+              // Auto-populate return flight date if nights set
+              let updatedRetLegs=option.retLegs
+              if(checkin&&option.nights){
+                const retDate=new Date(checkin+'T12:00')
+                retDate.setDate(retDate.getDate()+(parseInt(option.nights)||0))
+                const retStr=retDate.toISOString().split('T')[0]
+                updatedRetLegs=option.retLegs.map((l,i)=>i===0&&!l.date?{...l,date:retStr}:l)
+              }
+              onChange({...option,checkinDate:checkin,outLegs:updatedOutLegs,retLegs:updatedRetLegs})
+            }}/></div>
             <div style={{display:'flex',flexDirection:'column',justifyContent:'flex-end',paddingBottom:'4px'}}>
               <label style={{display:'flex',alignItems:'center',gap:'8px',cursor:'pointer'}}>
                 <input type="checkbox" checked={option.checkinNextDay} onChange={e=>upd('checkinNextDay',e.target.checked)} style={{width:'16px',height:'16px'}}/>
@@ -515,9 +559,24 @@ export default function NewQuotePage(){
     const accN=parseFloat(c.accNet)||0,flightN=parseFloat(c.flightNet)||0,transN=parseFloat(c.transNet)||0
     return a+accN+flightN+transN+c.extras.reduce((x,e)=>x+(e.net||0),0)
   },0)
-  function onMcSell(v:string){ setMcSell(v); const sell=parseFloat(v)||0,mg=parseFloat(mcMargin)||0; if(sell>0&&mg>0)setMcProfit(((sell*mg)/100).toFixed(2)) }
-  function onMcMargin(v:string){ setMcMargin(v); const sell=parseFloat(mcSellPrice)||0,mg=parseFloat(v)||0; if(sell>0&&mg>0)setMcProfit(((sell*mg)/100).toFixed(2)); else if(mcTotalNet>0&&mg>0){const s=mcTotalNet/(1-mg/100);setMcSell(s.toFixed(2));setMcProfit((s*mg/100).toFixed(2))} }
-  function onMcProfit(v:string){ setMcProfit(v); const sell=parseFloat(mcSellPrice)||0,pr=parseFloat(v)||0; if(sell>0&&pr>0)setMcMargin(((pr/sell)*100).toFixed(1)) }
+  function onMcSell(v:string){
+    const sell=parseFloat(v)||0,mg=parseFloat(mcMargin)||0,pr=parseFloat(mcProfit)||0
+    if(sell>0&&mg>0) setMcProfit(((sell*mg)/100).toFixed(2))
+    else if(sell>0&&pr>0) setMcMargin(((pr/sell)*100).toFixed(1))
+    setMcSell(v)
+  }
+  function onMcMargin(v:string){
+    const sell=parseFloat(mcSellPrice)||0,mg=parseFloat(v)||0
+    if(sell>0&&mg>0) setMcProfit(((sell*mg)/100).toFixed(2))
+    else if(mcTotalNet>0&&mg>0){const s=mcTotalNet/(1-mg/100);setMcSell(s.toFixed(2));setMcProfit((s*mg/100).toFixed(2))}
+    setMcMargin(v)
+  }
+  function onMcProfit(v:string){
+    const sell=parseFloat(mcSellPrice)||0,pr=parseFloat(v)||0
+    if(sell>0&&pr>0) setMcMargin(((pr/sell)*100).toFixed(1))
+    else if(mcTotalNet>0&&pr>0){const s=mcTotalNet+pr;setMcSell(s.toFixed(2));setMcMargin(((pr/s)*100).toFixed(1))}
+    setMcProfit(v)
+  }
 
   const quoteRef = isEditMode ? editingRef : genRef(initials,quoteCount)
 
@@ -1042,9 +1101,10 @@ function EmailPreviewModal({deal,quoteMode,hotelOptions,centres,adults,children,
             <div>
               <div style={{fontWeight:'700',marginBottom:'8px',fontSize:'12px',color:'#1a3a5c',borderBottom:'1.5px solid #c9963a',paddingBottom:'5px'}}>Flights</div>
               <table style={{width:'100%',borderCollapse:'collapse',fontSize:'11.5px'}}>
-                <thead><tr style={{background:'#1a3a5c',color:'white'}}>{['Date','Departs','Arrives','Airline','Route','Cabin'].map(h=><th key={h} style={{padding:'6px 9px',textAlign:'left',fontWeight:'500',fontSize:'10.5px'}}>{h}</th>)}</tr></thead>
+                <thead><tr style={{background:'#1a3a5c',color:'white'}}>{['Flight','Date','Departs','Arrives','Airline','Route','Cabin'].map(h=><th key={h} style={{padding:'6px 9px',textAlign:'left',fontWeight:'500',fontSize:'10.5px'}}>{h}</th>)}</tr></thead>
                 <tbody>{allLegs.map((f,i)=>(
                   <tr key={f.id} style={{background:i%2===0?'#f8f9fb':'white',borderBottom:'1px solid #eee'}}>
+                    <td style={{padding:'6px 9px',fontFamily:'monospace',fontWeight:'600'}}>{f.flight_number||'—'}</td>
                     <td style={{padding:'6px 9px'}}>{fmtLegDate(f.date)}</td>
                     <td style={{padding:'6px 9px',fontFamily:'monospace'}}>{f.depart_time||'—'}</td>
                     <td style={{padding:'6px 9px',fontFamily:'monospace'}}>{f.arrival_time||'—'}{f.overnight?' (+1)':''}</td>
