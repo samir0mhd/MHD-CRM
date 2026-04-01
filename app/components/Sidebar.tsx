@@ -39,7 +39,8 @@ const NAV = [
   {
     section: 'Resources',
     items: [
-      { href: '/hotels', label: 'Hotel Directory', icon: '🏨' },
+      { href: '/hotels',    label: 'Hotel Directory', icon: '🏨' },
+      { href: '/suppliers', label: 'Suppliers',        icon: '◈' },
     ],
   },
 ]
