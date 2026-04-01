@@ -150,7 +150,7 @@ export default function BookingDetailPage() {
   const [hotels, setHotels]             = useState<Hotel[]>([])
   const [suppliers, setSuppliers]       = useState<Supplier[]>([])
   const [loading, setLoading]           = useState(true)
-  const [tab, setTab]                   = useState<'overview'|'passengers'|'flights'|'accommodation'|'transfers'|'extras'|'payments'|'tasks'>('overview')
+  const [tab, setTab]                   = useState<'overview'|'passengers'|'flights'|'accommodation'|'transfers'|'extras'|'payments'|'tasks'|'documents'>('overview')
   const [toast, setToast]               = useState<{ msg: string; type: 'success'|'error' } | null>(null)
   const [saving, setSaving]             = useState(false)
   const toastTimer                      = useRef<any>(null)
@@ -223,6 +223,7 @@ export default function BookingDetailPage() {
     { key:'extras',        label:`Extras (${extras.length})`            },
     { key:'payments',      label:`Payments (${payments.length})`        },
     { key:'tasks',         label:`Tasks ${taskPct}%`                    },
+    { key:'documents',     label:'Documents'                             },
   ] as const
 
   return (
@@ -319,6 +320,13 @@ export default function BookingDetailPage() {
         {/* ── TASKS TAB ────────────────────────────────── */}
         {tab === 'tasks' && (
           <TasksTab tasks={tasks} onUpdate={loadAll} showToast={showToast} />
+        )}
+
+        {/* ── DOCUMENTS TAB ────────────────────────────── */}
+        {tab === 'documents' && (
+          <DocumentsTab booking={booking} client={client} passengers={passengers}
+            outbound={outbound} returnFlts={returnFlts} accommodations={accommodations}
+            transfers={transfers} payments={payments} />
         )}
       </div>
 
@@ -1279,6 +1287,339 @@ function PaymentsTab({ booking, payments, balance, onUpdate, showToast }: any) {
           <button className="btn btn-cta" onClick={() => setAdding(true)}>+ Record First Payment</button>
         </div>
       )}
+    </div>
+  )
+}
+
+// ── DOCUMENTS TAB ────────────────────────────────────────────
+function DocumentsTab({ booking, client, passengers, outbound, returnFlts, accommodations, transfers, payments }: any) {
+  const [activeDoc, setActiveDoc] = useState<string | null>(null)
+  const [preview, setPreview]     = useState<string | null>(null)
+
+  const ref        = booking.booking_reference
+  const clientName = client ? `${client.first_name} ${client.last_name}` : 'Guest'
+  const paxList    = passengers.map((p: Passenger) => `${p.title} ${p.first_name} ${p.last_name}`).join(', ')
+  const totalPaid  = payments.reduce((a: number, p: Payment) => a + (p.amount || 0), 0)
+  const sell       = booking.total_sell || booking.deals?.deal_value || 0
+  const balance    = sell - totalPaid
+  const today      = new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })
+
+  const DOCS = [
+    { id: 'confirmation', label: 'Booking Confirmation',  icon: '📋', desc: 'Cover letter with full trip summary & payment schedule' },
+    { id: 'itinerary',    label: 'Flight Itinerary',       icon: '✈',  desc: `${outbound.length + returnFlts.length} flight leg${outbound.length + returnFlts.length !== 1 ? 's' : ''}` },
+    ...accommodations.map((a: Accommodation, i: number) => ({
+      id: `accom_${a.id}_customer`,
+      label: `${a.hotel_name} — Guest Voucher`,
+      icon: '🏨',
+      desc: `Stay ${i + 1}: ${fmtDate(a.checkin_date)} → ${fmtDate(a.checkout_date)}`,
+    })),
+    ...accommodations.map((a: Accommodation, i: number) => ({
+      id: `accom_${a.id}_hotel`,
+      label: `${a.hotel_name} — Reservation Email`,
+      icon: '✉',
+      desc: `Hotel copy — stay ${i + 1}`,
+    })),
+    ...transfers.map((t: Transfer, i: number) => ({
+      id: `transfer_${t.id}`,
+      label: `Transfer Voucher${transfers.length > 1 ? ` ${i + 1}` : ''}`,
+      icon: '🚗',
+      desc: t.supplier_name || 'Transfer details',
+    })),
+    { id: 'atol', label: 'ATOL Certificate', icon: '📜', desc: 'Air Travel Organiser\'s Licence certificate' },
+  ]
+
+  const docStyles = `
+    <style>
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      body { font-family: Arial, sans-serif; color: #1a1a2e; background: white; padding: 40px; max-width: 800px; margin: 0 auto; font-size: 13px; line-height: 1.5; }
+      .header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 28px; padding-bottom: 18px; border-bottom: 2px solid #1a1a2e; }
+      .brand { font-size: 20px; font-weight: 300; letter-spacing: -0.01em; }
+      .brand em { font-style: italic; }
+      .brand-sub { font-size: 10px; color: #94a3b8; margin-top: 3px; text-transform: uppercase; letter-spacing: 0.1em; }
+      .ref-box { text-align: right; }
+      .ref-box .ref { font-size: 17px; font-weight: 700; color: #3b82f6; letter-spacing: 0.06em; font-family: monospace; }
+      .ref-box .date { font-size: 11px; color: #94a3b8; margin-top: 3px; }
+      h1 { font-size: 24px; font-weight: 300; margin-bottom: 4px; }
+      .subtitle { color: #64748b; font-size: 13px; margin-bottom: 20px; }
+      h2 { font-size: 11px; font-weight: 700; margin: 22px 0 8px; color: #64748b; text-transform: uppercase; letter-spacing: 0.08em; border-bottom: 1px solid #e5e7eb; padding-bottom: 5px; }
+      table { width: 100%; border-collapse: collapse; margin-bottom: 18px; }
+      th { background: #f8fafc; text-align: left; padding: 7px 12px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: #64748b; border-bottom: 1px solid #e2e8f0; }
+      td { padding: 9px 12px; border-bottom: 1px solid #f1f5f9; font-size: 13px; vertical-align: top; }
+      tr:last-child td { border-bottom: none; }
+      td:first-child { color: #64748b; width: 200px; font-size: 12px; }
+      .highlight { background: #f8fafc; padding: 14px 16px; border-radius: 6px; margin-bottom: 16px; border-left: 4px solid #3b82f6; }
+      .hotel-highlight { background: #f0fdf4; border-left: 4px solid #059669; border-radius: 6px; padding: 14px 16px; margin-bottom: 18px; }
+      .hotel-name { font-size: 22px; font-weight: 300; font-family: Georgia, serif; margin-bottom: 6px; }
+      .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+      .badge-green { background: #d1fae5; color: #059669; }
+      .badge-amber { background: #fef3c7; color: #d97706; }
+      .badge-blue { background: #dbeafe; color: #2563eb; }
+      .badge-red { background: #fee2e2; color: #dc2626; }
+      .footer { margin-top: 40px; padding-top: 14px; border-top: 1px solid #e5e7eb; font-size: 10.5px; color: #94a3b8; text-align: center; }
+      .sign { margin-top: 28px; font-size: 13.5px; line-height: 1.8; }
+      @media print { body { padding: 20px; } .no-print { display: none; } }
+    </style>`
+
+  function brandHeader(title: string, subtitle?: string) {
+    return `
+      <div class="header">
+        <div>
+          <div class="brand"><em>Mauritius</em> Holidays Direct</div>
+          <div class="brand-sub">MHD Travel Ltd · ATOL Protected 11423</div>
+        </div>
+        <div class="ref-box">
+          <div class="ref">${ref}</div>
+          <div class="date">${today}</div>
+        </div>
+      </div>
+      <h1>${title}</h1>
+      ${subtitle ? `<div class="subtitle">${subtitle}</div>` : ''}`
+  }
+
+  function generateDoc(docId: string): string {
+    if (docId === 'confirmation') {
+      const flightRows = [...outbound, ...returnFlts].map((f: Flight) =>
+        `<tr><td style="width:auto"><strong>${f.flight_number}</strong></td><td>${f.airline || '—'}</td><td>${f.origin} → ${f.destination}</td><td>${fmtDate(f.departure_date)}${f.departure_time ? ' ' + f.departure_time : ''}</td><td>${f.cabin_class}</td></tr>`
+      ).join('')
+      const accomRows = accommodations.map((a: Accommodation) =>
+        `<tr><td style="width:auto"><strong>${a.hotel_name}</strong></td><td>${fmtDate(a.checkin_date)} – ${fmtDate(a.checkout_date)}</td><td>${a.nights || calcNights(a.checkin_date, a.checkout_date)} nts</td><td>${a.room_type || '—'} ×${a.room_quantity}</td><td>${a.board_basis || '—'}</td></tr>`
+      ).join('')
+      return `<!DOCTYPE html><html><head><title>Booking Confirmation — ${ref}</title>${docStyles}</head><body>
+        ${brandHeader('Booking Confirmation', `Dear ${clientName},`)}
+        <p style="line-height:1.8;margin-bottom:18px;">Thank you for booking with Mauritius Holidays Direct. We are delighted to confirm your holiday arrangements as detailed below. Please review this confirmation carefully and contact us immediately if any details require amendment.</p>
+        <div class="highlight">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+            <div><span style="font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:0.06em">Lead Passenger</span><div style="font-weight:600;margin-top:2px">${clientName}</div></div>
+            <div><span style="font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:0.06em">All Passengers</span><div style="margin-top:2px">${paxList}</div></div>
+            <div><span style="font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:0.06em">Departure</span><div style="font-weight:600;margin-top:2px">${fmtDate(booking.departure_date)}</div></div>
+            <div><span style="font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:0.06em">Return</span><div style="font-weight:600;margin-top:2px">${fmtDate(booking.return_date)}</div></div>
+            ${booking.destination ? `<div><span style="font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:0.06em">Destination</span><div style="margin-top:2px">${booking.destination}</div></div>` : ''}
+          </div>
+        </div>
+        ${flightRows ? `<h2>Flights</h2><table><thead><tr><th>Flight</th><th>Airline</th><th>Route</th><th>Departure</th><th>Class</th></tr></thead><tbody>${flightRows}</tbody></table>` : ''}
+        ${accomRows ? `<h2>Accommodation</h2><table><thead><tr><th>Hotel</th><th>Dates</th><th>Nights</th><th>Room</th><th>Board</th></tr></thead><tbody>${accomRows}</tbody></table>` : ''}
+        <h2>Payment Schedule</h2>
+        <table><tbody>
+          <tr><td>Total Holiday Cost</td><td style="text-align:right;font-size:17px;font-weight:700">£${sell.toLocaleString('en-GB', { minimumFractionDigits: 2 })}</td></tr>
+          <tr><td>Payments Received</td><td style="text-align:right;color:#059669;font-weight:600">£${totalPaid.toLocaleString('en-GB', { minimumFractionDigits: 2 })}</td></tr>
+          <tr style="background:#f8fafc"><td><strong>Balance Remaining</strong></td><td style="text-align:right"><strong style="color:${balance > 0 ? '#dc2626' : '#059669'};font-size:15px">${balance > 0 ? '£' + balance.toLocaleString('en-GB', { minimumFractionDigits: 2 }) : 'PAID IN FULL ✓'}</strong></td></tr>
+          ${booking.balance_due_date && balance > 0 ? `<tr><td colspan="2" style="color:#dc2626;font-size:12px">⚠ Balance due by: <strong>${fmtDate(booking.balance_due_date)}</strong> (12 weeks before departure)</td></tr>` : ''}
+        </tbody></table>
+        <p style="font-size:12px;color:#64748b;line-height:1.7;margin-bottom:14px;">This booking is protected by our ATOL licence (No. 11423). Your ATOL Certificate will be issued separately. Please ensure all passenger names match exactly as they appear on passports.</p>
+        <div class="sign">Kind regards,<br><strong>Samir Abattouy</strong><br>Mauritius Expert<br><em>Mauritius</em> Holidays Direct</div>
+        <div class="footer">Mauritius Holidays Direct · MHD Travel Ltd · ATOL Protected 11423 · ${today}</div>
+      </body></html>`
+    }
+
+    if (docId === 'itinerary') {
+      const allLegs = [
+        ...outbound.map((f: Flight) => ({ ...f, _dir: 'Outbound' })),
+        ...returnFlts.map((f: Flight) => ({ ...f, _dir: 'Return' })),
+      ]
+      const rows = allLegs.map((f: any, i: number) => `
+        <tr style="${i === outbound.length && i > 0 ? 'border-top:2px solid #e5e7eb' : ''}">
+          <td style="width:auto"><span class="badge ${f._dir === 'Outbound' ? 'badge-blue' : 'badge-green'}">${f._dir}</span></td>
+          <td><strong style="font-size:15px;font-family:monospace">${f.flight_number}</strong><br><span style="color:#64748b;font-size:12px">${f.airline || ''}</span></td>
+          <td><strong style="font-size:15px">${f.origin}</strong><br><span style="font-size:12px;color:#64748b">${fmtDate(f.departure_date)}</span><br><strong style="font-size:16px">${f.departure_time || '—'}</strong></td>
+          <td style="font-size:20px;color:#d1d5db;text-align:center">→</td>
+          <td><strong style="font-size:15px">${f.destination}</strong><br><span style="font-size:12px;color:#64748b">${f.next_day ? (f.arrival_date ? fmtDate(f.arrival_date) : '') + ' (+1)' : fmtDate(f.departure_date)}</span><br><strong style="font-size:16px">${f.arrival_time || '—'}</strong></td>
+          <td><span class="badge badge-amber">${f.cabin_class}</span>${f.pnr ? `<br><span style="font-size:11px;color:#64748b">PNR: <strong>${f.pnr}</strong></span>` : ''}</td>
+          <td style="font-size:12px;color:#64748b">${f.baggage_notes || '—'}</td>
+        </tr>`).join('')
+      return `<!DOCTYPE html><html><head><title>Flight Itinerary — ${ref}</title>${docStyles}</head><body>
+        ${brandHeader('Flight Itinerary', `Passengers: ${paxList}`)}
+        <table><thead><tr><th></th><th>Flight</th><th>Departs</th><th></th><th>Arrives</th><th>Class / PNR</th><th>Baggage</th></tr></thead><tbody>${rows}</tbody></table>
+        <p style="font-size:12px;color:#64748b;line-height:1.7">Please arrive at the airport at least 3 hours before departure for international flights. Ensure your passport is valid for at least 6 months beyond your return date. All times are local.</p>
+        <div class="footer">Mauritius Holidays Direct · ${ref} · ${today}</div>
+      </body></html>`
+    }
+
+    if (docId.startsWith('accom_') && docId.endsWith('_customer')) {
+      const accomId = Number(docId.split('_')[1])
+      const a: Accommodation = accommodations.find((x: Accommodation) => x.id === accomId)
+      if (!a) return '<html><body>Not found</body></html>'
+      const nights = a.nights || calcNights(a.checkin_date, a.checkout_date)
+      return `<!DOCTYPE html><html><head><title>Accommodation Voucher — ${a.hotel_name}</title>${docStyles}</head><body>
+        ${brandHeader('Accommodation Voucher', 'Please present this voucher upon check-in')}
+        <div class="hotel-highlight">
+          <div class="hotel-name">${a.hotel_name}</div>
+          <div style="font-size:13px;color:#374151">${a.room_type ? a.room_type + ' × ' + a.room_quantity : ''} &nbsp;·&nbsp; ${a.board_basis || ''}</div>
+        </div>
+        <table><tbody>
+          <tr><td>Lead Guest</td><td><strong>${clientName}</strong></td></tr>
+          <tr><td>All Guests</td><td>${paxList}</td></tr>
+          <tr><td>Check In</td><td><strong style="font-size:15px">${fmtDate(a.checkin_date)}</strong></td></tr>
+          <tr><td>Check Out</td><td><strong style="font-size:15px">${fmtDate(a.checkout_date)}</strong></td></tr>
+          <tr><td>Duration</td><td>${nights} nights</td></tr>
+          <tr><td>Room Type</td><td>${a.room_type || '—'} × ${a.room_quantity}</td></tr>
+          <tr><td>Board Basis</td><td>${a.board_basis || '—'}</td></tr>
+          <tr><td>Adults / Children</td><td>${a.adults} adults${a.children > 0 ? ', ' + a.children + ' children' : ''}${a.infants > 0 ? ', ' + a.infants + ' infants' : ''}</td></tr>
+          ${a.hotel_confirmation ? `<tr><td>Hotel Reference</td><td><strong style="color:#3b82f6;font-size:15px;font-family:monospace">${a.hotel_confirmation}</strong></td></tr>` : ''}
+          ${a.special_occasion ? `<tr><td>Special Occasion</td><td><span class="badge badge-amber">🎉 ${a.special_occasion}</span></td></tr>` : ''}
+          ${a.special_requests ? `<tr><td>Special Requests</td><td style="color:#3b82f6;font-style:italic">${a.special_requests}</td></tr>` : ''}
+          <tr><td>Our Reference</td><td><strong style="color:#3b82f6;font-family:monospace">${ref}</strong></td></tr>
+        </tbody></table>
+        <div class="footer">Mauritius Holidays Direct · ${ref} · ${today}</div>
+      </body></html>`
+    }
+
+    if (docId.startsWith('accom_') && docId.endsWith('_hotel')) {
+      const accomId = Number(docId.split('_')[1])
+      const a: Accommodation = accommodations.find((x: Accommodation) => x.id === accomId)
+      if (!a) return '<html><body>Not found</body></html>'
+      const nights = a.nights || calcNights(a.checkin_date, a.checkout_date)
+      const paxRows = passengers.map((p: Passenger) =>
+        `<tr><td>${p.is_lead ? '<strong>' : ''}${p.title} ${p.first_name} ${p.last_name}${p.is_lead ? ' (Lead)</strong>' : ''}</td><td>${p.passenger_type}</td><td>${p.date_of_birth ? fmtDate(p.date_of_birth) : '—'}</td></tr>`
+      ).join('')
+      return `<!DOCTYPE html><html><head><title>Hotel Reservation — ${a.hotel_name}</title>${docStyles}</head><body>
+        ${brandHeader('Hotel Reservation Request')}
+        <p style="line-height:1.8;margin-bottom:20px;">Dear ${a.reservation_email_to ? 'Reservations Team' : 'Sir/Madam'},<br><br>
+        We would like to place the following reservation on behalf of our client. Please confirm availability and provide a booking reference at your earliest convenience.</p>
+        <table><tbody>
+          <tr><td>Hotel</td><td><strong>${a.hotel_name}</strong></td></tr>
+          <tr><td>Check In</td><td><strong style="font-size:15px">${fmtDate(a.checkin_date)}</strong></td></tr>
+          <tr><td>Check Out</td><td><strong style="font-size:15px">${fmtDate(a.checkout_date)}</strong></td></tr>
+          <tr><td>Duration</td><td>${nights} nights</td></tr>
+          <tr><td>Room Type</td><td>${a.room_type || 'To be advised'} × ${a.room_quantity}</td></tr>
+          <tr><td>Board Basis</td><td>${a.board_basis || 'To be advised'}</td></tr>
+          <tr><td>Adults / Children</td><td>${a.adults} adults${a.children > 0 ? ', ' + a.children + ' children' : ''}${a.infants > 0 ? ', ' + a.infants + ' infants' : ''}</td></tr>
+          ${a.special_occasion ? `<tr><td>Special Occasion</td><td style="color:#d97706;font-weight:500">🎉 ${a.special_occasion} — Please arrange a complimentary decoration if possible</td></tr>` : ''}
+          ${a.special_requests ? `<tr><td>Special Requests</td><td style="color:#3b82f6">${a.special_requests}</td></tr>` : ''}
+          <tr><td>Our Reference</td><td><strong style="color:#3b82f6;font-family:monospace;font-size:15px">${ref}</strong></td></tr>
+        </tbody></table>
+        <h2>Guest Names</h2>
+        <table><thead><tr><th>Name</th><th>Type</th><th>Date of Birth</th></tr></thead><tbody>${paxRows}</tbody></table>
+        <p style="line-height:1.8">Please confirm this reservation by return email and provide your booking reference number. We look forward to hearing from you.</p>
+        <div class="sign">Kind regards,<br><strong>Samir Abattouy</strong><br>Mauritius Expert · <em>Mauritius</em> Holidays Direct<br><span style="font-size:11px;color:#94a3b8">ATOL Protected 11423</span></div>
+        <div class="footer">Mauritius Holidays Direct · ${ref} · ${today}</div>
+      </body></html>`
+    }
+
+    if (docId.startsWith('transfer_')) {
+      const transferId = Number(docId.split('_')[1])
+      const t: Transfer = transfers.find((x: Transfer) => x.id === transferId)
+      if (!t) return '<html><body>Not found</body></html>'
+      const typeLabel = TRANSFER_TYPES.find(x => x.value === t.transfer_type)?.label || t.transfer_type
+      const accomList = accommodations.map((a: Accommodation) => a.hotel_name).join(' → ')
+      return `<!DOCTYPE html><html><head><title>Transfer Voucher — ${ref}</title>${docStyles}</head><body>
+        ${brandHeader('Transfer Voucher', 'Please present this voucher to your driver / representative')}
+        <div class="highlight" style="border-left-color:#3b82f6">
+          <div style="font-size:15px;font-weight:600">${t.supplier_name || 'Transfer Company'}</div>
+          <div style="color:#64748b;margin-top:4px">${typeLabel}</div>
+          <div style="margin-top:6px;display:flex;gap:12px">
+            ${t.meet_greet ? '<span class="badge badge-blue">✓ Meet &amp; Greet</span>' : ''}
+            ${t.local_rep ? '<span class="badge badge-green">✓ Local Rep</span>' : ''}
+          </div>
+        </div>
+        <table><tbody>
+          <tr><td>Booking Reference</td><td><strong style="color:#3b82f6;font-family:monospace;font-size:15px">${ref}</strong></td></tr>
+          <tr><td>Lead Passenger</td><td><strong>${clientName}</strong></td></tr>
+          <tr><td>All Passengers</td><td>${paxList}</td></tr>
+          ${accomList ? `<tr><td>Accommodation</td><td>${accomList}</td></tr>` : ''}
+          ${t.arrival_flight ? `
+          <tr style="background:#f8fafc"><td colspan="2" style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#64748b">Arrival Transfer</td></tr>
+          <tr><td>Flight</td><td><strong style="font-size:16px;font-family:monospace">${t.arrival_flight}</strong></td></tr>
+          <tr><td>Arrival Date &amp; Time</td><td><strong>${fmtDate(t.arrival_date)}</strong>${t.arrival_time ? ' at ' + t.arrival_time : ''}</td></tr>` : ''}
+          ${t.departure_flight ? `
+          <tr style="background:#f8fafc"><td colspan="2" style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#64748b">Departure Transfer</td></tr>
+          <tr><td>Flight</td><td><strong style="font-size:16px;font-family:monospace">${t.departure_flight}</strong></td></tr>
+          <tr><td>Departure Date &amp; Time</td><td><strong>${fmtDate(t.departure_date)}</strong>${t.departure_time ? ' at ' + t.departure_time : ''}</td></tr>` : ''}
+          ${t.inter_hotel_dates ? `<tr><td>Inter-Hotel Transfer</td><td>${t.inter_hotel_dates}</td></tr>` : ''}
+          ${t.notes ? `<tr><td>Notes</td><td style="color:#64748b;font-style:italic">${t.notes}</td></tr>` : ''}
+        </tbody></table>
+        <div class="footer">Mauritius Holidays Direct · ${ref} · ${today}</div>
+      </body></html>`
+    }
+
+    if (docId === 'atol') {
+      const firstFlight = outbound[0]
+      return `<!DOCTYPE html><html><head><title>ATOL Certificate — ${ref}</title>${docStyles}</head><body>
+        <div style="border:2px solid #1a1a2e;padding:36px;border-radius:8px;">
+          ${brandHeader('ATOL Certificate', 'Air Travel Organiser\'s Licence — No. 11423')}
+          <div style="background:#fef9c3;border:1px solid #fbbf24;border-radius:6px;padding:14px 16px;margin-bottom:20px;">
+            <div style="font-size:13px;font-weight:700;color:#92400e;margin-bottom:4px">ATOL Protected</div>
+            <p style="font-size:12px;color:#92400e;line-height:1.7">In the unlikely event of our insolvency, the Civil Aviation Authority (the UK's aviation regulator) will ensure that you are not stranded abroad and will arrange to refund any money you have paid to us for an advance booking. For further information visit the ATOL website at www.caa.co.uk/atol-protection</p>
+          </div>
+          <table><tbody>
+            <tr><td>Lead Passenger</td><td><strong>${clientName}</strong></td></tr>
+            <tr><td>All Passengers</td><td>${paxList}</td></tr>
+            <tr><td>Booking Reference</td><td><strong style="color:#3b82f6;font-family:monospace;font-size:16px">${ref}</strong></td></tr>
+            <tr><td>Departure Date</td><td><strong>${fmtDate(booking.departure_date)}</strong></td></tr>
+            <tr><td>Return Date</td><td><strong>${fmtDate(booking.return_date)}</strong></td></tr>
+            ${firstFlight ? `<tr><td>Flight Details</td><td>${firstFlight.airline || ''} ${firstFlight.flight_number} · ${firstFlight.origin} → ${firstFlight.destination}</td></tr>` : ''}
+            ${accommodations.length > 0 ? `<tr><td>Accommodation</td><td>${accommodations.map((a: Accommodation) => `${a.hotel_name} (${fmtDate(a.checkin_date)} – ${fmtDate(a.checkout_date)})`).join('<br>')}</td></tr>` : ''}
+            <tr><td>Total Cost</td><td><strong style="font-size:18px">£${sell.toLocaleString('en-GB', { minimumFractionDigits: 2 })}</strong></td></tr>
+            <tr><td>Date Issued</td><td>${today}</td></tr>
+            <tr><td>ATOL Holder</td><td>MHD Travel Ltd, ATOL No. 11423</td></tr>
+          </tbody></table>
+          <p style="font-size:11px;color:#94a3b8;margin-top:16px;line-height:1.7">MHD Travel Ltd is a company registered in England and Wales. This certificate is issued under the Air Travel Organiser's Licensing Scheme (ATOL) managed by the Civil Aviation Authority.</p>
+        </div>
+        <div class="footer">${today}</div>
+      </body></html>`
+    }
+
+    return '<html><body>Document not found</body></html>'
+  }
+
+  function openDoc(docId: string) {
+    setActiveDoc(docId)
+    setPreview(generateDoc(docId))
+  }
+
+  function printDoc() {
+    if (!activeDoc) return
+    const html = generateDoc(activeDoc)
+    const win = window.open('', '_blank', 'width=900,height=750')
+    if (!win) return
+    win.document.write(html)
+    win.document.close()
+    win.focus()
+    setTimeout(() => win.print(), 500)
+  }
+
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '300px 1fr', gap: '20px', alignItems: 'start' }}>
+      {/* Doc list */}
+      <div>
+        <div style={{ fontFamily: 'Fraunces,serif', fontSize: '16px', fontWeight: '300', marginBottom: '12px' }}>Documents</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+          {DOCS.map(d => (
+            <div key={d.id} onClick={() => openDoc(d.id)} className="card"
+              style={{ padding: '11px 14px', cursor: 'pointer', borderLeft: `3px solid ${activeDoc === d.id ? 'var(--accent)' : 'var(--border)'}`, background: activeDoc === d.id ? 'var(--bg-secondary)' : undefined, transition: 'all 0.12s' }}
+              onMouseEnter={e => { if (activeDoc !== d.id) e.currentTarget.style.background = 'var(--bg-secondary)' }}
+              onMouseLeave={e => { if (activeDoc !== d.id) e.currentTarget.style.background = 'transparent' }}>
+              <div style={{ display: 'flex', gap: '10px', alignItems: 'flex-start' }}>
+                <span style={{ fontSize: '17px', flexShrink: 0, marginTop: '1px' }}>{d.icon}</span>
+                <div>
+                  <div style={{ fontSize: '13px', fontWeight: '500', color: 'var(--text-primary)', lineHeight: '1.3' }}>{d.label}</div>
+                  <div style={{ fontSize: '11.5px', color: 'var(--text-muted)', marginTop: '2px' }}>{d.desc}</div>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Preview */}
+      <div>
+        {activeDoc && preview ? (
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginBottom: '10px' }}>
+              <button className="btn btn-secondary" onClick={() => { setActiveDoc(null); setPreview(null) }}>✕ Close</button>
+              <button className="btn btn-cta" onClick={printDoc}>🖨 Print / Save as PDF</button>
+            </div>
+            <div style={{ border: '1px solid var(--border)', borderRadius: '10px', overflow: 'hidden', background: 'white', boxShadow: 'var(--shadow-md)' }}>
+              <iframe srcDoc={preview} style={{ width: '100%', height: '700px', border: 'none' }} title="Document Preview" />
+            </div>
+          </div>
+        ) : (
+          <div className="card" style={{ padding: '60px 40px', textAlign: 'center' }}>
+            <div style={{ fontSize: '40px', marginBottom: '12px', opacity: 0.25 }}>📄</div>
+            <div style={{ fontFamily: 'Fraunces,serif', fontSize: '17px', fontWeight: '300', marginBottom: '6px' }}>Document Centre</div>
+            <div style={{ color: 'var(--text-muted)', fontSize: '13px' }}>Select a document from the list to preview and print</div>
+          </div>
+        )}
+      </div>
     </div>
   )
 }

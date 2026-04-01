@@ -66,13 +66,28 @@ const PAYMENT_COLORS: Record<string, string> = {
   'deposit':        'var(--blue)',
 }
 
+const STAR_TIERS = [
+  { value: 3,   label: '3 Stars',         stars: 3, color: '#94a3b8', badge: null },
+  { value: 4,   label: '4 Stars',         stars: 4, color: '#f59e0b', badge: null },
+  { value: 4.5, label: '4 Stars Plus',    stars: 4, color: '#f97316', badge: '+' },
+  { value: 5,   label: '5 Stars',         stars: 5, color: '#8b5cf6', badge: null },
+  { value: 5.5, label: '5 Stars Luxury',  stars: 5, color: '#dc2626', badge: '✦' },
+] as const
+
 function Stars({ rating }: { rating: number | null }) {
   if (!rating) return <span style={{ color: 'var(--text-muted)', fontSize: '12px' }}>No rating</span>
+  const tier = STAR_TIERS.find(t => t.value === rating)
+  if (!tier) return <span style={{ color: 'var(--text-muted)', fontSize: '12px' }}>No rating</span>
   return (
-    <span style={{ color: '#f59e0b', fontSize: '14px', letterSpacing: '1px' }}>
-      {'★'.repeat(Math.floor(rating))}{'☆'.repeat(5 - Math.floor(rating))}
-      <span style={{ fontSize: '11px', color: 'var(--text-muted)', marginLeft: '4px' }}>{rating}</span>
-    </span>
+    <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+      <span style={{ color: tier.color, fontSize: '13px', letterSpacing: '1px' }}>
+        {'★'.repeat(tier.stars)}{tier.badge ? <span style={{ fontSize: '11px' }}>{tier.badge}</span> : ''}
+      </span>
+      <span style={{ fontSize: '11.5px', color: tier.color, fontWeight: '600', fontFamily: 'Outfit,sans-serif' }}>{tier.label}</span>
+      {rating === 5.5 && (
+        <span style={{ fontSize: '10px', color: '#dc2626', background: '#fee2e2', padding: '1px 7px', borderRadius: '10px', fontWeight: '600', letterSpacing: '0.02em' }}>Connoisseur</span>
+      )}
+    </div>
   )
 }
 
@@ -214,7 +229,7 @@ export default function HotelsPage() {
                   <label className="label">Star Rating</label>
                   <select className="input" value={form.star_rating || ''} onChange={e => setForm(p => ({ ...p, star_rating: e.target.value ? Number(e.target.value) : null }))}>
                     <option value="">Not rated</option>
-                    {[3, 3.5, 4, 4.5, 5].map(r => <option key={r} value={r}>{r} Stars</option>)}
+                    {STAR_TIERS.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
                   </select>
                 </div>
                 <div>
