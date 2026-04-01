@@ -32,7 +32,7 @@ type Passenger = {
   passport_number: string | null; passport_expiry: string | null
 }
 type Flight = {
-  id: number; booking_id: number; direction: string; leg_order: number
+  id: number; booking_id: number; direction: string; leg_order: number; segment_id: number | null
   flight_number: string | null; airline: string | null; origin: string | null; destination: string | null
   departure_date: string | null; departure_time: string | null
   arrival_date: string | null; arrival_time: string | null; next_day: boolean
@@ -695,151 +695,224 @@ function PassengersTab({ bookingId, passengers, onUpdate, showToast }: any) {
   )
 }
 
-// ── FLIGHT FORM GRID (module-level — must NOT be inside FlightsTab or inputs lose focus) ──
-function FlightGrid({ f, setF, idSuffix, flightSuppliers }: { f: any; setF: any; idSuffix: string; flightSuppliers: Supplier[] }) {
+// ── LEG FORM (module-level to prevent re-mount on parent state change) ───────
+function LegForm({ leg, onChange, onRemove, idx, canRemove, idSuffix }: any) {
   return (
-    <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:'10px' }}>
-      <div><label className="label">Flight Number *</label><input className="input" placeholder="e.g. BA2065" value={f.flight_number} onChange={e=>setF((p:any)=>({...p,flight_number:e.target.value}))}/></div>
-      <div>
-        <label className="label">Airline</label>
-        <input className="input" list={`airlines-dl-${idSuffix}`} placeholder="e.g. British Airways" value={f.airline} onChange={e=>setF((p:any)=>({...p,airline:e.target.value}))}/>
-        <datalist id={`airlines-dl-${idSuffix}`}>{AIRLINES.map(a=><option key={a} value={a}/>)}</datalist>
+    <div style={{ background:'var(--bg-secondary)', borderRadius:'8px', padding:'14px 16px', position:'relative' }}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'10px' }}>
+        <span style={{ fontSize:'12px', fontWeight:'600', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.06em' }}>Leg {idx + 1}</span>
+        {canRemove && <button type="button" onClick={onRemove} style={{ background:'none', border:'none', color:'var(--red)', cursor:'pointer', fontSize:'16px', lineHeight:1 }}>✕</button>}
       </div>
-      <div><label className="label">Cabin Class</label><select className="input" value={f.cabin_class} onChange={e=>setF((p:any)=>({...p,cabin_class:e.target.value}))}>{CABIN_CLASSES.map(c=><option key={c}>{c}</option>)}</select></div>
-      <div>
-        <label className="label">Origin</label>
-        <input className="input" list={`airports-dl-${idSuffix}`} placeholder="e.g. LGW" value={f.origin} onChange={e=>setF((p:any)=>({...p,origin:e.target.value.toUpperCase()}))}/>
-        <datalist id={`airports-dl-${idSuffix}`}>{AIRPORTS.map(a=><option key={a.code} value={a.code}>{a.name}</option>)}</datalist>
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr 1fr', gap:'10px' }}>
+        <div><label className="label">Flight No *</label><input className="input" placeholder="BA2065" value={leg.flight_number} onChange={e=>onChange('flight_number', e.target.value)}/></div>
+        <div>
+          <label className="label">Airline</label>
+          <input className="input" list={`al-${idSuffix}-${idx}`} placeholder="British Airways" value={leg.airline} onChange={e=>onChange('airline', e.target.value)}/>
+          <datalist id={`al-${idSuffix}-${idx}`}>{AIRLINES.map((a:string)=><option key={a} value={a}/>)}</datalist>
+        </div>
+        <div>
+          <label className="label">Origin</label>
+          <input className="input" list={`ap-${idSuffix}-${idx}`} placeholder="LGW" value={leg.origin} onChange={e=>onChange('origin', e.target.value.toUpperCase())}/>
+          <datalist id={`ap-${idSuffix}-${idx}`}>{AIRPORTS.map((a:any)=><option key={a.code} value={a.code}>{a.name}</option>)}</datalist>
+        </div>
+        <div>
+          <label className="label">Destination</label>
+          <input className="input" list={`ap-${idSuffix}-${idx}`} placeholder="MRU" value={leg.destination} onChange={e=>onChange('destination', e.target.value.toUpperCase())}/>
+        </div>
+        <div><label className="label">Departure Date</label><input className="input" type="date" value={leg.departure_date} onChange={e=>onChange('departure_date', e.target.value)}/></div>
+        <div><label className="label">Depart Time</label><input className="input" placeholder="21:00" value={leg.departure_time} onChange={e=>onChange('departure_time', e.target.value)}/></div>
+        <div><label className="label">Arrive Time</label><input className="input" placeholder="11:55" value={leg.arrival_time} onChange={e=>onChange('arrival_time', e.target.value)}/></div>
+        <div style={{ display:'flex', flexDirection:'column', justifyContent:'flex-end', paddingBottom:'6px' }}>
+          <label style={{ display:'flex', gap:'8px', alignItems:'center', fontSize:'13px', cursor:'pointer' }}>
+            <input type="checkbox" checked={leg.next_day} onChange={e=>onChange('next_day', e.target.checked)}/> Arrives next day
+          </label>
+        </div>
+        <div style={{ gridColumn:'1/-1' }}><label className="label">Cabin Class Notes <span style={{ textTransform:'none', fontWeight:'400', letterSpacing:'0' }}>(mixed cabin only)</span></label><input className="input" placeholder="e.g. Mr Smith travelling Business Class on this leg" value={leg.cabin_notes} onChange={e=>onChange('cabin_notes', e.target.value)}/></div>
       </div>
-      <div>
-        <label className="label">Destination</label>
-        <input className="input" list={`airports-dl-${idSuffix}`} placeholder="e.g. MRU" value={f.destination} onChange={e=>setF((p:any)=>({...p,destination:e.target.value.toUpperCase()}))}/>
-      </div>
-      <div><label className="label">Departure Date</label><input className="input" type="date" value={f.departure_date} onChange={e=>setF((p:any)=>({...p,departure_date:e.target.value}))}/></div>
-      <div><label className="label">Depart Time</label><input className="input" placeholder="e.g. 21:00" value={f.departure_time} onChange={e=>setF((p:any)=>({...p,departure_time:e.target.value}))}/></div>
-      <div><label className="label">Arrive Time</label><input className="input" placeholder="e.g. 11:55" value={f.arrival_time} onChange={e=>setF((p:any)=>({...p,arrival_time:e.target.value}))}/></div>
-      <div style={{ display:'flex', alignItems:'center', gap:'8px', paddingTop:'18px' }}>
-        <input type="checkbox" id={`nxtday-${idSuffix}`} checked={f.next_day} onChange={e=>setF((p:any)=>({...p,next_day:e.target.checked}))}/>
-        <label htmlFor={`nxtday-${idSuffix}`} style={{ fontSize:'13px', cursor:'pointer' }}>Arrives next day</label>
-      </div>
-      <div><label className="label">PNR / Booking Ref</label><input className="input" placeholder="e.g. Q5WR5B" value={f.pnr} onChange={e=>setF((p:any)=>({...p,pnr:e.target.value.toUpperCase()}))}/></div>
-      <div>
-        <label className="label">Flight Supplier</label>
-        <select className="input" value={f.flight_supplier||''} onChange={e=>setF((p:any)=>({...p,flight_supplier:e.target.value}))}>
-          <option value="">No supplier</option>
-          {flightSuppliers.map((s:Supplier)=><option key={s.id} value={s.name}>{s.name}</option>)}
-        </select>
-      </div>
-      <div><label className="label">Net Cost (£)</label><input className="input" type="number" placeholder="0.00" value={f.net_cost} onChange={e=>setF((p:any)=>({...p,net_cost:e.target.value}))}/></div>
-      <div><label className="label">Baggage Notes</label><input className="input" placeholder="e.g. 2 x 23kg per person" value={f.baggage_notes} onChange={e=>setF((p:any)=>({...p,baggage_notes:e.target.value}))}/></div>
-      <div style={{ gridColumn:'1/-1' }}><label className="label">Cabin Class Notes</label><input className="input" placeholder="e.g. Mr Smith travelling Business Class" value={f.cabin_notes} onChange={e=>setF((p:any)=>({...p,cabin_notes:e.target.value}))}/></div>
     </div>
   )
 }
 
+const blankLeg = () => ({ flight_number:'', airline:'', origin:'', destination:'', departure_date:'', departure_time:'', arrival_time:'', next_day:false, cabin_notes:'' })
+
 // ── FLIGHTS TAB ──────────────────────────────────────────────
 function FlightsTab({ bookingId, outbound, returnFlts, suppliers, onUpdate, showToast }: any) {
-  const blank = { flight_number:'', airline:'', origin:'', destination:'', departure_date:'', departure_time:'', arrival_date:'', arrival_time:'', next_day:false, cabin_class:'Economy', pnr:'', flight_supplier:'', net_cost:'', baggage_notes:'', cabin_notes:'' }
-  const [adding, setAdding]     = useState<'outbound'|'return'|null>(null)
-  const [form, setForm]         = useState<any>({ ...blank })
-  const [editing, setEditing]   = useState<number|null>(null)
-  const [editForm, setEditForm] = useState<any>({})
+  const flightSuppliers = (suppliers || []).filter((s: Supplier) => s.type === 'flight' || s.type === 'other')
+  const allLegs = [...outbound, ...returnFlts]
+  const totalNet = allLegs.reduce((a: number, f: Flight) => a + (f.net_cost || 0), 0)
+
+  // ── segment form state ──
+  const blankSeg = { direction:'outbound' as 'outbound'|'return', pnr:'', flight_supplier:'', net_cost:'', cabin_class:'Economy', baggage_notes:'', legs:[blankLeg()] }
+  const [adding, setAdding]     = useState(false)
+  const [seg, setSeg]           = useState<any>({ ...blankSeg })
   const [saving, setSaving]     = useState(false)
+  const [editingLeg, setEditingLeg] = useState<number|null>(null)
+  const [editForm, setEditForm] = useState<any>({})
 
-  const flightSuppliers = (suppliers || []).filter((s: Supplier) => s.type === 'flight')
+  function updateLeg(idx: number, key: string, val: any) {
+    setSeg((p: any) => { const legs = [...p.legs]; legs[idx] = { ...legs[idx], [key]: val }; return { ...p, legs } })
+  }
+  function addLeg() { setSeg((p: any) => ({ ...p, legs: [...p.legs, blankLeg()] })) }
+  function removeLeg(idx: number) { setSeg((p: any) => ({ ...p, legs: p.legs.filter((_: any, i: number) => i !== idx) })) }
 
-  async function addFlight() {
-    if (!form.flight_number.trim()) { showToast('Flight number required', 'error'); return }
+  async function saveSegment() {
+    if (seg.legs.some((l: any) => !l.flight_number.trim())) { showToast('All legs need a flight number', 'error'); return }
     setSaving(true)
-    const legs = adding === 'outbound' ? outbound : returnFlts
-    const { error } = await supabase.from('booking_flights').insert({
-      booking_id: bookingId, direction: adding, leg_order: legs.length + 1,
-      flight_number: form.flight_number, airline: form.airline || null,
-      origin: form.origin || null, destination: form.destination || null,
-      departure_date: form.departure_date || null, departure_time: form.departure_time || null,
-      arrival_date: form.arrival_date || null, arrival_time: form.arrival_time || null,
-      next_day: form.next_day, cabin_class: form.cabin_class,
-      pnr: form.pnr || null, flight_supplier: form.flight_supplier || null,
-      baggage_notes: form.baggage_notes || null, cabin_notes: form.cabin_notes || null,
-    })
+    const existingLegs = seg.direction === 'outbound' ? outbound : returnFlts
+    // segment_id = max existing segment_id for this direction + 1
+    const segIds = existingLegs.map((f: Flight) => f.segment_id || 1)
+    const nextSegId = segIds.length ? Math.max(...segIds) + 1 : 1
+    const rows = seg.legs.map((l: any, i: number) => ({
+      booking_id:      bookingId,
+      direction:       seg.direction,
+      segment_id:      nextSegId,
+      leg_order:       existingLegs.length + i + 1,
+      pnr:             seg.pnr || null,
+      flight_supplier: seg.flight_supplier || null,
+      net_cost:        i === 0 && seg.net_cost ? Number(seg.net_cost) : null, // cost on first leg of segment only
+      cabin_class:     seg.cabin_class,
+      baggage_notes:   seg.baggage_notes || null,
+      flight_number:   l.flight_number,
+      airline:         l.airline || null,
+      origin:          l.origin || null,
+      destination:     l.destination || null,
+      departure_date:  l.departure_date || null,
+      departure_time:  l.departure_time || null,
+      arrival_time:    l.arrival_time || null,
+      next_day:        l.next_day,
+      cabin_notes:     l.cabin_notes || null,
+    }))
+    const { error } = await supabase.from('booking_flights').insert(rows)
     setSaving(false)
     if (error) { showToast('Failed: ' + error.message, 'error'); return }
-    showToast('Flight added ✓'); setAdding(null); onUpdate()
+    showToast(`${seg.direction === 'outbound' ? 'Outbound' : 'Return'} segment added ✓`)
+    setAdding(false); setSeg({ ...blankSeg }); onUpdate()
   }
 
-  async function saveEdit(id: number) {
+  async function saveEditLeg(id: number) {
     setSaving(true)
     const { error } = await supabase.from('booking_flights').update({
-      flight_number: editForm.flight_number, airline: editForm.airline || null,
-      origin: editForm.origin || null, destination: editForm.destination || null,
-      departure_date: editForm.departure_date || null, departure_time: editForm.departure_time || null,
-      arrival_date: editForm.arrival_date || null, arrival_time: editForm.arrival_time || null,
-      next_day: editForm.next_day, cabin_class: editForm.cabin_class,
-      pnr: editForm.pnr || null, flight_supplier: editForm.flight_supplier || null,
-      net_cost: editForm.net_cost ? Number(editForm.net_cost) : null,
-      baggage_notes: editForm.baggage_notes || null, cabin_notes: editForm.cabin_notes || null,
+      flight_number:   editForm.flight_number,
+      airline:         editForm.airline || null,
+      origin:          editForm.origin || null,
+      destination:     editForm.destination || null,
+      departure_date:  editForm.departure_date || null,
+      departure_time:  editForm.departure_time || null,
+      arrival_time:    editForm.arrival_time || null,
+      next_day:        editForm.next_day,
+      cabin_class:     editForm.cabin_class,
+      pnr:             editForm.pnr || null,
+      flight_supplier: editForm.flight_supplier || null,
+      net_cost:        editForm.net_cost ? Number(editForm.net_cost) : null,
+      baggage_notes:   editForm.baggage_notes || null,
+      cabin_notes:     editForm.cabin_notes || null,
     }).eq('id', id)
     setSaving(false)
     if (error) { showToast('Failed: ' + error.message, 'error'); return }
-    showToast('Flight updated ✓'); setEditing(null); onUpdate()
+    showToast('Leg updated ✓'); setEditingLeg(null); onUpdate()
   }
 
-  async function deleteFlight(id: number) {
+  async function deleteLeg(id: number) {
     await supabase.from('booking_flights').delete().eq('id', id)
-    showToast('Flight removed'); onUpdate()
+    showToast('Leg removed'); onUpdate()
   }
 
-  function renderGroup(legs: Flight[], direction: 'outbound'|'return') {
+  // Group legs into segments for display
+  function renderDirection(legs: Flight[], direction: 'outbound'|'return') {
+    if (legs.length === 0 && adding && seg.direction === direction) return null
+    const segments = legs.reduce((acc: Record<number, Flight[]>, f) => {
+      const sid = f.segment_id || 1
+      if (!acc[sid]) acc[sid] = []
+      acc[sid].push(f)
+      return acc
+    }, {})
     return (
       <div className="card" style={{ padding:'18px 20px', marginBottom:'14px' }}>
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px' }}>
-          <div style={{ fontFamily:'Fraunces,serif', fontSize:'16px', fontWeight:'300' }}>{direction === 'outbound' ? '✈ Outbound' : '✈ Return'}</div>
-          <button className="btn btn-secondary btn-xs" onClick={() => { setEditing(null); setAdding(direction); setForm({ ...blank }) }}>+ Add Leg</button>
+          <div style={{ fontFamily:'Fraunces,serif', fontSize:'16px', fontWeight:'300' }}>
+            {direction === 'outbound' ? '✈ Outbound' : '✈ Return'}
+            {legs.length > 0 && <span style={{ fontSize:'13px', color:'var(--text-muted)', fontFamily:'Outfit,sans-serif', marginLeft:'8px' }}>{Object.keys(segments).length} segment{Object.keys(segments).length !== 1 ? 's' : ''} · {legs.length} leg{legs.length !== 1 ? 's' : ''}</span>}
+          </div>
+          <button className="btn btn-secondary btn-xs" onClick={() => { setAdding(true); setSeg({ ...blankSeg, direction }) }}>+ Add Segment</button>
         </div>
         {legs.length === 0 ? (
           <div style={{ color:'var(--text-muted)', fontSize:'13px', fontStyle:'italic' }}>No {direction} flights yet</div>
         ) : (
-          <div style={{ display:'flex', flexDirection:'column', gap:'10px' }}>
-            {legs.map((f: Flight, i: number) => (
-              <div key={f.id} style={{ padding:'12px 14px', background:'var(--bg-secondary)', borderRadius:'8px', border: editing===f.id ? '1.5px solid var(--accent)' : 'none' }}>
-                {editing === f.id ? (
-                  <>
-                    <FlightGrid f={editForm} setF={setEditForm} idSuffix={`edit-${f.id}`} flightSuppliers={flightSuppliers} />
-                    <div style={{ display:'flex', gap:'8px', justifyContent:'flex-end', marginTop:'12px' }}>
-                      <button className="btn btn-secondary btn-xs" onClick={() => setEditing(null)}>Cancel</button>
-                      <button className="btn btn-cta btn-xs" onClick={() => saveEdit(f.id)} disabled={saving}>{saving?'Saving…':'Save Changes'}</button>
-                    </div>
-                  </>
-                ) : (
-                  <div style={{ display:'flex', gap:'12px', alignItems:'flex-start' }}>
-                    <div style={{ width:'24px', height:'24px', borderRadius:'50%', background:'var(--accent)', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, fontSize:'11px', color:'white', fontWeight:'700' }}>{i+1}</div>
-                    <div style={{ flex:1 }}>
-                      <div style={{ display:'flex', alignItems:'center', gap:'10px', marginBottom:'4px', flexWrap:'wrap' }}>
-                        <span style={{ fontSize:'15px', fontWeight:'600', fontFamily:'monospace' }}>{f.flight_number}</span>
-                        <span style={{ fontSize:'13px', color:'var(--text-muted)' }}>{f.airline}</span>
-                        <span style={{ fontSize:'11.5px', background:'var(--bg-tertiary)', padding:'2px 8px', borderRadius:'4px', color:'var(--accent)' }}>{f.cabin_class}</span>
-                        {f.next_day && <span style={{ fontSize:'11px', color:'var(--amber)', background:'#fef3c7', padding:'1px 6px', borderRadius:'4px' }}>Next Day</span>}
-                      </div>
-                      <div style={{ fontSize:'13px', color:'var(--text-primary)', marginBottom:'3px' }}>
-                        <strong>{f.origin}</strong> {f.departure_time} → <strong>{f.destination}</strong> {f.arrival_time}
-                      </div>
-                      <div style={{ fontSize:'12px', color:'var(--text-muted)', display:'flex', gap:'12px', flexWrap:'wrap' }}>
-                        <span>{fmtDate(f.departure_date)}</span>
-                        {f.pnr && <span>PNR: <strong>{f.pnr}</strong></span>}
-                        {f.flight_supplier && <span>via {f.flight_supplier}</span>}
-                        {f.net_cost != null && f.net_cost > 0 && <span style={{ color:'var(--accent)', fontWeight:'500' }}>Net: {fmt(f.net_cost)}</span>}
-                        {f.baggage_notes && <span>🧳 {f.baggage_notes}</span>}
-                      </div>
-                      {f.cabin_notes && <div style={{ fontSize:'12px', color:'var(--amber)', marginTop:'3px' }}>ℹ {f.cabin_notes}</div>}
-                    </div>
-                    <div style={{ display:'flex', gap:'6px' }}>
-                      <button className="btn btn-secondary btn-xs" onClick={() => { setAdding(null); setEditing(f.id); setEditForm({ ...f, departure_date: f.departure_date?.split('T')[0]||'', arrival_date: f.arrival_date?.split('T')[0]||'', net_cost: f.net_cost ?? '' }) }}>Edit</button>
-                      <button className="btn btn-ghost btn-xs" style={{ color:'var(--red)' }} onClick={() => deleteFlight(f.id)}>✕</button>
-                    </div>
+          <div style={{ display:'flex', flexDirection:'column', gap:'12px' }}>
+            {Object.entries(segments).map(([sid, segLegs]: [string, any]) => {
+              const first = segLegs[0]
+              const segNet = first.net_cost
+              return (
+                <div key={sid} style={{ border:'1px solid var(--border)', borderRadius:'8px', overflow:'hidden' }}>
+                  {/* Segment header */}
+                  <div style={{ background:'var(--bg-secondary)', padding:'10px 14px', display:'flex', gap:'14px', alignItems:'center', flexWrap:'wrap', borderBottom:'1px solid var(--border)' }}>
+                    <span style={{ fontSize:'11px', background: direction==='outbound' ? '#dbeafe' : '#d1fae5', color: direction==='outbound' ? '#2563eb' : '#059669', padding:'2px 8px', borderRadius:'4px', fontWeight:'600' }}>
+                      {direction === 'outbound' ? 'Outbound' : 'Return'}
+                    </span>
+                    <span style={{ fontSize:'12px', fontWeight:'600', color:'var(--text-primary)' }}>{first.cabin_class}</span>
+                    {first.flight_supplier && <span style={{ fontSize:'12px', color:'var(--accent)' }}>via {first.flight_supplier}</span>}
+                    {first.pnr && <span style={{ fontSize:'12px', fontFamily:'monospace', background:'var(--bg-tertiary)', padding:'1px 8px', borderRadius:'4px' }}>PNR: <strong>{first.pnr}</strong></span>}
+                    {segNet != null && segNet > 0 && <span style={{ fontSize:'12px', color:'var(--green)', fontWeight:'600', marginLeft:'auto' }}>Net: {fmt(segNet)}</span>}
+                    {first.baggage_notes && <span style={{ fontSize:'11.5px', color:'var(--text-muted)' }}>🧳 {first.baggage_notes}</span>}
                   </div>
-                )}
-              </div>
-            ))}
+                  {/* Legs */}
+                  <div style={{ padding:'10px 14px', display:'flex', flexDirection:'column', gap:'8px' }}>
+                    {segLegs.map((f: Flight, i: number) => (
+                      <div key={f.id}>
+                        {editingLeg === f.id ? (
+                          <div style={{ background:'var(--bg-secondary)', borderRadius:'8px', padding:'14px' }}>
+                            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr 1fr', gap:'10px', marginBottom:'10px' }}>
+                              <div><label className="label">Flight No</label><input className="input" value={editForm.flight_number} onChange={e=>setEditForm((p:any)=>({...p,flight_number:e.target.value}))}/></div>
+                              <div><label className="label">Airline</label><input className="input" value={editForm.airline||''} onChange={e=>setEditForm((p:any)=>({...p,airline:e.target.value}))}/></div>
+                              <div><label className="label">Origin</label><input className="input" value={editForm.origin||''} onChange={e=>setEditForm((p:any)=>({...p,origin:e.target.value.toUpperCase()}))}/></div>
+                              <div><label className="label">Destination</label><input className="input" value={editForm.destination||''} onChange={e=>setEditForm((p:any)=>({...p,destination:e.target.value.toUpperCase()}))}/></div>
+                              <div><label className="label">Depart Date</label><input className="input" type="date" value={editForm.departure_date||''} onChange={e=>setEditForm((p:any)=>({...p,departure_date:e.target.value}))}/></div>
+                              <div><label className="label">Depart Time</label><input className="input" value={editForm.departure_time||''} onChange={e=>setEditForm((p:any)=>({...p,departure_time:e.target.value}))}/></div>
+                              <div><label className="label">Arrive Time</label><input className="input" value={editForm.arrival_time||''} onChange={e=>setEditForm((p:any)=>({...p,arrival_time:e.target.value}))}/></div>
+                              <div><label className="label">Cabin Class</label><select className="input" value={editForm.cabin_class||'Economy'} onChange={e=>setEditForm((p:any)=>({...p,cabin_class:e.target.value}))}>{CABIN_CLASSES.map(c=><option key={c}>{c}</option>)}</select></div>
+                              <div><label className="label">PNR</label><input className="input" value={editForm.pnr||''} onChange={e=>setEditForm((p:any)=>({...p,pnr:e.target.value.toUpperCase()}))}/></div>
+                              <div><label className="label">Supplier</label>
+                                <select className="input" value={editForm.flight_supplier||''} onChange={e=>setEditForm((p:any)=>({...p,flight_supplier:e.target.value}))}>
+                                  <option value="">None</option>
+                                  {flightSuppliers.map((s:Supplier)=><option key={s.id} value={s.name}>{s.name}</option>)}
+                                </select>
+                              </div>
+                              <div><label className="label">Net Cost (£)</label><input className="input" type="number" value={editForm.net_cost||''} onChange={e=>setEditForm((p:any)=>({...p,net_cost:e.target.value}))}/></div>
+                              <div><label className="label">Baggage</label><input className="input" value={editForm.baggage_notes||''} onChange={e=>setEditForm((p:any)=>({...p,baggage_notes:e.target.value}))}/></div>
+                              <div style={{ gridColumn:'1/-1' }}><label className="label">Cabin Notes</label><input className="input" value={editForm.cabin_notes||''} onChange={e=>setEditForm((p:any)=>({...p,cabin_notes:e.target.value}))}/></div>
+                            </div>
+                            <div style={{ display:'flex', gap:'8px', justifyContent:'flex-end' }}>
+                              <button className="btn btn-secondary btn-xs" onClick={()=>setEditingLeg(null)}>Cancel</button>
+                              <button className="btn btn-cta btn-xs" onClick={()=>saveEditLeg(f.id)} disabled={saving}>{saving?'Saving…':'Save'}</button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div style={{ display:'flex', gap:'10px', alignItems:'center' }}>
+                            <div style={{ width:'20px', height:'20px', borderRadius:'50%', background:'var(--accent)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'10px', color:'white', fontWeight:'700', flexShrink:0 }}>{i+1}</div>
+                            <div style={{ flex:1 }}>
+                              <div style={{ display:'flex', gap:'10px', alignItems:'center', flexWrap:'wrap' }}>
+                                <span style={{ fontSize:'14px', fontWeight:'700', fontFamily:'monospace' }}>{f.flight_number}</span>
+                                <span style={{ fontSize:'13px', color:'var(--text-muted)' }}>{f.airline}</span>
+                                {f.next_day && <span style={{ fontSize:'10px', color:'var(--amber)', background:'#fef3c7', padding:'1px 5px', borderRadius:'3px' }}>+1</span>}
+                              </div>
+                              <div style={{ fontSize:'13px', color:'var(--text-primary)' }}>
+                                <strong>{f.origin}</strong> {f.departure_time && <span style={{ color:'var(--text-muted)' }}>{f.departure_time}</span>} → <strong>{f.destination}</strong> {f.arrival_time && <span style={{ color:'var(--text-muted)' }}>{f.arrival_time}</span>}
+                                <span style={{ color:'var(--text-muted)', fontSize:'12px', marginLeft:'8px' }}>{fmtDate(f.departure_date)}</span>
+                              </div>
+                              {f.cabin_notes && <div style={{ fontSize:'11.5px', color:'var(--amber)', marginTop:'2px' }}>ℹ {f.cabin_notes}</div>}
+                            </div>
+                            <div style={{ display:'flex', gap:'5px' }}>
+                              <button className="btn btn-secondary btn-xs" onClick={()=>{ setEditingLeg(f.id); setEditForm({ ...f, departure_date: f.departure_date?.split('T')[0]||'', net_cost: f.net_cost ?? '' }) }}>Edit</button>
+                              <button className="btn btn-ghost btn-xs" style={{ color:'var(--red)' }} onClick={()=>deleteLeg(f.id)}>✕</button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )
+            })}
           </div>
         )}
       </div>
@@ -848,17 +921,73 @@ function FlightsTab({ bookingId, outbound, returnFlts, suppliers, onUpdate, show
 
   return (
     <div>
-      {renderGroup(outbound, 'outbound')}
-      {renderGroup(returnFlts, 'return')}
+      {/* Total net cost across all segments */}
+      {totalNet > 0 && (
+        <div style={{ marginBottom:'14px', padding:'10px 16px', background:'var(--bg-secondary)', borderRadius:'8px', display:'flex', gap:'20px', fontSize:'13px' }}>
+          <span style={{ color:'var(--text-muted)' }}>Total flights net cost:</span>
+          <span style={{ fontWeight:'600', color:'var(--green)' }}>{fmt(totalNet)}</span>
+        </div>
+      )}
+
+      {renderDirection(outbound, 'outbound')}
+      {renderDirection(returnFlts, 'return')}
+
+      {/* Add segment form */}
       {adding && (
-        <div className="card" style={{ padding:'20px 22px', border:'1.5px solid var(--accent)' }}>
-          <div style={{ fontFamily:'Fraunces,serif', fontSize:'16px', fontWeight:'300', marginBottom:'14px' }}>
-            Add {adding === 'outbound' ? 'Outbound' : 'Return'} Leg {(adding === 'outbound' ? outbound : returnFlts).length + 1}
+        <div className="card" style={{ padding:'22px 24px', border:'1.5px solid var(--accent)' }}>
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'18px' }}>
+            <div style={{ fontFamily:'Fraunces,serif', fontSize:'16px', fontWeight:'300' }}>
+              New {seg.direction === 'outbound' ? 'Outbound' : 'Return'} Segment
+            </div>
+            <div style={{ display:'flex', gap:'8px' }}>
+              <button className="btn btn-secondary btn-xs" style={{ background: seg.direction==='outbound' ? 'var(--accent)' : undefined, color: seg.direction==='outbound' ? 'white' : undefined }}
+                onClick={()=>setSeg((p:any)=>({...p,direction:'outbound'}))}>Outbound</button>
+              <button className="btn btn-secondary btn-xs" style={{ background: seg.direction==='return' ? 'var(--accent)' : undefined, color: seg.direction==='return' ? 'white' : undefined }}
+                onClick={()=>setSeg((p:any)=>({...p,direction:'return'}))}>Return</button>
+            </div>
           </div>
-          <FlightGrid f={form} setF={setForm} idSuffix="add" flightSuppliers={flightSuppliers} />
-          <div style={{ display:'flex', gap:'8px', justifyContent:'flex-end', marginTop:'12px' }}>
-            <button className="btn btn-secondary" onClick={() => setAdding(null)}>Cancel</button>
-            <button className="btn btn-cta" onClick={addFlight} disabled={saving}>{saving?'Adding…':'Add Flight Leg'}</button>
+
+          {/* Segment-level fields (shared across all legs) */}
+          <div style={{ background:'var(--bg-secondary)', borderRadius:'8px', padding:'14px 16px', marginBottom:'16px' }}>
+            <div style={{ fontSize:'11px', fontWeight:'700', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:'10px' }}>Segment Details — shared across all legs</div>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr 1fr 1fr', gap:'10px' }}>
+              <div>
+                <label className="label">Supplier</label>
+                <select className="input" value={seg.flight_supplier} onChange={e=>setSeg((p:any)=>({...p,flight_supplier:e.target.value}))}>
+                  <option value="">None</option>
+                  {flightSuppliers.map((s:Supplier)=><option key={s.id} value={s.name}>{s.name}</option>)}
+                </select>
+              </div>
+              <div><label className="label">PNR / Booking Ref</label><input className="input" placeholder="Q5WR5B" value={seg.pnr} onChange={e=>setSeg((p:any)=>({...p,pnr:e.target.value.toUpperCase()}))}/></div>
+              <div><label className="label">Net Cost (£)</label><input className="input" type="number" placeholder="0.00" value={seg.net_cost} onChange={e=>setSeg((p:any)=>({...p,net_cost:e.target.value}))}/></div>
+              <div><label className="label">Cabin Class</label><select className="input" value={seg.cabin_class} onChange={e=>setSeg((p:any)=>({...p,cabin_class:e.target.value}))}>{CABIN_CLASSES.map(c=><option key={c}>{c}</option>)}</select></div>
+              <div><label className="label">Baggage</label><input className="input" placeholder="2 × 23kg" value={seg.baggage_notes} onChange={e=>setSeg((p:any)=>({...p,baggage_notes:e.target.value}))}/></div>
+            </div>
+          </div>
+
+          {/* Legs */}
+          <div style={{ display:'flex', flexDirection:'column', gap:'10px', marginBottom:'14px' }}>
+            {seg.legs.map((l: any, i: number) => (
+              <LegForm key={i} leg={l} onChange={(k:string,v:any)=>updateLeg(i,k,v)} onRemove={()=>removeLeg(i)} idx={i} canRemove={seg.legs.length > 1} idSuffix="new" />
+            ))}
+          </div>
+          <button className="btn btn-secondary btn-xs" style={{ marginBottom:'16px' }} onClick={addLeg}>+ Add Connecting Leg</button>
+
+          <div style={{ display:'flex', gap:'8px', justifyContent:'flex-end', borderTop:'1px solid var(--border)', paddingTop:'14px' }}>
+            <button className="btn btn-secondary" onClick={()=>setAdding(false)}>Cancel</button>
+            <button className="btn btn-cta" onClick={saveSegment} disabled={saving}>{saving ? 'Saving…' : `Save ${seg.direction === 'outbound' ? 'Outbound' : 'Return'} Segment (${seg.legs.length} leg${seg.legs.length !== 1 ? 's' : ''})`}</button>
+          </div>
+        </div>
+      )}
+
+      {outbound.length === 0 && returnFlts.length === 0 && !adding && (
+        <div className="card" style={{ padding:'40px', textAlign:'center' }}>
+          <div style={{ fontSize:'32px', marginBottom:'10px', opacity:0.3 }}>✈</div>
+          <div style={{ fontFamily:'Fraunces,serif', fontSize:'16px', fontWeight:'300', marginBottom:'8px' }}>No flights added yet</div>
+          <div style={{ color:'var(--text-muted)', fontSize:'13px', marginBottom:'16px' }}>Each segment has one supplier, PNR and net cost — add legs for connecting flights</div>
+          <div style={{ display:'flex', gap:'8px', justifyContent:'center' }}>
+            <button className="btn btn-cta" onClick={()=>{ setAdding(true); setSeg({ ...blankSeg, direction:'outbound' }) }}>+ Add Outbound Segment</button>
+            <button className="btn btn-secondary" onClick={()=>{ setAdding(true); setSeg({ ...blankSeg, direction:'return' }) }}>+ Add Return Segment</button>
           </div>
         </div>
       )}
