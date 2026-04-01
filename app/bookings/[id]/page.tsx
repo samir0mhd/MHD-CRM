@@ -37,7 +37,7 @@ type Flight = {
   departure_date: string | null; departure_time: string | null
   arrival_date: string | null; arrival_time: string | null; next_day: boolean
   cabin_class: string; pnr: string | null; flight_supplier: string | null
-  baggage_notes: string | null; cabin_notes: string | null
+  net_cost: number | null; baggage_notes: string | null; cabin_notes: string | null
 }
 type Accommodation = {
   id: number; booking_id: number; stay_order: number
@@ -74,6 +74,28 @@ type Supplier = { id: number; name: string; type: string | null }
 
 // ── CONSTANTS ────────────────────────────────────────────────
 const CABIN_CLASSES = ['Economy', 'Premium Economy', 'Business Class', 'First Class']
+const AIRPORTS = [
+  { code:'LGW', name:'London Gatwick'             }, { code:'LHR', name:'London Heathrow'           },
+  { code:'MAN', name:'Manchester'                 }, { code:'BHX', name:'Birmingham'                },
+  { code:'BRS', name:'Bristol'                    }, { code:'EDI', name:'Edinburgh'                 },
+  { code:'GLA', name:'Glasgow'                    }, { code:'LPL', name:'Liverpool John Lennon'     },
+  { code:'NCL', name:'Newcastle'                  }, { code:'LTN', name:'London Luton'              },
+  { code:'STN', name:'London Stansted'            }, { code:'BFS', name:'Belfast International'     },
+  { code:'MRU', name:'Mauritius Sir Seewoosagur'  }, { code:'RRG', name:'Rodrigues Plaine Corail'   },
+  { code:'DXB', name:'Dubai International'        }, { code:'CDG', name:'Paris Charles de Gaulle'   },
+  { code:'AMS', name:'Amsterdam Schiphol'         }, { code:'FRA', name:'Frankfurt'                 },
+  { code:'ZRH', name:'Zurich'                     }, { code:'CMB', name:'Colombo Bandaranaike'      },
+  { code:'HKG', name:'Hong Kong'                  }, { code:'SIN', name:'Singapore Changi'          },
+  { code:'BKK', name:'Bangkok Suvarnabhumi'       }, { code:'SEZ', name:'Mahé Seychelles'           },
+  { code:'MAD', name:'Madrid Barajas'             }, { code:'BCN', name:'Barcelona El Prat'         },
+  { code:'GVA', name:'Geneva'                     }, { code:'FCO', name:'Rome Fiumicino'            },
+]
+const AIRLINES = [
+  'Air Mauritius','British Airways','Virgin Atlantic','Air France','Emirates','KLM',
+  'Condor','Corsair','TUI Airways','Lufthansa','Swiss','Austrian Airlines',
+  'Qatar Airways','Etihad Airways','Singapore Airlines','Cathay Pacific',
+  'Kenya Airways','Air Canada','Iberia','Alitalia',
+]
 const BOARD_BASIS   = ['Room Only', 'Bed & Breakfast', 'Half Board', 'Full Board', 'All Inclusive', 'Ultra All Inclusive', 'Premium All Inclusive', 'Gourmet Half Board', 'Gourmet Bliss', 'Serenity Plus', 'Beachcomber Plus', 'Dine Around']
 const TRANSFER_TYPES = [
   { value: 'private',      label: 'Private (up to 2 pax)' },
@@ -150,7 +172,7 @@ export default function BookingDetailPage() {
   const [hotels, setHotels]             = useState<Hotel[]>([])
   const [suppliers, setSuppliers]       = useState<Supplier[]>([])
   const [loading, setLoading]           = useState(true)
-  const [tab, setTab]                   = useState<'overview'|'passengers'|'flights'|'accommodation'|'transfers'|'extras'|'payments'|'tasks'|'documents'>('overview')
+  const [tab, setTab]                   = useState<'overview'|'passengers'|'flights'|'accommodation'|'transfers'|'extras'|'payments'|'costing'|'tasks'|'documents'>('overview')
   const [toast, setToast]               = useState<{ msg: string; type: 'success'|'error' } | null>(null)
   const [saving, setSaving]             = useState(false)
   const toastTimer                      = useRef<any>(null)
@@ -222,6 +244,7 @@ export default function BookingDetailPage() {
     { key:'transfers',     label:`Transfers (${transfers.length})`      },
     { key:'extras',        label:`Extras (${extras.length})`            },
     { key:'payments',      label:`Payments (${payments.length})`        },
+    { key:'costing',       label:'Costing'                              },
     { key:'tasks',         label:`Tasks ${taskPct}%`                    },
     { key:'documents',     label:'Documents'                             },
   ] as const
@@ -290,7 +313,7 @@ export default function BookingDetailPage() {
         {/* ── FLIGHTS TAB ──────────────────────────────── */}
         {tab === 'flights' && (
           <FlightsTab bookingId={booking.id} outbound={outbound} returnFlts={returnFlts}
-            onUpdate={loadAll} showToast={showToast} />
+            suppliers={suppliers} onUpdate={loadAll} showToast={showToast} />
         )}
 
         {/* ── ACCOMMODATION TAB ────────────────────────── */}
@@ -314,6 +337,14 @@ export default function BookingDetailPage() {
         {/* ── PAYMENTS TAB ─────────────────────────────── */}
         {tab === 'payments' && (
           <PaymentsTab booking={booking} payments={payments} balance={balance}
+            onUpdate={loadAll} showToast={showToast} />
+        )}
+
+        {/* ── COSTING TAB ──────────────────────────────── */}
+        {tab === 'costing' && (
+          <CostingTab booking={booking} flights={[...outbound, ...returnFlts]}
+            accommodations={accommodations} transfers={transfers}
+            extras={extras} payments={payments} suppliers={suppliers}
             onUpdate={loadAll} showToast={showToast} />
         )}
 
@@ -348,7 +379,17 @@ function OverviewTab({ booking, client, payments, totalPaid, balance, taskPct, t
     balance_due_date: booking.balance_due_date?.split('T')[0] || '',
     booking_notes:  booking.booking_notes || '',
   })
-  const [saving, setSaving] = useState(false)
+  const [saving, setSaving]         = useState(false)
+  const [editingBalDue, setEditingBalDue] = useState(false)
+  const [balDueDraft, setBalDueDraft]     = useState(booking.balance_due_date?.split('T')[0] || '')
+
+  async function saveBalDue() {
+    const { error } = await supabase.from('bookings').update({ balance_due_date: balDueDraft || null }).eq('id', booking.id)
+    if (error) { showToast('Failed: ' + error.message, 'error'); return }
+    showToast('Balance due date updated ✓')
+    setEditingBalDue(false)
+    onUpdate()
+  }
 
   async function save() {
     setSaving(true)
@@ -482,10 +523,9 @@ function OverviewTab({ booking, client, payments, totalPaid, balance, taskPct, t
           <div style={{ fontSize:'11px', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:'10px' }}>Key Dates</div>
           <div style={{ display:'flex', flexDirection:'column', gap:'8px' }}>
             {[
-              { label:'Booked', val:fmtDate(booking.created_at), color:'var(--text-muted)' },
+              { label:'Booked',    val:fmtDate(booking.created_at),    color:'var(--text-muted)' },
               { label:'Departure', val:fmtDate(booking.departure_date), sub: depDays !== null && depDays >= 0 ? `${depDays}d away` : depDays !== null ? 'Departed' : '', color:'var(--accent)' },
-              { label:'Return', val:fmtDate(booking.return_date), color:'var(--text-muted)' },
-              { label:'Balance Due', val:fmtDate(booking.balance_due_date), sub: balance <= 0 ? 'Paid ✓' : undefined, color: balance <= 0 ? 'var(--green)' : 'var(--red)' },
+              { label:'Return',    val:fmtDate(booking.return_date),   color:'var(--text-muted)' },
             ].map(d => (
               <div key={d.label} style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline' }}>
                 <span style={{ fontSize:'12px', color:'var(--text-muted)' }}>{d.label}</span>
@@ -495,6 +535,31 @@ function OverviewTab({ booking, client, payments, totalPaid, balance, taskPct, t
                 </div>
               </div>
             ))}
+            {/* Balance Due — inline editable */}
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', paddingTop:'4px', borderTop:'1px solid var(--border)' }}>
+              <span style={{ fontSize:'12px', color:'var(--text-muted)' }}>Balance Due</span>
+              {editingBalDue ? (
+                <div style={{ display:'flex', gap:'5px', alignItems:'center' }}>
+                  <input className="input" type="date" value={balDueDraft}
+                    onChange={e => setBalDueDraft(e.target.value)}
+                    style={{ fontSize:'12px', padding:'3px 6px', width:'130px' }} />
+                  <button className="btn btn-cta btn-xs" onClick={saveBalDue}>✓</button>
+                  <button className="btn btn-ghost btn-xs" onClick={() => setEditingBalDue(false)}>✕</button>
+                </div>
+              ) : (
+                <div style={{ display:'flex', alignItems:'center', gap:'5px' }}>
+                  <div style={{ textAlign:'right' }}>
+                    <span style={{ fontSize:'13px', color: balance <= 0 ? 'var(--green)' : 'var(--red)', fontWeight:'500' }}>
+                      {fmtDate(booking.balance_due_date)}
+                    </span>
+                    {balance <= 0 && <div style={{ fontSize:'10.5px', color:'var(--text-muted)' }}>Paid ✓</div>}
+                  </div>
+                  <button onClick={() => setEditingBalDue(true)}
+                    style={{ background:'none', border:'none', cursor:'pointer', fontSize:'11px', color:'var(--text-muted)', padding:'2px', opacity:0.6 }}
+                    title="Edit balance due date">✏</button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
@@ -630,72 +695,150 @@ function PassengersTab({ bookingId, passengers, onUpdate, showToast }: any) {
   )
 }
 
+// ── FLIGHT FORM GRID (module-level — must NOT be inside FlightsTab or inputs lose focus) ──
+function FlightGrid({ f, setF, idSuffix, flightSuppliers }: { f: any; setF: any; idSuffix: string; flightSuppliers: Supplier[] }) {
+  return (
+    <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:'10px' }}>
+      <div><label className="label">Flight Number *</label><input className="input" placeholder="e.g. BA2065" value={f.flight_number} onChange={e=>setF((p:any)=>({...p,flight_number:e.target.value}))}/></div>
+      <div>
+        <label className="label">Airline</label>
+        <input className="input" list={`airlines-dl-${idSuffix}`} placeholder="e.g. British Airways" value={f.airline} onChange={e=>setF((p:any)=>({...p,airline:e.target.value}))}/>
+        <datalist id={`airlines-dl-${idSuffix}`}>{AIRLINES.map(a=><option key={a} value={a}/>)}</datalist>
+      </div>
+      <div><label className="label">Cabin Class</label><select className="input" value={f.cabin_class} onChange={e=>setF((p:any)=>({...p,cabin_class:e.target.value}))}>{CABIN_CLASSES.map(c=><option key={c}>{c}</option>)}</select></div>
+      <div>
+        <label className="label">Origin</label>
+        <input className="input" list={`airports-dl-${idSuffix}`} placeholder="e.g. LGW" value={f.origin} onChange={e=>setF((p:any)=>({...p,origin:e.target.value.toUpperCase()}))}/>
+        <datalist id={`airports-dl-${idSuffix}`}>{AIRPORTS.map(a=><option key={a.code} value={a.code}>{a.name}</option>)}</datalist>
+      </div>
+      <div>
+        <label className="label">Destination</label>
+        <input className="input" list={`airports-dl-${idSuffix}`} placeholder="e.g. MRU" value={f.destination} onChange={e=>setF((p:any)=>({...p,destination:e.target.value.toUpperCase()}))}/>
+      </div>
+      <div><label className="label">Departure Date</label><input className="input" type="date" value={f.departure_date} onChange={e=>setF((p:any)=>({...p,departure_date:e.target.value}))}/></div>
+      <div><label className="label">Depart Time</label><input className="input" placeholder="e.g. 21:00" value={f.departure_time} onChange={e=>setF((p:any)=>({...p,departure_time:e.target.value}))}/></div>
+      <div><label className="label">Arrive Time</label><input className="input" placeholder="e.g. 11:55" value={f.arrival_time} onChange={e=>setF((p:any)=>({...p,arrival_time:e.target.value}))}/></div>
+      <div style={{ display:'flex', alignItems:'center', gap:'8px', paddingTop:'18px' }}>
+        <input type="checkbox" id={`nxtday-${idSuffix}`} checked={f.next_day} onChange={e=>setF((p:any)=>({...p,next_day:e.target.checked}))}/>
+        <label htmlFor={`nxtday-${idSuffix}`} style={{ fontSize:'13px', cursor:'pointer' }}>Arrives next day</label>
+      </div>
+      <div><label className="label">PNR / Booking Ref</label><input className="input" placeholder="e.g. Q5WR5B" value={f.pnr} onChange={e=>setF((p:any)=>({...p,pnr:e.target.value.toUpperCase()}))}/></div>
+      <div>
+        <label className="label">Flight Supplier</label>
+        <select className="input" value={f.flight_supplier||''} onChange={e=>setF((p:any)=>({...p,flight_supplier:e.target.value}))}>
+          <option value="">No supplier</option>
+          {flightSuppliers.map((s:Supplier)=><option key={s.id} value={s.name}>{s.name}</option>)}
+        </select>
+      </div>
+      <div><label className="label">Net Cost (£)</label><input className="input" type="number" placeholder="0.00" value={f.net_cost} onChange={e=>setF((p:any)=>({...p,net_cost:e.target.value}))}/></div>
+      <div><label className="label">Baggage Notes</label><input className="input" placeholder="e.g. 2 x 23kg per person" value={f.baggage_notes} onChange={e=>setF((p:any)=>({...p,baggage_notes:e.target.value}))}/></div>
+      <div style={{ gridColumn:'1/-1' }}><label className="label">Cabin Class Notes</label><input className="input" placeholder="e.g. Mr Smith travelling Business Class" value={f.cabin_notes} onChange={e=>setF((p:any)=>({...p,cabin_notes:e.target.value}))}/></div>
+    </div>
+  )
+}
+
 // ── FLIGHTS TAB ──────────────────────────────────────────────
-function FlightsTab({ bookingId, outbound, returnFlts, onUpdate, showToast }: any) {
-  const blankFlight = { direction:'outbound', leg_order:1, flight_number:'', airline:'', origin:'', destination:'', departure_date:'', departure_time:'', arrival_date:'', arrival_time:'', next_day:false, cabin_class:'Economy', pnr:'', flight_supplier:'', baggage_notes:'', cabin_notes:'' }
+function FlightsTab({ bookingId, outbound, returnFlts, suppliers, onUpdate, showToast }: any) {
+  const blank = { flight_number:'', airline:'', origin:'', destination:'', departure_date:'', departure_time:'', arrival_date:'', arrival_time:'', next_day:false, cabin_class:'Economy', pnr:'', flight_supplier:'', net_cost:'', baggage_notes:'', cabin_notes:'' }
   const [adding, setAdding]     = useState<'outbound'|'return'|null>(null)
-  const [form, setForm]         = useState<any>({ ...blankFlight })
+  const [form, setForm]         = useState<any>({ ...blank })
+  const [editing, setEditing]   = useState<number|null>(null)
+  const [editForm, setEditForm] = useState<any>({})
   const [saving, setSaving]     = useState(false)
+
+  const flightSuppliers = (suppliers || []).filter((s: Supplier) => s.type === 'flight')
 
   async function addFlight() {
     if (!form.flight_number.trim()) { showToast('Flight number required', 'error'); return }
     setSaving(true)
     const legs = adding === 'outbound' ? outbound : returnFlts
     const { error } = await supabase.from('booking_flights').insert({
-      ...form,
-      booking_id:  bookingId,
-      direction:   adding,
-      leg_order:   legs.length + 1,
-      departure_date: form.departure_date || null,
-      arrival_date:   form.arrival_date || null,
+      booking_id: bookingId, direction: adding, leg_order: legs.length + 1,
+      flight_number: form.flight_number, airline: form.airline || null,
+      origin: form.origin || null, destination: form.destination || null,
+      departure_date: form.departure_date || null, departure_time: form.departure_time || null,
+      arrival_date: form.arrival_date || null, arrival_time: form.arrival_time || null,
+      next_day: form.next_day, cabin_class: form.cabin_class,
+      pnr: form.pnr || null, flight_supplier: form.flight_supplier || null,
+      net_cost: form.net_cost ? Number(form.net_cost) : null,
+      baggage_notes: form.baggage_notes || null, cabin_notes: form.cabin_notes || null,
     })
     setSaving(false)
     if (error) { showToast('Failed: ' + error.message, 'error'); return }
-    showToast('Flight added ✓')
-    setAdding(null); onUpdate()
+    showToast('Flight added ✓'); setAdding(null); onUpdate()
+  }
+
+  async function saveEdit(id: number) {
+    setSaving(true)
+    const { error } = await supabase.from('booking_flights').update({
+      flight_number: editForm.flight_number, airline: editForm.airline || null,
+      origin: editForm.origin || null, destination: editForm.destination || null,
+      departure_date: editForm.departure_date || null, departure_time: editForm.departure_time || null,
+      arrival_date: editForm.arrival_date || null, arrival_time: editForm.arrival_time || null,
+      next_day: editForm.next_day, cabin_class: editForm.cabin_class,
+      pnr: editForm.pnr || null, flight_supplier: editForm.flight_supplier || null,
+      net_cost: editForm.net_cost ? Number(editForm.net_cost) : null,
+      baggage_notes: editForm.baggage_notes || null, cabin_notes: editForm.cabin_notes || null,
+    }).eq('id', id)
+    setSaving(false)
+    if (error) { showToast('Failed: ' + error.message, 'error'); return }
+    showToast('Flight updated ✓'); setEditing(null); onUpdate()
   }
 
   async function deleteFlight(id: number) {
     await supabase.from('booking_flights').delete().eq('id', id)
-    showToast('Flight removed')
-    onUpdate()
+    showToast('Flight removed'); onUpdate()
   }
 
-  function FlightGroup({ legs, direction }: { legs: Flight[]; direction: 'outbound'|'return' }) {
+  function renderGroup(legs: Flight[], direction: 'outbound'|'return') {
     return (
       <div className="card" style={{ padding:'18px 20px', marginBottom:'14px' }}>
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px' }}>
-          <div style={{ fontFamily:'Fraunces,serif', fontSize:'16px', fontWeight:'300' }}>
-            {direction === 'outbound' ? '✈ Outbound' : '✈ Return'}
-          </div>
-          <button className="btn btn-secondary btn-xs" onClick={() => { setAdding(direction); setForm({ ...blankFlight, direction }) }}>+ Add Leg</button>
+          <div style={{ fontFamily:'Fraunces,serif', fontSize:'16px', fontWeight:'300' }}>{direction === 'outbound' ? '✈ Outbound' : '✈ Return'}</div>
+          <button className="btn btn-secondary btn-xs" onClick={() => { setEditing(null); setAdding(direction); setForm({ ...blank }) }}>+ Add Leg</button>
         </div>
         {legs.length === 0 ? (
           <div style={{ color:'var(--text-muted)', fontSize:'13px', fontStyle:'italic' }}>No {direction} flights yet</div>
         ) : (
           <div style={{ display:'flex', flexDirection:'column', gap:'10px' }}>
             {legs.map((f: Flight, i: number) => (
-              <div key={f.id} style={{ display:'flex', gap:'12px', alignItems:'flex-start', padding:'12px 14px', background:'var(--bg-secondary)', borderRadius:'8px' }}>
-                <div style={{ width:'24px', height:'24px', borderRadius:'50%', background:'var(--accent)', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, fontSize:'11px', color:'white', fontWeight:'700' }}>{i+1}</div>
-                <div style={{ flex:1 }}>
-                  <div style={{ display:'flex', alignItems:'center', gap:'10px', marginBottom:'4px' }}>
-                    <span style={{ fontSize:'15px', fontWeight:'600', fontFamily:'monospace' }}>{f.flight_number}</span>
-                    <span style={{ fontSize:'13px', color:'var(--text-muted)' }}>{f.airline}</span>
-                    <span style={{ fontSize:'11.5px', background:'var(--bg-tertiary)', padding:'2px 8px', borderRadius:'4px', color:'var(--accent)' }}>{f.cabin_class}</span>
-                    {f.next_day && <span style={{ fontSize:'11px', color:'var(--amber)', background:'#fef3c7', padding:'1px 6px', borderRadius:'4px' }}>Next Day</span>}
+              <div key={f.id} style={{ padding:'12px 14px', background:'var(--bg-secondary)', borderRadius:'8px', border: editing===f.id ? '1.5px solid var(--accent)' : 'none' }}>
+                {editing === f.id ? (
+                  <>
+                    <FlightGrid f={editForm} setF={setEditForm} idSuffix={`edit-${f.id}`} flightSuppliers={flightSuppliers} />
+                    <div style={{ display:'flex', gap:'8px', justifyContent:'flex-end', marginTop:'12px' }}>
+                      <button className="btn btn-secondary btn-xs" onClick={() => setEditing(null)}>Cancel</button>
+                      <button className="btn btn-cta btn-xs" onClick={() => saveEdit(f.id)} disabled={saving}>{saving?'Saving…':'Save Changes'}</button>
+                    </div>
+                  </>
+                ) : (
+                  <div style={{ display:'flex', gap:'12px', alignItems:'flex-start' }}>
+                    <div style={{ width:'24px', height:'24px', borderRadius:'50%', background:'var(--accent)', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, fontSize:'11px', color:'white', fontWeight:'700' }}>{i+1}</div>
+                    <div style={{ flex:1 }}>
+                      <div style={{ display:'flex', alignItems:'center', gap:'10px', marginBottom:'4px', flexWrap:'wrap' }}>
+                        <span style={{ fontSize:'15px', fontWeight:'600', fontFamily:'monospace' }}>{f.flight_number}</span>
+                        <span style={{ fontSize:'13px', color:'var(--text-muted)' }}>{f.airline}</span>
+                        <span style={{ fontSize:'11.5px', background:'var(--bg-tertiary)', padding:'2px 8px', borderRadius:'4px', color:'var(--accent)' }}>{f.cabin_class}</span>
+                        {f.next_day && <span style={{ fontSize:'11px', color:'var(--amber)', background:'#fef3c7', padding:'1px 6px', borderRadius:'4px' }}>Next Day</span>}
+                      </div>
+                      <div style={{ fontSize:'13px', color:'var(--text-primary)', marginBottom:'3px' }}>
+                        <strong>{f.origin}</strong> {f.departure_time} → <strong>{f.destination}</strong> {f.arrival_time}
+                      </div>
+                      <div style={{ fontSize:'12px', color:'var(--text-muted)', display:'flex', gap:'12px', flexWrap:'wrap' }}>
+                        <span>{fmtDate(f.departure_date)}</span>
+                        {f.pnr && <span>PNR: <strong>{f.pnr}</strong></span>}
+                        {f.flight_supplier && <span>via {f.flight_supplier}</span>}
+                        {f.net_cost != null && f.net_cost > 0 && <span style={{ color:'var(--accent)', fontWeight:'500' }}>Net: {fmt(f.net_cost)}</span>}
+                        {f.baggage_notes && <span>🧳 {f.baggage_notes}</span>}
+                      </div>
+                      {f.cabin_notes && <div style={{ fontSize:'12px', color:'var(--amber)', marginTop:'3px' }}>ℹ {f.cabin_notes}</div>}
+                    </div>
+                    <div style={{ display:'flex', gap:'6px' }}>
+                      <button className="btn btn-secondary btn-xs" onClick={() => { setAdding(null); setEditing(f.id); setEditForm({ ...f, departure_date: f.departure_date?.split('T')[0]||'', arrival_date: f.arrival_date?.split('T')[0]||'', net_cost: f.net_cost ?? '' }) }}>Edit</button>
+                      <button className="btn btn-ghost btn-xs" style={{ color:'var(--red)' }} onClick={() => deleteFlight(f.id)}>✕</button>
+                    </div>
                   </div>
-                  <div style={{ fontSize:'13px', color:'var(--text-primary)', marginBottom:'3px' }}>
-                    <strong>{f.origin}</strong> {f.departure_time} → <strong>{f.destination}</strong> {f.arrival_time}
-                  </div>
-                  <div style={{ fontSize:'12px', color:'var(--text-muted)', display:'flex', gap:'12px' }}>
-                    <span>{fmtDate(f.departure_date)}</span>
-                    {f.pnr && <span>PNR: <strong>{f.pnr}</strong></span>}
-                    {f.flight_supplier && <span>via {f.flight_supplier}</span>}
-                    {f.baggage_notes && <span>🧳 {f.baggage_notes}</span>}
-                  </div>
-                  {f.cabin_notes && <div style={{ fontSize:'12px', color:'var(--amber)', marginTop:'3px' }}>ℹ {f.cabin_notes}</div>}
-                </div>
-                <button className="btn btn-ghost btn-xs" style={{ color:'var(--red)' }} onClick={() => deleteFlight(f.id)}>✕</button>
+                )}
               </div>
             ))}
           </div>
@@ -706,32 +849,15 @@ function FlightsTab({ bookingId, outbound, returnFlts, onUpdate, showToast }: an
 
   return (
     <div>
-      <FlightGroup legs={outbound} direction="outbound" />
-      <FlightGroup legs={returnFlts} direction="return" />
-
+      {renderGroup(outbound, 'outbound')}
+      {renderGroup(returnFlts, 'return')}
       {adding && (
         <div className="card" style={{ padding:'20px 22px', border:'1.5px solid var(--accent)' }}>
           <div style={{ fontFamily:'Fraunces,serif', fontSize:'16px', fontWeight:'300', marginBottom:'14px' }}>
             Add {adding === 'outbound' ? 'Outbound' : 'Return'} Leg {(adding === 'outbound' ? outbound : returnFlts).length + 1}
           </div>
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:'10px', marginBottom:'12px' }}>
-            <div><label className="label">Flight Number *</label><input className="input" autoFocus placeholder="e.g. BA2065" value={form.flight_number} onChange={e=>setForm((p:any)=>({...p,flight_number:e.target.value}))}/></div>
-            <div><label className="label">Airline</label><input className="input" placeholder="e.g. British Airways" value={form.airline} onChange={e=>setForm((p:any)=>({...p,airline:e.target.value}))}/></div>
-            <div><label className="label">Cabin Class</label><select className="input" value={form.cabin_class} onChange={e=>setForm((p:any)=>({...p,cabin_class:e.target.value}))}>{CABIN_CLASSES.map(c=><option key={c}>{c}</option>)}</select></div>
-            <div><label className="label">Origin (airport code)</label><input className="input" placeholder="e.g. LGW" value={form.origin} onChange={e=>setForm((p:any)=>({...p,origin:e.target.value.toUpperCase()}))}/></div>
-            <div><label className="label">Destination</label><input className="input" placeholder="e.g. MRU" value={form.destination} onChange={e=>setForm((p:any)=>({...p,destination:e.target.value.toUpperCase()}))}/></div>
-            <div><label className="label">Departure Date</label><input className="input" type="date" value={form.departure_date} onChange={e=>setForm((p:any)=>({...p,departure_date:e.target.value}))}/></div>
-            <div><label className="label">Depart Time</label><input className="input" placeholder="e.g. 21:00" value={form.departure_time} onChange={e=>setForm((p:any)=>({...p,departure_time:e.target.value}))}/></div>
-            <div><label className="label">Arrive Time</label><input className="input" placeholder="e.g. 11:55" value={form.arrival_time} onChange={e=>setForm((p:any)=>({...p,arrival_time:e.target.value}))}/></div>
-            <div style={{ display:'flex', alignItems:'center', gap:'8px', paddingTop:'18px' }}>
-              <input type="checkbox" id="nxtday" checked={form.next_day} onChange={e=>setForm((p:any)=>({...p,next_day:e.target.checked}))}/> <label htmlFor="nxtday" style={{ fontSize:'13px', cursor:'pointer' }}>Arrives next day</label>
-            </div>
-            <div><label className="label">PNR / Booking Ref</label><input className="input" placeholder="e.g. Q5WR5B" value={form.pnr} onChange={e=>setForm((p:any)=>({...p,pnr:e.target.value.toUpperCase()}))}/></div>
-            <div><label className="label">Flight Supplier</label><input className="input" placeholder="e.g. Aviate, Lime, Amadeus" value={form.flight_supplier} onChange={e=>setForm((p:any)=>({...p,flight_supplier:e.target.value}))}/></div>
-            <div><label className="label">Baggage Notes</label><input className="input" placeholder="e.g. 2 x 23kg per person" value={form.baggage_notes} onChange={e=>setForm((p:any)=>({...p,baggage_notes:e.target.value}))}/></div>
-            <div style={{ gridColumn:'1/-1' }}><label className="label">Cabin Class Notes</label><input className="input" placeholder="e.g. Mr Smith travelling Business Class" value={form.cabin_notes} onChange={e=>setForm((p:any)=>({...p,cabin_notes:e.target.value}))}/></div>
-          </div>
-          <div style={{ display:'flex', gap:'8px', justifyContent:'flex-end' }}>
+          <FlightGrid f={form} setF={setForm} idSuffix="add" flightSuppliers={flightSuppliers} />
+          <div style={{ display:'flex', gap:'8px', justifyContent:'flex-end', marginTop:'12px' }}>
             <button className="btn btn-secondary" onClick={() => setAdding(null)}>Cancel</button>
             <button className="btn btn-cta" onClick={addFlight} disabled={saving}>{saving?'Adding…':'Add Flight Leg'}</button>
           </div>
@@ -746,6 +872,8 @@ function AccommodationTab({ bookingId, accommodations, hotels, suppliers, passen
   const blankAccom = { hotel_id:'', hotel_name:'', supplier_id:'', hotel_confirmation:'', checkin_date:'', checkout_date:'', nights:'', room_type:'', room_quantity:'1', board_basis:'Half Board', adults:'2', children:'0', infants:'0', net_cost:'', special_occasion:'', special_requests:'', reservation_status:'pending', reservation_email_to:'' }
   const [adding, setAdding]     = useState(false)
   const [form, setForm]         = useState<any>({ ...blankAccom })
+  const [editing, setEditing]   = useState<number|null>(null)
+  const [editForm, setEditForm] = useState<any>({})
   const [saving, setSaving]     = useState(false)
   const totalAdults   = passengers.filter((p:Passenger) => p.passenger_type === 'Adult').length
   const totalChildren = passengers.filter((p:Passenger) => p.passenger_type === 'Child').length
@@ -785,6 +913,27 @@ function AccommodationTab({ bookingId, accommodations, hotels, suppliers, passen
     setAdding(false); onUpdate()
   }
 
+  async function saveAccomEdit(id: number) {
+    setSaving(true)
+    const nights = editForm.nights ? Number(editForm.nights) : calcNights(editForm.checkin_date, editForm.checkout_date)
+    const { error } = await supabase.from('booking_accommodations').update({
+      hotel_id: editForm.hotel_id ? Number(editForm.hotel_id) : null,
+      hotel_name: editForm.hotel_name?.trim() || null,
+      supplier_id: editForm.supplier_id ? Number(editForm.supplier_id) : null,
+      hotel_confirmation: editForm.hotel_confirmation || null,
+      checkin_date: editForm.checkin_date || null, checkout_date: editForm.checkout_date || null,
+      nights: nights || null, room_type: editForm.room_type || null,
+      room_quantity: Number(editForm.room_quantity) || 1, board_basis: editForm.board_basis || null,
+      adults: Number(editForm.adults) || 2, children: Number(editForm.children) || 0, infants: Number(editForm.infants) || 0,
+      net_cost: editForm.net_cost ? Number(editForm.net_cost) : null,
+      special_occasion: editForm.special_occasion || null, special_requests: editForm.special_requests || null,
+      reservation_email_to: editForm.reservation_email_to || null,
+    }).eq('id', id)
+    setSaving(false)
+    if (error) { showToast('Failed: ' + error.message, 'error'); return }
+    showToast('Stay updated ✓'); setEditing(null); onUpdate()
+  }
+
   async function updateResStatus(id: number, status: string) {
     await supabase.from('booking_accommodations').update({ reservation_status: status, ...(status === 'sent' ? { reservation_sent_at: new Date().toISOString() } : {}) }).eq('id', id)
     showToast('Status updated')
@@ -808,39 +957,78 @@ function AccommodationTab({ bookingId, accommodations, hotels, suppliers, passen
       <div style={{ display:'flex', flexDirection:'column', gap:'12px' }}>
         {accommodations.map((a: Accommodation, i: number) => {
           const resCfg = RES_STATUS[a.reservation_status] || RES_STATUS.pending
+          const editHotel = editForm.hotel_id ? hotels.find((h: Hotel) => h.id === Number(editForm.hotel_id)) : null
           return (
-            <div key={a.id} className="card" style={{ padding:'18px 20px' }}>
-              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:'12px' }}>
-                <div>
-                  <div style={{ display:'flex', alignItems:'center', gap:'8px' }}>
-                    <span style={{ fontFamily:'Fraunces,serif', fontSize:'16px', fontWeight:'300' }}>Stay {i+1}</span>
-                    <span style={{ fontSize:'11px', padding:'2px 8px', borderRadius:'10px', background:`${resCfg.color}18`, color:resCfg.color, fontWeight:'500' }}>{resCfg.label}</span>
-                    {a.hotel_confirmation && <span style={{ fontSize:'11px', color:'var(--green)', background:'var(--green-light)', padding:'2px 8px', borderRadius:'10px' }}>Ref: {a.hotel_confirmation}</span>}
+            <div key={a.id} className="card" style={{ padding:'18px 20px', border: editing===a.id ? '1.5px solid var(--accent)' : undefined }}>
+              {editing === a.id ? (
+                <>
+                  <div style={{ fontFamily:'Fraunces,serif', fontSize:'15px', fontWeight:'300', marginBottom:'14px' }}>Edit Stay {i+1}</div>
+                  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'12px' }}>
+                    <div style={{ gridColumn:'1/-1' }}>
+                      <label className="label">Hotel</label>
+                      <select className="input" value={editForm.hotel_id||''} onChange={e=>{const h=hotels.find((h:Hotel)=>h.id===Number(e.target.value));setEditForm((p:any)=>({...p,hotel_id:e.target.value,hotel_name:h?.name||p.hotel_name,reservation_email_to:h?.reservation_email||p.reservation_email_to}))}}>
+                        <option value="">Select from directory…</option>
+                        {hotels.map((h:Hotel)=><option key={h.id} value={h.id}>{h.name}</option>)}
+                      </select>
+                    </div>
+                    {!editForm.hotel_id && <div style={{ gridColumn:'1/-1' }}><label className="label">Hotel Name</label><input className="input" value={editForm.hotel_name||''} onChange={e=>setEditForm((p:any)=>({...p,hotel_name:e.target.value}))}/></div>}
+                    <div><label className="label">Supplier</label><select className="input" value={editForm.supplier_id||''} onChange={e=>setEditForm((p:any)=>({...p,supplier_id:e.target.value}))}><option value="">No supplier</option>{suppliers.filter((s:Supplier)=>s.type==='hotel'||s.type==='dmc').map((s:Supplier)=><option key={s.id} value={s.id}>{s.name}</option>)}</select></div>
+                    <div><label className="label">Confirmation Ref</label><input className="input" value={editForm.hotel_confirmation||''} onChange={e=>setEditForm((p:any)=>({...p,hotel_confirmation:e.target.value}))}/></div>
+                    <div><label className="label">Check In</label><input className="input" type="date" value={editForm.checkin_date||''} onChange={e=>setEditForm((p:any)=>({...p,checkin_date:e.target.value}))}/></div>
+                    <div><label className="label">Check Out</label><input className="input" type="date" value={editForm.checkout_date||''} onChange={e=>setEditForm((p:any)=>({...p,checkout_date:e.target.value}))}/></div>
+                    <div><label className="label">Room Type</label><input className="input" list="edit-room-types" value={editForm.room_type||''} onChange={e=>setEditForm((p:any)=>({...p,room_type:e.target.value}))}/>{editHotel?.room_types?.length&&<datalist id="edit-room-types">{editHotel.room_types.map((r:string)=><option key={r} value={r}/>)}</datalist>}</div>
+                    <div><label className="label">Rooms</label><input className="input" type="number" min="1" value={editForm.room_quantity||'1'} onChange={e=>setEditForm((p:any)=>({...p,room_quantity:e.target.value}))}/></div>
+                    <div><label className="label">Board Basis</label><select className="input" value={editForm.board_basis||''} onChange={e=>setEditForm((p:any)=>({...p,board_basis:e.target.value}))}>{BOARD_BASIS.map(b=><option key={b}>{b}</option>)}</select></div>
+                    <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:'8px' }}>
+                      <div><label className="label">Adults</label><input className="input" type="number" min="0" value={editForm.adults||'0'} onChange={e=>setEditForm((p:any)=>({...p,adults:e.target.value}))}/></div>
+                      <div><label className="label">Children</label><input className="input" type="number" min="0" value={editForm.children||'0'} onChange={e=>setEditForm((p:any)=>({...p,children:e.target.value}))}/></div>
+                      <div><label className="label">Infants</label><input className="input" type="number" min="0" value={editForm.infants||'0'} onChange={e=>setEditForm((p:any)=>({...p,infants:e.target.value}))}/></div>
+                    </div>
+                    <div><label className="label">Net Cost (£)</label><input className="input" type="number" value={editForm.net_cost||''} onChange={e=>setEditForm((p:any)=>({...p,net_cost:e.target.value}))}/></div>
+                    <div><label className="label">Special Occasion</label><select className="input" value={editForm.special_occasion||''} onChange={e=>setEditForm((p:any)=>({...p,special_occasion:e.target.value}))}><option value="">None</option>{SPECIAL_OCCASIONS.map(o=><option key={o}>{o}</option>)}</select></div>
+                    <div style={{ gridColumn:'1/-1' }}><label className="label">Special Requests</label><textarea className="input" style={{ minHeight:'60px', resize:'vertical', fontSize:'13px' }} value={editForm.special_requests||''} onChange={e=>setEditForm((p:any)=>({...p,special_requests:e.target.value}))}/></div>
+                    <div style={{ gridColumn:'1/-1' }}><label className="label">Reservation Email</label><input className="input" type="email" value={editForm.reservation_email_to||''} onChange={e=>setEditForm((p:any)=>({...p,reservation_email_to:e.target.value}))}/></div>
                   </div>
-                  <div style={{ fontSize:'18px', fontWeight:'300', fontFamily:'Fraunces,serif', marginTop:'4px' }}>{a.hotel_name}</div>
-                </div>
-                <div style={{ display:'flex', gap:'6px' }}>
-                  <select className="input" style={{ fontSize:'11.5px', padding:'4px 8px', width:'auto' }}
-                    value={a.reservation_status} onChange={e => updateResStatus(a.id, e.target.value)}>
-                    {Object.entries(RES_STATUS).map(([k,v]) => <option key={k} value={k}>{v.label}</option>)}
-                  </select>
-                  <button className="btn btn-ghost btn-xs" style={{ color:'var(--red)' }} onClick={() => deleteAccom(a.id)}>✕</button>
-                </div>
-              </div>
-              <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:'10px', fontSize:'13px' }}>
-                <div><span style={{ color:'var(--text-muted)', fontSize:'11px' }}>CHECK IN</span><div style={{ fontWeight:'500' }}>{fmtDate(a.checkin_date)}</div></div>
-                <div><span style={{ color:'var(--text-muted)', fontSize:'11px' }}>CHECK OUT</span><div style={{ fontWeight:'500' }}>{fmtDate(a.checkout_date)}</div></div>
-                <div><span style={{ color:'var(--text-muted)', fontSize:'11px' }}>NIGHTS</span><div style={{ fontWeight:'500' }}>{a.nights || calcNights(a.checkin_date, a.checkout_date) || '—'}</div></div>
-                <div><span style={{ color:'var(--text-muted)', fontSize:'11px' }}>ROOM</span><div style={{ fontWeight:'500' }}>{a.room_type || '—'} × {a.room_quantity}</div></div>
-                <div><span style={{ color:'var(--text-muted)', fontSize:'11px' }}>BOARD</span><div style={{ fontWeight:'500' }}>{a.board_basis || '—'}</div></div>
-                <div><span style={{ color:'var(--text-muted)', fontSize:'11px' }}>PAX</span><div style={{ fontWeight:'500' }}>{a.adults}A {a.children>0?`${a.children}C`:''} {a.infants>0?`${a.infants}I`:''}</div></div>
-                <div><span style={{ color:'var(--text-muted)', fontSize:'11px' }}>NET COST</span><div style={{ fontWeight:'500', color:'var(--accent)' }}>{a.net_cost ? fmt(a.net_cost) : '—'}</div></div>
-                {a.special_occasion && <div><span style={{ color:'var(--text-muted)', fontSize:'11px' }}>OCCASION</span><div style={{ color:'var(--gold,#f59e0b)', fontWeight:'500' }}>🎉 {a.special_occasion}</div></div>}
-              </div>
-              {a.special_requests && (
-                <div style={{ marginTop:'10px', padding:'8px 12px', background:'var(--bg-secondary)', borderRadius:'6px', fontSize:'12.5px', color:'var(--text-muted)', borderLeft:'2px solid var(--accent)' }}>
-                  <strong style={{ color:'var(--text-primary)' }}>Special Requests:</strong> {a.special_requests}
-                </div>
+                  <div style={{ display:'flex', gap:'8px', justifyContent:'flex-end', marginTop:'14px' }}>
+                    <button className="btn btn-secondary" onClick={() => setEditing(null)}>Cancel</button>
+                    <button className="btn btn-cta" onClick={() => saveAccomEdit(a.id)} disabled={saving}>{saving?'Saving…':'Save Changes'}</button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:'12px' }}>
+                    <div>
+                      <div style={{ display:'flex', alignItems:'center', gap:'8px' }}>
+                        <span style={{ fontFamily:'Fraunces,serif', fontSize:'16px', fontWeight:'300' }}>Stay {i+1}</span>
+                        <span style={{ fontSize:'11px', padding:'2px 8px', borderRadius:'10px', background:`${resCfg.color}18`, color:resCfg.color, fontWeight:'500' }}>{resCfg.label}</span>
+                        {a.hotel_confirmation && <span style={{ fontSize:'11px', color:'var(--green)', background:'var(--green-light)', padding:'2px 8px', borderRadius:'10px' }}>Ref: {a.hotel_confirmation}</span>}
+                      </div>
+                      <div style={{ fontSize:'18px', fontWeight:'300', fontFamily:'Fraunces,serif', marginTop:'4px' }}>{a.hotel_name}</div>
+                    </div>
+                    <div style={{ display:'flex', gap:'6px' }}>
+                      <select className="input" style={{ fontSize:'11.5px', padding:'4px 8px', width:'auto' }} value={a.reservation_status} onChange={e => updateResStatus(a.id, e.target.value)}>
+                        {Object.entries(RES_STATUS).map(([k,v]) => <option key={k} value={k}>{v.label}</option>)}
+                      </select>
+                      <button className="btn btn-secondary btn-xs" onClick={() => { setAdding(false); setEditing(a.id); setEditForm({ ...a, checkin_date: a.checkin_date?.split('T')[0]||'', checkout_date: a.checkout_date?.split('T')[0]||'', net_cost: a.net_cost ?? '', hotel_id: a.hotel_id ?? '', supplier_id: a.supplier_id ?? '' }) }}>Edit</button>
+                      <button className="btn btn-ghost btn-xs" style={{ color:'var(--red)' }} onClick={() => deleteAccom(a.id)}>✕</button>
+                    </div>
+                  </div>
+                  <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:'10px', fontSize:'13px' }}>
+                    <div><span style={{ color:'var(--text-muted)', fontSize:'11px' }}>CHECK IN</span><div style={{ fontWeight:'500' }}>{fmtDate(a.checkin_date)}</div></div>
+                    <div><span style={{ color:'var(--text-muted)', fontSize:'11px' }}>CHECK OUT</span><div style={{ fontWeight:'500' }}>{fmtDate(a.checkout_date)}</div></div>
+                    <div><span style={{ color:'var(--text-muted)', fontSize:'11px' }}>NIGHTS</span><div style={{ fontWeight:'500' }}>{a.nights || calcNights(a.checkin_date, a.checkout_date) || '—'}</div></div>
+                    <div><span style={{ color:'var(--text-muted)', fontSize:'11px' }}>ROOM</span><div style={{ fontWeight:'500' }}>{a.room_type || '—'} × {a.room_quantity}</div></div>
+                    <div><span style={{ color:'var(--text-muted)', fontSize:'11px' }}>BOARD</span><div style={{ fontWeight:'500' }}>{a.board_basis || '—'}</div></div>
+                    <div><span style={{ color:'var(--text-muted)', fontSize:'11px' }}>PAX</span><div style={{ fontWeight:'500' }}>{a.adults}A {a.children>0?`${a.children}C`:''} {a.infants>0?`${a.infants}I`:''}</div></div>
+                    <div><span style={{ color:'var(--text-muted)', fontSize:'11px' }}>NET COST</span><div style={{ fontWeight:'500', color:'var(--accent)' }}>{a.net_cost ? fmt(a.net_cost) : '—'}</div></div>
+                    {a.special_occasion && <div><span style={{ color:'var(--text-muted)', fontSize:'11px' }}>OCCASION</span><div style={{ color:'var(--gold,#f59e0b)', fontWeight:'500' }}>🎉 {a.special_occasion}</div></div>}
+                  </div>
+                  {a.special_requests && (
+                    <div style={{ marginTop:'10px', padding:'8px 12px', background:'var(--bg-secondary)', borderRadius:'6px', fontSize:'12.5px', color:'var(--text-muted)', borderLeft:'2px solid var(--accent)' }}>
+                      <strong style={{ color:'var(--text-primary)' }}>Special Requests:</strong> {a.special_requests}
+                    </div>
+                  )}
+                </>
               )}
             </div>
           )
@@ -929,9 +1117,11 @@ function AccommodationTab({ bookingId, accommodations, hotels, suppliers, passen
 // ── TRANSFERS TAB ────────────────────────────────────────────
 function TransfersTab({ bookingId, transfers, suppliers, flights, onUpdate, showToast }: any) {
   const blankTransfer = { supplier_id:'', supplier_name:'', transfer_type:'private', meet_greet:true, local_rep:true, arrival_date:'', arrival_time:'', arrival_flight:'', departure_date:'', departure_time:'', departure_flight:'', inter_hotel_dates:'', net_cost:'', notes:'' }
-  const [adding, setAdding] = useState(false)
-  const [form, setForm]     = useState<any>({ ...blankTransfer })
-  const [saving, setSaving] = useState(false)
+  const [adding, setAdding]     = useState(false)
+  const [form, setForm]         = useState<any>({ ...blankTransfer })
+  const [editing, setEditing]   = useState<number|null>(null)
+  const [editForm, setEditForm] = useState<any>({})
+  const [saving, setSaving]     = useState(false)
 
   const arrFlight = flights.find((f: Flight) => f.direction === 'outbound' && f.destination?.includes('MRU'))
   const depFlight = flights.find((f: Flight) => f.direction === 'return' && f.origin?.includes('MRU'))
@@ -958,6 +1148,26 @@ function TransfersTab({ bookingId, transfers, suppliers, flights, onUpdate, show
     setAdding(false); onUpdate()
   }
 
+  async function saveTransferEdit(id: number) {
+    setSaving(true)
+    const { error } = await supabase.from('booking_transfers').update({
+      supplier_id: editForm.supplier_id ? Number(editForm.supplier_id) : null,
+      supplier_name: editForm.supplier_name || null,
+      transfer_type: editForm.transfer_type,
+      meet_greet: editForm.meet_greet, local_rep: editForm.local_rep,
+      arrival_date: editForm.arrival_date || null, arrival_time: editForm.arrival_time || null,
+      arrival_flight: editForm.arrival_flight || null,
+      departure_date: editForm.departure_date || null, departure_time: editForm.departure_time || null,
+      departure_flight: editForm.departure_flight || null,
+      inter_hotel_dates: editForm.inter_hotel_dates || null,
+      net_cost: editForm.net_cost ? Number(editForm.net_cost) : null,
+      notes: editForm.notes || null,
+    }).eq('id', id)
+    setSaving(false)
+    if (error) { showToast('Failed: ' + error.message, 'error'); return }
+    showToast('Transfer updated ✓'); setEditing(null); onUpdate()
+  }
+
   async function deleteTransfer(id: number) {
     await supabase.from('booking_transfers').delete().eq('id', id)
     showToast('Transfer removed'); onUpdate()
@@ -982,32 +1192,62 @@ function TransfersTab({ bookingId, transfers, suppliers, flights, onUpdate, show
       </div>
 
       {transfers.map((t: Transfer) => (
-        <div key={t.id} className="card" style={{ padding:'18px 20px', marginBottom:'12px' }}>
-          <div style={{ display:'flex', justifyContent:'space-between', marginBottom:'12px' }}>
-            <div>
-              <div style={{ fontFamily:'Fraunces,serif', fontSize:'16px', fontWeight:'300', marginBottom:'4px' }}>
-                {t.supplier_name || 'Transfer'} — {TRANSFER_TYPES.find(x=>x.value===t.transfer_type)?.label || t.transfer_type}
+        <div key={t.id} className="card" style={{ padding:'18px 20px', marginBottom:'12px', border: editing===t.id ? '1.5px solid var(--accent)' : undefined }}>
+          {editing === t.id ? (
+            <>
+              <div style={{ fontFamily:'Fraunces,serif', fontSize:'15px', fontWeight:'300', marginBottom:'14px' }}>Edit Transfer</div>
+              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'12px' }}>
+                <div><label className="label">Supplier</label><select className="input" value={editForm.supplier_id||''} onChange={e=>{const s=suppliers.find((s:Supplier)=>s.id===Number(e.target.value));setEditForm((p:any)=>({...p,supplier_id:e.target.value,supplier_name:s?.name||p.supplier_name}))}}><option value="">Select supplier…</option>{suppliers.filter((s:Supplier)=>s.type==='transfer'||s.type==='dmc').map((s:Supplier)=><option key={s.id} value={s.id}>{s.name}</option>)}</select></div>
+                <div><label className="label">Transfer Type</label><select className="input" value={editForm.transfer_type} onChange={e=>setEditForm((p:any)=>({...p,transfer_type:e.target.value}))}>{TRANSFER_TYPES.map(x=><option key={x.value} value={x.value}>{x.label}</option>)}</select></div>
+                <div style={{ display:'flex', gap:'16px', paddingTop:'4px' }}>
+                  <label style={{ display:'flex', gap:'8px', alignItems:'center', fontSize:'13px', cursor:'pointer' }}><input type="checkbox" checked={editForm.meet_greet} onChange={e=>setEditForm((p:any)=>({...p,meet_greet:e.target.checked}))}/> Meet & Greet</label>
+                  <label style={{ display:'flex', gap:'8px', alignItems:'center', fontSize:'13px', cursor:'pointer' }}><input type="checkbox" checked={editForm.local_rep} onChange={e=>setEditForm((p:any)=>({...p,local_rep:e.target.checked}))}/> Local Rep</label>
+                </div>
+                <div><label className="label">Net Cost (£)</label><input className="input" type="number" value={editForm.net_cost||''} onChange={e=>setEditForm((p:any)=>({...p,net_cost:e.target.value}))}/></div>
+                <div><label className="label">Arrival Flight</label><input className="input" value={editForm.arrival_flight||''} onChange={e=>setEditForm((p:any)=>({...p,arrival_flight:e.target.value.toUpperCase()}))}/></div>
+                <div><label className="label">Arrival Date & Time</label><div style={{ display:'flex', gap:'8px' }}><input className="input" type="date" value={editForm.arrival_date||''} onChange={e=>setEditForm((p:any)=>({...p,arrival_date:e.target.value}))}/><input className="input" style={{ width:'100px' }} value={editForm.arrival_time||''} onChange={e=>setEditForm((p:any)=>({...p,arrival_time:e.target.value}))}/></div></div>
+                <div><label className="label">Departure Flight</label><input className="input" value={editForm.departure_flight||''} onChange={e=>setEditForm((p:any)=>({...p,departure_flight:e.target.value.toUpperCase()}))}/></div>
+                <div><label className="label">Departure Date & Time</label><div style={{ display:'flex', gap:'8px' }}><input className="input" type="date" value={editForm.departure_date||''} onChange={e=>setEditForm((p:any)=>({...p,departure_date:e.target.value}))}/><input className="input" style={{ width:'100px' }} value={editForm.departure_time||''} onChange={e=>setEditForm((p:any)=>({...p,departure_time:e.target.value}))}/></div></div>
+                <div style={{ gridColumn:'1/-1' }}><label className="label">Inter-Hotel Transfer Dates</label><input className="input" value={editForm.inter_hotel_dates||''} onChange={e=>setEditForm((p:any)=>({...p,inter_hotel_dates:e.target.value}))}/></div>
+                <div style={{ gridColumn:'1/-1' }}><label className="label">Notes</label><textarea className="input" style={{ minHeight:'60px', resize:'vertical', fontSize:'13px' }} value={editForm.notes||''} onChange={e=>setEditForm((p:any)=>({...p,notes:e.target.value}))}/></div>
               </div>
-              <div style={{ display:'flex', gap:'8px' }}>
-                {t.meet_greet && <span style={{ fontSize:'11px', background:'var(--accent-light)', color:'var(--accent)', padding:'2px 8px', borderRadius:'4px' }}>Meet & Greet</span>}
-                {t.local_rep && <span style={{ fontSize:'11px', background:'var(--green-light)', color:'var(--green)', padding:'2px 8px', borderRadius:'4px' }}>Local Rep</span>}
+              <div style={{ display:'flex', gap:'8px', justifyContent:'flex-end', marginTop:'14px' }}>
+                <button className="btn btn-secondary" onClick={() => setEditing(null)}>Cancel</button>
+                <button className="btn btn-cta" onClick={() => saveTransferEdit(t.id)} disabled={saving}>{saving?'Saving…':'Save Changes'}</button>
               </div>
-            </div>
-            <button className="btn btn-ghost btn-xs" style={{ color:'var(--red)' }} onClick={() => deleteTransfer(t.id)}>✕</button>
-          </div>
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px', fontSize:'13px' }}>
-            <div style={{ padding:'10px 12px', background:'var(--bg-secondary)', borderRadius:'8px' }}>
-              <div style={{ fontSize:'11px', color:'var(--text-muted)', marginBottom:'4px' }}>ARRIVAL</div>
-              <div style={{ fontWeight:'500' }}>{t.arrival_flight} · {fmtDate(t.arrival_date)} {t.arrival_time}</div>
-            </div>
-            <div style={{ padding:'10px 12px', background:'var(--bg-secondary)', borderRadius:'8px' }}>
-              <div style={{ fontSize:'11px', color:'var(--text-muted)', marginBottom:'4px' }}>DEPARTURE</div>
-              <div style={{ fontWeight:'500' }}>{t.departure_flight} · {fmtDate(t.departure_date)} {t.departure_time}</div>
-            </div>
-          </div>
-          {t.inter_hotel_dates && <div style={{ marginTop:'8px', fontSize:'12.5px', color:'var(--text-muted)' }}>Inter-hotel: {t.inter_hotel_dates}</div>}
-          {t.net_cost && <div style={{ marginTop:'6px', fontSize:'13px', color:'var(--accent)' }}>Net: {fmt(t.net_cost)}</div>}
-          {t.notes && <div style={{ marginTop:'8px', fontSize:'12.5px', color:'var(--text-muted)', fontStyle:'italic' }}>{t.notes}</div>}
+            </>
+          ) : (
+            <>
+              <div style={{ display:'flex', justifyContent:'space-between', marginBottom:'12px' }}>
+                <div>
+                  <div style={{ fontFamily:'Fraunces,serif', fontSize:'16px', fontWeight:'300', marginBottom:'4px' }}>
+                    {t.supplier_name || 'Transfer'} — {TRANSFER_TYPES.find(x=>x.value===t.transfer_type)?.label || t.transfer_type}
+                  </div>
+                  <div style={{ display:'flex', gap:'8px' }}>
+                    {t.meet_greet && <span style={{ fontSize:'11px', background:'var(--accent-light)', color:'var(--accent)', padding:'2px 8px', borderRadius:'4px' }}>Meet & Greet</span>}
+                    {t.local_rep && <span style={{ fontSize:'11px', background:'var(--green-light)', color:'var(--green)', padding:'2px 8px', borderRadius:'4px' }}>Local Rep</span>}
+                  </div>
+                </div>
+                <div style={{ display:'flex', gap:'6px' }}>
+                  <button className="btn btn-secondary btn-xs" onClick={() => { setAdding(false); setEditing(t.id); setEditForm({ ...t, arrival_date: t.arrival_date?.split('T')[0]||'', departure_date: t.departure_date?.split('T')[0]||'', net_cost: t.net_cost ?? '', supplier_id: t.supplier_id ?? '' }) }}>Edit</button>
+                  <button className="btn btn-ghost btn-xs" style={{ color:'var(--red)' }} onClick={() => deleteTransfer(t.id)}>✕</button>
+                </div>
+              </div>
+              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px', fontSize:'13px' }}>
+                <div style={{ padding:'10px 12px', background:'var(--bg-secondary)', borderRadius:'8px' }}>
+                  <div style={{ fontSize:'11px', color:'var(--text-muted)', marginBottom:'4px' }}>ARRIVAL</div>
+                  <div style={{ fontWeight:'500' }}>{t.arrival_flight} · {fmtDate(t.arrival_date)} {t.arrival_time}</div>
+                </div>
+                <div style={{ padding:'10px 12px', background:'var(--bg-secondary)', borderRadius:'8px' }}>
+                  <div style={{ fontSize:'11px', color:'var(--text-muted)', marginBottom:'4px' }}>DEPARTURE</div>
+                  <div style={{ fontWeight:'500' }}>{t.departure_flight} · {fmtDate(t.departure_date)} {t.departure_time}</div>
+                </div>
+              </div>
+              {t.inter_hotel_dates && <div style={{ marginTop:'8px', fontSize:'12.5px', color:'var(--text-muted)' }}>Inter-hotel: {t.inter_hotel_dates}</div>}
+              {t.net_cost && <div style={{ marginTop:'6px', fontSize:'13px', color:'var(--accent)' }}>Net: {fmt(t.net_cost)}</div>}
+              {t.notes && <div style={{ marginTop:'8px', fontSize:'12.5px', color:'var(--text-muted)', fontStyle:'italic' }}>{t.notes}</div>}
+            </>
+          )}
         </div>
       ))}
 
@@ -1064,9 +1304,11 @@ function TransfersTab({ bookingId, transfers, suppliers, flights, onUpdate, show
 function ExtrasTab({ bookingId, extras, onUpdate, showToast }: any) {
   const blank = { extra_type:'lounge', description:'', supplier:'', net_cost:'', sell_price:'', notes:'' }
   const EXTRA_TYPES = ['lounge', 'parking', 'fast_track', 'seat_upgrade', 'excursion', 'travel_insurance', 'other']
-  const [adding, setAdding] = useState(false)
-  const [form, setForm]     = useState<any>({ ...blank })
-  const [saving, setSaving] = useState(false)
+  const [adding, setAdding]     = useState(false)
+  const [form, setForm]         = useState<any>({ ...blank })
+  const [editing, setEditing]   = useState<number|null>(null)
+  const [editForm, setEditForm] = useState<any>({})
+  const [saving, setSaving]     = useState(false)
 
   async function addExtra() {
     setSaving(true)
@@ -1081,6 +1323,20 @@ function ExtrasTab({ bookingId, extras, onUpdate, showToast }: any) {
     if (error) { showToast('Failed: ' + error.message, 'error'); return }
     showToast('Extra added ✓')
     setAdding(false); onUpdate()
+  }
+
+  async function saveExtraEdit(id: number) {
+    setSaving(true)
+    const { error } = await supabase.from('booking_extras').update({
+      extra_type: editForm.extra_type, description: editForm.description || null,
+      supplier: editForm.supplier || null,
+      net_cost: editForm.net_cost ? Number(editForm.net_cost) : null,
+      sell_price: editForm.sell_price ? Number(editForm.sell_price) : null,
+      notes: editForm.notes || null,
+    }).eq('id', id)
+    setSaving(false)
+    if (error) { showToast('Failed: ' + error.message, 'error'); return }
+    showToast('Extra updated ✓'); setEditing(null); onUpdate()
   }
 
   async function deleteExtra(id: number) {
@@ -1099,17 +1355,39 @@ function ExtrasTab({ bookingId, extras, onUpdate, showToast }: any) {
 
       <div style={{ display:'flex', flexDirection:'column', gap:'8px' }}>
         {extras.map((e: Extra) => (
-          <div key={e.id} className="card" style={{ padding:'14px 18px', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-            <div>
-              <div style={{ fontSize:'13.5px', fontWeight:'500', textTransform:'capitalize' }}>{e.extra_type?.replace('_',' ')} {e.description ? `— ${e.description}` : ''}</div>
-              <div style={{ fontSize:'12px', color:'var(--text-muted)', marginTop:'2px' }}>
-                {e.supplier && <span>{e.supplier} · </span>}
-                {e.net_cost && <span>Net: {fmt(e.net_cost)} · </span>}
-                {e.sell_price && <span>Sell: {fmt(e.sell_price)}</span>}
+          <div key={e.id} className="card" style={{ padding:'14px 18px', border: editing===e.id ? '1.5px solid var(--accent)' : undefined }}>
+            {editing === e.id ? (
+              <>
+                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px' }}>
+                  <div><label className="label">Type</label><select className="input" value={editForm.extra_type} onChange={ev=>setEditForm((p:any)=>({...p,extra_type:ev.target.value}))}>{EXTRA_TYPES.map((t:string)=><option key={t} value={t}>{t.replace('_',' ')}</option>)}</select></div>
+                  <div><label className="label">Description</label><input className="input" value={editForm.description||''} onChange={ev=>setEditForm((p:any)=>({...p,description:ev.target.value}))}/></div>
+                  <div><label className="label">Supplier</label><input className="input" value={editForm.supplier||''} onChange={ev=>setEditForm((p:any)=>({...p,supplier:ev.target.value}))}/></div>
+                  <div><label className="label">Net Cost (£)</label><input className="input" type="number" value={editForm.net_cost||''} onChange={ev=>setEditForm((p:any)=>({...p,net_cost:ev.target.value}))}/></div>
+                  <div><label className="label">Sell Price (£)</label><input className="input" type="number" value={editForm.sell_price||''} onChange={ev=>setEditForm((p:any)=>({...p,sell_price:ev.target.value}))}/></div>
+                  <div><label className="label">Notes</label><input className="input" value={editForm.notes||''} onChange={ev=>setEditForm((p:any)=>({...p,notes:ev.target.value}))}/></div>
+                </div>
+                <div style={{ display:'flex', gap:'8px', justifyContent:'flex-end', marginTop:'12px' }}>
+                  <button className="btn btn-secondary btn-xs" onClick={() => setEditing(null)}>Cancel</button>
+                  <button className="btn btn-cta btn-xs" onClick={() => saveExtraEdit(e.id)} disabled={saving}>{saving?'Saving…':'Save'}</button>
+                </div>
+              </>
+            ) : (
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                <div>
+                  <div style={{ fontSize:'13.5px', fontWeight:'500', textTransform:'capitalize' }}>{e.extra_type?.replace('_',' ')} {e.description ? `— ${e.description}` : ''}</div>
+                  <div style={{ fontSize:'12px', color:'var(--text-muted)', marginTop:'2px' }}>
+                    {e.supplier && <span>{e.supplier} · </span>}
+                    {e.net_cost && <span>Net: {fmt(e.net_cost)} · </span>}
+                    {e.sell_price && <span>Sell: {fmt(e.sell_price)}</span>}
+                  </div>
+                  {e.notes && <div style={{ fontSize:'12px', color:'var(--text-muted)', fontStyle:'italic', marginTop:'2px' }}>{e.notes}</div>}
+                </div>
+                <div style={{ display:'flex', gap:'6px' }}>
+                  <button className="btn btn-secondary btn-xs" onClick={() => { setEditing(e.id); setEditForm({ ...e, net_cost: e.net_cost ?? '', sell_price: e.sell_price ?? '' }) }}>Edit</button>
+                  <button className="btn btn-ghost btn-xs" style={{ color:'var(--red)' }} onClick={() => deleteExtra(e.id)}>✕</button>
+                </div>
               </div>
-              {e.notes && <div style={{ fontSize:'12px', color:'var(--text-muted)', fontStyle:'italic', marginTop:'2px' }}>{e.notes}</div>}
-            </div>
-            <button className="btn btn-ghost btn-xs" style={{ color:'var(--red)' }} onClick={() => deleteExtra(e.id)}>✕</button>
+            )}
           </div>
         ))}
 
@@ -1287,6 +1565,237 @@ function PaymentsTab({ booking, payments, balance, onUpdate, showToast }: any) {
           <button className="btn btn-cta" onClick={() => setAdding(true)}>+ Record First Payment</button>
         </div>
       )}
+    </div>
+  )
+}
+
+// ── COSTING TAB ──────────────────────────────────────────────
+function CostingTab({ booking, flights, accommodations, transfers, extras, payments, suppliers, onUpdate, showToast }: any) {
+  const [editingBalDue, setEditingBalDue] = useState(false)
+  const [balDueDraft, setBalDueDraft]     = useState(booking.balance_due_date?.split('T')[0] || '')
+
+  const sell      = booking.total_sell || booking.deals?.deal_value || 0
+  const discount  = booking.discount || 0
+  const clientNet = sell - discount
+
+  // Build cost lines from existing component data
+  const costLines: { label: string; supplier: string; netCost: number }[] = []
+  for (const f of (flights || [])) {
+    if (f.net_cost) costLines.push({
+      label:    `${f.airline || ''} ${f.flight_number || ''} (${f.origin}→${f.destination})`.trim(),
+      supplier: f.flight_supplier || '—',
+      netCost:  f.net_cost,
+    })
+  }
+  for (const a of accommodations) {
+    if (a.net_cost) costLines.push({
+      label:    a.hotel_name || 'Accommodation',
+      supplier: suppliers.find((s: Supplier) => s.id === a.supplier_id)?.name || '—',
+      netCost:  a.net_cost,
+    })
+  }
+  for (const t of transfers) {
+    if (t.net_cost) costLines.push({
+      label:    `Transfer${t.transfer_type ? ` (${TRANSFER_TYPES.find((x: any) => x.value === t.transfer_type)?.label || t.transfer_type})` : ''}`,
+      supplier: suppliers.find((s: Supplier) => s.id === t.supplier_id)?.name || t.supplier_name || '—',
+      netCost:  t.net_cost,
+    })
+  }
+  for (const e of extras) {
+    if (e.net_cost) costLines.push({
+      label:    e.description || e.extra_type || 'Extra',
+      supplier: e.supplier || '—',
+      netCost:  e.net_cost,
+    })
+  }
+
+  const totalNetCost = costLines.reduce((a, l) => a + l.netCost, 0)
+  const excess       = sell - totalNetCost
+  const grossComm    = clientNet - totalNetCost
+
+  // Receipt rows with running totals and type labels
+  const totalPaid = payments.reduce((a: number, p: Payment) => a + (p.amount || 0), 0)
+  let running = 0
+  const receiptRows = payments.map((p: Payment, i: number) => {
+    running += p.amount
+    const owing = sell - running
+    const type  = i === 0 ? 'Deposit' : (i === payments.length - 1 && owing <= 0) ? 'Balance' : 'Intrim'
+    return { ...p, amountOwing: Math.max(0, owing), type, runningTotal: running }
+  })
+  const balanceDue = sell - totalPaid
+
+  async function saveBalDue() {
+    const { error } = await supabase.from('bookings').update({ balance_due_date: balDueDraft || null }).eq('id', booking.id)
+    if (error) { showToast('Failed: ' + error.message, 'error'); return }
+    showToast('Balance due date updated ✓')
+    setEditingBalDue(false)
+    onUpdate()
+  }
+
+  const TH = ({ children, right }: { children: string; right?: boolean }) => (
+    <th style={{ padding:'8px 10px', textAlign: right ? 'right' : 'left', fontSize:'11px', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.05em', fontWeight:'600', whiteSpace:'nowrap' }}>{children}</th>
+  )
+
+  return (
+    <div style={{ display:'flex', flexDirection:'column', gap:'20px' }}>
+
+      {/* ── Cost Breakdown ── */}
+      <div className="card" style={{ padding:'20px 22px' }}>
+        <div style={{ fontFamily:'Fraunces,serif', fontSize:'17px', fontWeight:'300', marginBottom:'16px' }}>Cost Details</div>
+
+        {costLines.length === 0 ? (
+          <div style={{ fontSize:'13px', color:'var(--text-muted)', fontStyle:'italic' }}>
+            No net costs entered yet. Add costs in the Accommodation, Transfers, or Extras tabs.
+          </div>
+        ) : (
+          <>
+            <div style={{ overflowX:'auto' }}>
+              <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'13px' }}>
+                <thead>
+                  <tr style={{ borderBottom:'2px solid var(--border)' }}>
+                    <TH>Component</TH>
+                    <TH>Supplier</TH>
+                    <TH right>Supplier Gross</TH>
+                    <TH right>Gross Margin</TH>
+                    <TH right>Margin %</TH>
+                  </tr>
+                </thead>
+                <tbody>
+                  {costLines.map((line, i) => {
+                    const proportional = totalNetCost > 0 ? (line.netCost / totalNetCost) * clientNet : 0
+                    const margin       = proportional - line.netCost
+                    const marginPct    = proportional > 0 ? (margin / proportional) * 100 : 0
+                    return (
+                      <tr key={i} style={{ borderBottom:'1px solid var(--border)' }}>
+                        <td style={{ padding:'10px 10px', fontWeight:'500', color:'var(--text-primary)' }}>{line.label}</td>
+                        <td style={{ padding:'10px 10px', color:'var(--text-muted)' }}>{line.supplier}</td>
+                        <td style={{ padding:'10px 10px', textAlign:'right', fontFamily:'monospace' }}>{fmt(line.netCost)}</td>
+                        <td style={{ padding:'10px 10px', textAlign:'right', fontFamily:'monospace', color: margin >= 0 ? 'var(--green)' : 'var(--red)' }}>{fmt(margin)}</td>
+                        <td style={{ padding:'10px 10px', textAlign:'right', color:'var(--text-muted)' }}>{marginPct.toFixed(1)}%</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Summary split */}
+            <div style={{ borderTop:'2px solid var(--border)', marginTop:'4px', paddingTop:'16px', display:'grid', gridTemplateColumns:'1fr 1fr', gap:'24px' }}>
+              <div style={{ display:'flex', flexDirection:'column', gap:'9px' }}>
+                {[
+                  { label:'Total Net Cost',      val: fmt(totalNetCost), bold: true  },
+                  { label:'Excess',              val: fmt(excess),       color:'var(--text-muted)' },
+                  { label:'Discount',            val: discount > 0 ? `− ${fmt(discount)}` : '—', color:'var(--amber)' },
+                ].map(r => (
+                  <div key={r.label} style={{ display:'flex', justifyContent:'space-between' }}>
+                    <span style={{ fontSize:'12.5px', color:'var(--text-muted)' }}>{r.label}</span>
+                    <span style={{ fontSize:'13px', fontFamily:'monospace', color: r.color || 'var(--text-primary)', fontWeight: r.bold ? '700' : '500' }}>{r.val}</span>
+                  </div>
+                ))}
+              </div>
+              <div style={{ display:'flex', flexDirection:'column', gap:'9px' }}>
+                {[
+                  { label:'Client Total',    val: fmt(sell),       color:'var(--accent-mid)', bold: true },
+                  { label:'Client Net',      val: fmt(clientNet),  color:'var(--text-primary)', bold: true },
+                  { label:'Gross Comm',      val: fmt(grossComm),  color: grossComm >= 0 ? 'var(--green)' : 'var(--red)', bold: true },
+                  { label:'Net Comm',        val: fmt(grossComm),  color: grossComm >= 0 ? 'var(--green)' : 'var(--red)', bold: true },
+                ].map(r => (
+                  <div key={r.label} style={{ display:'flex', justifyContent:'space-between' }}>
+                    <span style={{ fontSize:'12.5px', color:'var(--text-muted)' }}>{r.label}</span>
+                    <span style={{ fontSize:'13px', fontFamily:'monospace', color: r.color, fontWeight:'700' }}>{r.val}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* ── Receipt Details ── */}
+      <div className="card" style={{ padding:'20px 22px' }}>
+        <div style={{ fontFamily:'Fraunces,serif', fontSize:'17px', fontWeight:'300', marginBottom:'16px' }}>Receipt Details</div>
+        {payments.length === 0 ? (
+          <div style={{ fontSize:'13px', color:'var(--text-muted)', fontStyle:'italic' }}>No payments recorded yet</div>
+        ) : (
+          <div style={{ overflowX:'auto' }}>
+            <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12.5px' }}>
+              <thead>
+                <tr style={{ borderBottom:'2px solid var(--border)' }}>
+                  <TH>Date</TH>
+                  <TH>Type</TH>
+                  <TH right>Paid So Far</TH>
+                  <TH right>Amount Owing</TH>
+                  <TH right>Debit Card</TH>
+                  <TH right>Credit Card</TH>
+                  <TH right>Amex</TH>
+                  <TH right>Bank Transfer</TH>
+                  <TH right>Total</TH>
+                </tr>
+              </thead>
+              <tbody>
+                {receiptRows.map((r: any) => (
+                  <tr key={r.id} style={{ borderBottom:'1px solid var(--border)' }}>
+                    <td style={{ padding:'9px 10px', whiteSpace:'nowrap' }}>{fmtDate(r.payment_date)}</td>
+                    <td style={{ padding:'9px 10px' }}>
+                      <span style={{ fontSize:'11px', padding:'2px 7px', borderRadius:'4px',
+                        background: r.type==='Balance' ? '#e6f4ee' : r.type==='Deposit' ? '#fef3c7' : 'var(--bg-secondary)',
+                        color:      r.type==='Balance' ? 'var(--green)' : r.type==='Deposit' ? '#d97706' : 'var(--text-muted)',
+                        fontWeight:'500' }}>
+                        {r.type}
+                      </span>
+                    </td>
+                    <td style={{ padding:'9px 10px', textAlign:'right', fontFamily:'monospace' }}>{fmt(r.runningTotal)}</td>
+                    <td style={{ padding:'9px 10px', textAlign:'right', fontFamily:'monospace', color: r.amountOwing > 0 ? 'var(--red)' : 'var(--green)', fontWeight:'500' }}>{fmt(r.amountOwing)}</td>
+                    <td style={{ padding:'9px 10px', textAlign:'right', fontFamily:'monospace', color: r.debit_card > 0 ? 'var(--text-primary)' : 'var(--text-muted)' }}>{r.debit_card > 0 ? fmt(r.debit_card) : '—'}</td>
+                    <td style={{ padding:'9px 10px', textAlign:'right', fontFamily:'monospace', color: r.credit_card > 0 ? 'var(--text-primary)' : 'var(--text-muted)' }}>{r.credit_card > 0 ? fmt(r.credit_card) : '—'}</td>
+                    <td style={{ padding:'9px 10px', textAlign:'right', fontFamily:'monospace', color: r.amex > 0 ? 'var(--text-primary)' : 'var(--text-muted)' }}>{r.amex > 0 ? fmt(r.amex) : '—'}</td>
+                    <td style={{ padding:'9px 10px', textAlign:'right', fontFamily:'monospace', color: r.bank_transfer > 0 ? 'var(--text-primary)' : 'var(--text-muted)' }}>{r.bank_transfer > 0 ? fmt(r.bank_transfer) : '—'}</td>
+                    <td style={{ padding:'9px 10px', textAlign:'right', fontFamily:'monospace', fontWeight:'600' }}>{fmt(r.amount)}</td>
+                  </tr>
+                ))}
+                <tr style={{ background:'var(--bg-secondary)', borderTop:'2px solid var(--border)' }}>
+                  <td colSpan={8} style={{ padding:'9px 10px', fontSize:'12px', color:'var(--text-muted)', fontWeight:'600', textAlign:'right' }}>Total :</td>
+                  <td style={{ padding:'9px 10px', textAlign:'right', fontFamily:'monospace', fontWeight:'700' }}>{fmt(totalPaid)}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* ── Balance Due ── */}
+      <div className="card" style={{ padding:'20px 24px', border: `2px solid ${balanceDue > 0 ? 'var(--red)' : 'var(--green)'}` }}>
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+          <div>
+            <div style={{ fontSize:'11px', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:'6px' }}>Balance Due</div>
+            <div style={{ fontSize:'30px', fontWeight:'700', fontFamily:'Outfit,sans-serif', color: balanceDue > 0 ? 'var(--red)' : 'var(--green)' }}>
+              {balanceDue <= 0 ? 'FULLY PAID ✓' : fmt(balanceDue)}
+            </div>
+          </div>
+          <div style={{ textAlign:'right' }}>
+            <div style={{ fontSize:'11px', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:'8px' }}>Balance Due Date</div>
+            {editingBalDue ? (
+              <div style={{ display:'flex', gap:'8px', alignItems:'center', justifyContent:'flex-end' }}>
+                <input className="input" type="date" value={balDueDraft}
+                  onChange={e => setBalDueDraft(e.target.value)}
+                  style={{ fontSize:'13px', padding:'5px 8px', width:'150px' }} />
+                <button className="btn btn-cta btn-xs" onClick={saveBalDue}>Save</button>
+                <button className="btn btn-secondary btn-xs" onClick={() => setEditingBalDue(false)}>Cancel</button>
+              </div>
+            ) : (
+              <div style={{ display:'flex', alignItems:'center', gap:'8px', justifyContent:'flex-end' }}>
+                <span style={{ fontSize:'18px', fontWeight:'600', color: balanceDue > 0 ? 'var(--red)' : 'var(--green)' }}>
+                  {booking.balance_due_date ? fmtDate(booking.balance_due_date) : '—'}
+                </span>
+                <button onClick={() => setEditingBalDue(true)}
+                  style={{ background:'none', border:'none', cursor:'pointer', color:'var(--text-muted)', fontSize:'12px', padding:'3px', opacity:0.7 }}
+                  title="Edit balance due date">✏</button>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
     </div>
   )
 }
