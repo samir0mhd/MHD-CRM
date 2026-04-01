@@ -22,6 +22,7 @@ type Booking = {
   discount: number | null
   final_profit: number | null
   booking_notes: string | null
+  cc_surcharge: number | null
   created_at: string
   deals?: { id: number; title: string; deal_value: number; clients?: Client }
 }
@@ -38,6 +39,7 @@ type Flight = {
   arrival_date: string | null; arrival_time: string | null; next_day: boolean
   cabin_class: string; pnr: string | null; flight_supplier: string | null
   net_cost: number | null; baggage_notes: string | null; cabin_notes: string | null
+  terminal: string | null; ticketing_deadline: string | null
 }
 type Accommodation = {
   id: number; booking_id: number; stay_order: number
@@ -147,8 +149,8 @@ const CAT_ICONS: Record<string,string> = {
 }
 
 // ── HELPERS ──────────────────────────────────────────────────
-const fmt     = (n: number | null) => '£' + (n || 0).toLocaleString('en-GB', { maximumFractionDigits: 0 })
-const fmtDate = (d: string | null) => !d ? '—' : new Date(d + 'T12:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+const fmt     = (n: number | null | undefined) => '£' + (n || 0).toLocaleString('en-GB', { maximumFractionDigits: 0 })
+const fmtDate = (d: string | null) => !d ? '—' : new Date(d.includes('T') ? d : d + 'T12:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
 const daysUntil = (d: string | null) => !d ? null : Math.ceil((new Date(d).getTime() - Date.now()) / 86400000)
 
 function calcNights(checkin: string | null, checkout: string | null): number | null {
@@ -302,6 +304,8 @@ export default function BookingDetailPage() {
             totalPaid={totalPaid} balance={balance} taskPct={taskPct}
             tasksDone={tasksDone} tasksTotal={tasks.length}
             depDays={depDays} accommodations={accommodations} outbound={outbound}
+            flights={[...outbound,...returnFlts]} transfers={transfers} extras={extras}
+            suppliers={suppliers}
             onUpdate={loadAll} showToast={showToast} />
         )}
 
@@ -367,28 +371,51 @@ export default function BookingDetailPage() {
 }
 
 // ── OVERVIEW TAB ─────────────────────────────────────────────
-function OverviewTab({ booking, client, payments, totalPaid, balance, taskPct, tasksDone, tasksTotal, depDays, accommodations, outbound, onUpdate, showToast }: any) {
+function OverviewTab({ booking, client, payments, totalPaid, balance, taskPct, tasksDone, tasksTotal, depDays, accommodations, outbound, flights, transfers, extras, suppliers, onUpdate, showToast }: any) {
   const [editing, setEditing] = useState(false)
   const [form, setForm]       = useState({
     destination:    booking.destination || '',
     total_sell:     booking.total_sell || booking.deals?.deal_value || '',
-    total_net:      booking.total_net || '',
-    gross_profit:   booking.gross_profit || '',
     discount:       booking.discount || '0',
+    cc_surcharge:   booking.cc_surcharge || '0',
     return_date:    booking.return_date?.split('T')[0] || '',
     balance_due_date: booking.balance_due_date?.split('T')[0] || '',
     booking_notes:  booking.booking_notes || '',
   })
   const [saving, setSaving]         = useState(false)
+  const [syncing, setSyncing]       = useState(false)
   const [editingBalDue, setEditingBalDue] = useState(false)
   const [balDueDraft, setBalDueDraft]     = useState(booking.balance_due_date?.split('T')[0] || '')
+
+  // Auto-calculate totals from entered components
+  const flightNet = (flights || []).reduce((a: number, f: Flight) => a + (f.net_cost || 0), 0)
+  const accomNet  = (accommodations || []).reduce((a: number, x: any) => a + (x.net_cost || 0), 0)
+  const transNet  = (transfers || []).reduce((a: number, x: any) => a + (x.net_cost || 0), 0)
+  const extrasNet = (extras || []).reduce((a: number, x: any) => a + (x.net_cost || 0), 0)
+  const autoNet   = flightNet + accomNet + transNet + extrasNet
+  const sell      = booking.total_sell || booking.deals?.deal_value || 0
+  const discount  = booking.discount || 0
+  const ccSurch   = booking.cc_surcharge || 0
+  const autoProfit = autoNet > 0 ? (sell - discount - ccSurch) - autoNet : 0
+  const profit    = booking.gross_profit || 0
+  const commission = profit > 0 ? (profit - 10) * 0.1 : 0
 
   async function saveBalDue() {
     const { error } = await supabase.from('bookings').update({ balance_due_date: balDueDraft || null }).eq('id', booking.id)
     if (error) { showToast('Failed: ' + error.message, 'error'); return }
-    showToast('Balance due date updated ✓')
-    setEditingBalDue(false)
-    onUpdate()
+    showToast('Balance due date updated ✓'); setEditingBalDue(false); onUpdate()
+  }
+
+  async function syncFromCosting() {
+    if (autoNet === 0) { showToast('No component costs entered yet', 'error'); return }
+    setSyncing(true)
+    const { error } = await supabase.from('bookings').update({
+      total_net:    autoNet,
+      gross_profit: autoProfit,
+    }).eq('id', booking.id)
+    setSyncing(false)
+    if (error) { showToast('Sync failed: ' + error.message, 'error'); return }
+    showToast('Net & profit synced from components ✓'); onUpdate()
   }
 
   async function save() {
@@ -396,25 +423,29 @@ function OverviewTab({ booking, client, payments, totalPaid, balance, taskPct, t
     const { error } = await supabase.from('bookings').update({
       destination:      form.destination || null,
       total_sell:       form.total_sell ? Number(form.total_sell) : null,
-      total_net:        form.total_net ? Number(form.total_net) : null,
-      gross_profit:     form.gross_profit ? Number(form.gross_profit) : null,
       discount:         Number(form.discount) || 0,
+      cc_surcharge:     Number(form.cc_surcharge) || 0,
       return_date:      form.return_date || null,
       balance_due_date: form.balance_due_date || null,
       booking_notes:    form.booking_notes || null,
     }).eq('id', booking.id)
     setSaving(false)
     if (error) { showToast('Save failed: ' + error.message, 'error'); return }
-    showToast('Booking updated ✓')
-    setEditing(false)
-    onUpdate()
+    showToast('Booking updated ✓'); setEditing(false); onUpdate()
   }
 
-  const sell     = booking.total_sell || booking.deals?.deal_value || 0
-  const profit   = booking.gross_profit || 0
-  const commission = profit > 0 ? (profit - 10) * 0.1 : 0
-  const firstHotel = accommodations[0]
-  const firstFlight = outbound[0]
+  const firstFlight    = outbound[0]
+  const firstHotel     = accommodations?.[0] ?? null
+  const flightDepDate  = firstFlight?.departure_date?.split('T')[0] ?? null
+  const bookingDepDate = booking.departure_date?.split('T')[0] ?? null
+  const depDateMismatch = flightDepDate && flightDepDate !== bookingDepDate
+
+  async function syncDepartureFromFlight() {
+    if (!flightDepDate) return
+    const { error } = await supabase.from('bookings').update({ departure_date: flightDepDate }).eq('id', booking.id)
+    if (error) { showToast('Failed: ' + error.message, 'error'); return }
+    showToast('Departure date synced from flight ✓'); onUpdate()
+  }
 
   return (
     <div style={{ display:'grid', gridTemplateColumns:'1fr 320px', gap:'20px' }}>
@@ -424,7 +455,14 @@ function OverviewTab({ booking, client, payments, totalPaid, balance, taskPct, t
         <div className="card" style={{ padding:'20px 22px' }}>
           <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'16px' }}>
             <div style={{ fontFamily:'Fraunces,serif', fontSize:'17px', fontWeight:'300' }}>Financials</div>
-            <button className="btn btn-secondary btn-xs" onClick={() => setEditing(!editing)}>{editing ? 'Cancel' : '✏ Edit'}</button>
+            <div style={{ display:'flex', gap:'6px' }}>
+              {autoNet > 0 && !editing && (
+                <button className="btn btn-secondary btn-xs" style={{ color:'var(--green)', borderColor:'var(--green)' }} onClick={syncFromCosting} disabled={syncing}>
+                  {syncing ? 'Syncing…' : '⟳ Sync from Costing'}
+                </button>
+              )}
+              <button className="btn btn-secondary btn-xs" onClick={() => setEditing(!editing)}>{editing ? 'Cancel' : '✏ Edit'}</button>
+            </div>
           </div>
 
           {editing ? (
@@ -432,10 +470,9 @@ function OverviewTab({ booking, client, payments, totalPaid, balance, taskPct, t
               <div><label className="label">Destination</label><input className="input" placeholder="e.g. Mauritius, Dubai" value={form.destination} onChange={e => setForm(p=>({...p,destination:e.target.value}))}/></div>
               <div><label className="label">Return Date</label><input className="input" type="date" value={form.return_date} onChange={e => setForm(p=>({...p,return_date:e.target.value}))}/></div>
               <div><label className="label">Balance Due Date</label><input className="input" type="date" value={form.balance_due_date} onChange={e => setForm(p=>({...p,balance_due_date:e.target.value}))}/></div>
-              <div><label className="label">Total Sell (£)</label><input className="input" type="number" value={form.total_sell} onChange={e => setForm(p=>({...p,total_sell:e.target.value}))}/></div>
-              <div><label className="label">Total Net (£)</label><input className="input" type="number" value={form.total_net} onChange={e => setForm(p=>({...p,total_net:e.target.value}))}/></div>
-              <div><label className="label">Gross Profit (£)</label><input className="input" type="number" value={form.gross_profit} onChange={e => setForm(p=>({...p,gross_profit:e.target.value}))}/></div>
+              <div><label className="label">Invoice Total (£)</label><input className="input" type="number" value={form.total_sell} onChange={e => setForm(p=>({...p,total_sell:e.target.value}))}/></div>
               <div><label className="label">Discount (£)</label><input className="input" type="number" value={form.discount} onChange={e => setForm(p=>({...p,discount:e.target.value}))}/></div>
+              <div><label className="label">CC Surcharge (£)</label><input className="input" type="number" placeholder="0.00" value={form.cc_surcharge} onChange={e => setForm(p=>({...p,cc_surcharge:e.target.value}))}/></div>
               <div style={{ gridColumn:'1/-1' }}><label className="label">Booking Notes</label><textarea className="input" style={{ minHeight:'70px', resize:'vertical', fontSize:'13px' }} value={form.booking_notes} onChange={e => setForm(p=>({...p,booking_notes:e.target.value}))}/></div>
               <div style={{ gridColumn:'1/-1', display:'flex', gap:'8px', justifyContent:'flex-end' }}>
                 <button className="btn btn-secondary" onClick={() => setEditing(false)}>Cancel</button>
@@ -443,26 +480,39 @@ function OverviewTab({ booking, client, payments, totalPaid, balance, taskPct, t
               </div>
             </div>
           ) : (
-            <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:'14px' }}>
-              {[
-                { label:'Invoice Total', val:fmt(sell),    color:'var(--accent-mid)' },
-                { label:'Total Net',     val:fmt(booking.total_net), color:'var(--text-muted)' },
-                { label:'Gross Profit',  val:fmt(profit),   color:'var(--green)' },
-                { label:'Discount',      val:fmt(booking.discount), color:'var(--amber)' },
-                { label:'Total Paid',    val:fmt(totalPaid), color:'var(--green)' },
-                { label:'Balance Due',   val:fmt(balance),  color: balance > 0 ? 'var(--red)' : 'var(--green)' },
-              ].map(s => (
-                <div key={s.label} style={{ background:'var(--bg-secondary)', borderRadius:'8px', padding:'12px 14px' }}>
-                  <div style={{ fontSize:'11px', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:'4px' }}>{s.label}</div>
-                  <div style={{ fontSize:'20px', fontWeight:'600', color:s.color, fontFamily:'Outfit,sans-serif' }}>{s.val}</div>
+            <>
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:'14px' }}>
+                {[
+                  { label:'Invoice Total', val:fmt(sell),              color:'var(--accent-mid)' },
+                  { label:'Total Net',     val:fmt(booking.total_net), color:'var(--text-muted)', hint: autoNet > 0 && booking.total_net !== autoNet ? `auto: ${fmt(autoNet)}` : '' },
+                  { label:'Gross Profit',  val:fmt(profit),            color:'var(--green)',     hint: autoNet > 0 && booking.gross_profit !== autoProfit ? `auto: ${fmt(autoProfit)}` : '' },
+                  { label:'Discount',      val:fmt(discount),          color:'var(--amber)' },
+                  { label:'CC Surcharge',  val:ccSurch > 0 ? fmt(ccSurch) : '—', color:'var(--amber)' },
+                  { label:'Total Paid',    val:fmt(totalPaid),         color:'var(--green)' },
+                  { label:'Balance Due',   val:fmt(balance),           color: balance > 0 ? 'var(--red)' : 'var(--green)' },
+                ].map(s => (
+                  <div key={s.label} style={{ background:'var(--bg-secondary)', borderRadius:'8px', padding:'12px 14px' }}>
+                    <div style={{ fontSize:'11px', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:'4px' }}>{s.label}</div>
+                    <div style={{ fontSize:'18px', fontWeight:'600', color:(s as any).color, fontFamily:'Outfit,sans-serif' }}>{s.val}</div>
+                    {(s as any).hint && <div style={{ fontSize:'10.5px', color:'var(--green)', marginTop:'2px' }}>{(s as any).hint}</div>}
+                  </div>
+                ))}
+              </div>
+              {autoNet > 0 && (
+                <div style={{ marginTop:'12px', padding:'10px 14px', background:'var(--bg-secondary)', borderRadius:'8px', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                  <div style={{ fontSize:'12px', color:'var(--text-muted)' }}>
+                    Components: <span style={{ color:'var(--text-primary)', fontWeight:'500' }}>
+                      Flights {fmt(flightNet)} + Hotels {fmt(accomNet)} + Transfers {fmt(transNet)} + Extras {fmt(extrasNet)} = <strong>{fmt(autoNet)}</strong>
+                    </span>
+                  </div>
                 </div>
-              ))}
-            </div>
+              )}
+            </>
           )}
 
           {!editing && profit > 0 && (
-            <div style={{ marginTop:'12px', padding:'10px 14px', background:'var(--bg-tertiary)', borderRadius:'8px', display:'flex', gap:'20px' }}>
-              <div style={{ fontSize:'12px', color:'var(--text-muted)' }}>Commission formula: <span style={{ color:'var(--text-primary)', fontWeight:'500' }}>(£{profit.toLocaleString()} - £10) × 10% = <span style={{ color:'var(--green)', fontWeight:'600' }}>{fmt(commission)}</span></span></div>
+            <div style={{ marginTop:'10px', padding:'10px 14px', background:'var(--bg-tertiary)', borderRadius:'8px' }}>
+              <div style={{ fontSize:'12px', color:'var(--text-muted)' }}>Commission: <span style={{ color:'var(--text-primary)', fontWeight:'500' }}>(£{profit.toLocaleString()} - £10) × 10% = <span style={{ color:'var(--green)', fontWeight:'600' }}>{fmt(commission)}</span></span></div>
             </div>
           )}
         </div>
@@ -523,18 +573,35 @@ function OverviewTab({ booking, client, payments, totalPaid, balance, taskPct, t
           <div style={{ fontSize:'11px', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:'10px' }}>Key Dates</div>
           <div style={{ display:'flex', flexDirection:'column', gap:'8px' }}>
             {[
-              { label:'Booked',    val:fmtDate(booking.created_at),    color:'var(--text-muted)' },
-              { label:'Departure', val:fmtDate(booking.departure_date), sub: depDays !== null && depDays >= 0 ? `${depDays}d away` : depDays !== null ? 'Departed' : '', color:'var(--accent)' },
-              { label:'Return',    val:fmtDate(booking.return_date),   color:'var(--text-muted)' },
+              { label:'Booked',    val:fmtDate(booking.created_at),    color:'var(--text-muted)', sub:'' },
+              { label:'Return',    val:fmtDate(booking.return_date),   color:'var(--text-muted)', sub:'' },
             ].map(d => (
               <div key={d.label} style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline' }}>
                 <span style={{ fontSize:'12px', color:'var(--text-muted)' }}>{d.label}</span>
-                <div style={{ textAlign:'right' }}>
-                  <span style={{ fontSize:'13px', color:d.color, fontWeight:'500' }}>{d.val}</span>
-                  {d.sub && <div style={{ fontSize:'10.5px', color:'var(--text-muted)' }}>{d.sub}</div>}
-                </div>
+                <span style={{ fontSize:'13px', color:d.color, fontWeight:'500' }}>{d.val}</span>
               </div>
             ))}
+            {/* Departure — with flight sync */}
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+              <span style={{ fontSize:'12px', color:'var(--text-muted)' }}>Departure</span>
+              <div style={{ textAlign:'right' }}>
+                <div style={{ display:'flex', alignItems:'center', gap:'5px' }}>
+                  <span style={{ fontSize:'13px', color:'var(--accent)', fontWeight:'500' }}>{fmtDate(booking.departure_date)}</span>
+                  {depDateMismatch && (
+                    <button onClick={syncDepartureFromFlight}
+                      style={{ background:'#fef3c7', border:'1px solid #fcd34d', borderRadius:'4px', cursor:'pointer', fontSize:'10.5px', color:'#92400e', padding:'1px 6px', fontWeight:'600' }}
+                      title={`Flight departs ${fmtDate(flightDepDate)} — click to sync`}>
+                      ⟳ {fmtDate(flightDepDate)}
+                    </button>
+                  )}
+                </div>
+                {depDays !== null && depDays >= 0
+                  ? <div style={{ fontSize:'10.5px', color:'var(--text-muted)' }}>{depDays}d away</div>
+                  : depDays !== null
+                    ? <div style={{ fontSize:'10.5px', color:'var(--text-muted)' }}>Departed</div>
+                    : null}
+              </div>
+            </div>
             {/* Balance Due — inline editable */}
             <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', paddingTop:'4px', borderTop:'1px solid var(--border)' }}>
               <span style={{ fontSize:'12px', color:'var(--text-muted)' }}>Balance Due</span>
@@ -697,14 +764,40 @@ function PassengersTab({ bookingId, passengers, onUpdate, showToast }: any) {
 
 // ── LEG FORM (module-level to prevent re-mount on parent state change) ───────
 function LegForm({ leg, onChange, onRemove, idx, canRemove, idSuffix }: any) {
+  const [hint, setHint] = useState<string | null>(null)
+
+  async function lookupFlight(fn: string) {
+    if (!fn || fn.length < 4) return
+    const { data } = await supabase.from('known_flights').select('*').eq('flight_number', fn.toUpperCase()).maybeSingle()
+    if (!data) return
+    let filled: string[] = []
+    if (data.airline && !leg.airline) { onChange('airline', data.airline); filled.push('airline') }
+    if (data.departure_time && !leg.departure_time) { onChange('departure_time', data.departure_time); filled.push('depart time') }
+    if (data.arrival_time && !leg.arrival_time) { onChange('arrival_time', data.arrival_time); filled.push('arrive time') }
+    if (data.origin && !leg.origin) { onChange('origin', data.origin); filled.push('origin') }
+    if (data.destination && !leg.destination) { onChange('destination', data.destination); filled.push('destination') }
+    if (data.next_day && !leg.next_day) { onChange('next_day', data.next_day) }
+    if (filled.length > 0) setHint(`✓ Known flight — auto-filled: ${filled.join(', ')}`)
+    else setHint('✓ Known flight')
+    setTimeout(() => setHint(null), 4000)
+  }
+
   return (
     <div style={{ background:'var(--bg-secondary)', borderRadius:'8px', padding:'14px 16px', position:'relative' }}>
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'10px' }}>
-        <span style={{ fontSize:'12px', fontWeight:'600', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.06em' }}>Leg {idx + 1}</span>
+        <div style={{ display:'flex', alignItems:'center', gap:'10px' }}>
+          <span style={{ fontSize:'12px', fontWeight:'600', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.06em' }}>Leg {idx + 1}</span>
+          {hint && <span style={{ fontSize:'11px', color:'var(--green)', fontStyle:'italic' }}>{hint}</span>}
+        </div>
         {canRemove && <button type="button" onClick={onRemove} style={{ background:'none', border:'none', color:'var(--red)', cursor:'pointer', fontSize:'16px', lineHeight:1 }}>✕</button>}
       </div>
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr 1fr', gap:'10px' }}>
-        <div><label className="label">Flight No *</label><input className="input" placeholder="BA2065" value={leg.flight_number} onChange={e=>onChange('flight_number', e.target.value)}/></div>
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr 1fr 1fr', gap:'10px' }}>
+        <div>
+          <label className="label">Flight No *</label>
+          <input className="input" placeholder="BA2065" value={leg.flight_number}
+            onChange={e=>onChange('flight_number', e.target.value)}
+            onBlur={e=>lookupFlight(e.target.value)}/>
+        </div>
         <div>
           <label className="label">Airline</label>
           <input className="input" list={`al-${idSuffix}-${idx}`} placeholder="British Airways" value={leg.airline} onChange={e=>onChange('airline', e.target.value)}/>
@@ -719,6 +812,7 @@ function LegForm({ leg, onChange, onRemove, idx, canRemove, idSuffix }: any) {
           <label className="label">Destination</label>
           <input className="input" list={`ap-${idSuffix}-${idx}`} placeholder="MRU" value={leg.destination} onChange={e=>onChange('destination', e.target.value.toUpperCase())}/>
         </div>
+        <div><label className="label">Terminal</label><input className="input" placeholder="e.g. N, S, 2, 5" value={leg.terminal||''} onChange={e=>onChange('terminal', e.target.value)}/></div>
         <div><label className="label">Departure Date</label><input className="input" type="date" value={leg.departure_date} onChange={e=>onChange('departure_date', e.target.value)}/></div>
         <div><label className="label">Depart Time</label><input className="input" placeholder="21:00" value={leg.departure_time} onChange={e=>onChange('departure_time', e.target.value)}/></div>
         <div><label className="label">Arrive Time</label><input className="input" placeholder="11:55" value={leg.arrival_time} onChange={e=>onChange('arrival_time', e.target.value)}/></div>
@@ -733,7 +827,7 @@ function LegForm({ leg, onChange, onRemove, idx, canRemove, idSuffix }: any) {
   )
 }
 
-const blankLeg = () => ({ flight_number:'', airline:'', origin:'', destination:'', departure_date:'', departure_time:'', arrival_time:'', next_day:false, cabin_notes:'' })
+const blankLeg = () => ({ flight_number:'', airline:'', origin:'', destination:'', terminal:'', departure_date:'', departure_time:'', arrival_time:'', next_day:false, cabin_notes:'' })
 
 // ── FLIGHTS TAB ──────────────────────────────────────────────
 function FlightsTab({ bookingId, outbound, returnFlts, suppliers, onUpdate, showToast }: any) {
@@ -742,7 +836,7 @@ function FlightsTab({ bookingId, outbound, returnFlts, suppliers, onUpdate, show
   const totalNet = allLegs.reduce((a: number, f: Flight) => a + (f.net_cost || 0), 0)
 
   // ── segment form state ──
-  const blankSeg = { direction:'outbound' as 'outbound'|'return', pnr:'', flight_supplier:'', net_cost:'', cabin_class:'Economy', baggage_notes:'', legs:[blankLeg()] }
+  const blankSeg = { direction:'outbound' as 'outbound'|'return', pnr:'', flight_supplier:'', net_cost:'', cabin_class:'Economy', baggage_notes:'', ticketing_deadline:'', legs:[blankLeg()] }
   const [adding, setAdding]     = useState(false)
   const [seg, setSeg]           = useState<any>({ ...blankSeg })
   const [saving, setSaving]     = useState(false)
@@ -769,13 +863,15 @@ function FlightsTab({ bookingId, outbound, returnFlts, suppliers, onUpdate, show
       leg_order:       existingLegs.length + i + 1,
       pnr:             seg.pnr || null,
       flight_supplier: seg.flight_supplier || null,
-      net_cost:        i === 0 && seg.net_cost ? Number(seg.net_cost) : null, // cost on first leg of segment only
+      net_cost:          i === 0 && seg.net_cost ? Number(seg.net_cost) : null,
+      ticketing_deadline: i === 0 && seg.ticketing_deadline ? seg.ticketing_deadline : null,
       cabin_class:     seg.cabin_class,
       baggage_notes:   seg.baggage_notes || null,
       flight_number:   l.flight_number,
       airline:         l.airline || null,
       origin:          l.origin || null,
       destination:     l.destination || null,
+      terminal:        l.terminal || null,
       departure_date:  l.departure_date || null,
       departure_time:  l.departure_time || null,
       arrival_time:    l.arrival_time || null,
@@ -785,6 +881,27 @@ function FlightsTab({ bookingId, outbound, returnFlts, suppliers, onUpdate, show
     const { error } = await supabase.from('booking_flights').insert(rows)
     setSaving(false)
     if (error) { showToast('Failed: ' + error.message, 'error'); return }
+
+    // Upsert known_flights for each leg (saves scheduling for future use)
+    for (const l of seg.legs) {
+      if (l.flight_number) {
+        await supabase.from('known_flights').upsert({
+          flight_number:  l.flight_number.toUpperCase(),
+          airline:        l.airline || null,
+          origin:         l.origin || null,
+          destination:    l.destination || null,
+          departure_time: l.departure_time || null,
+          arrival_time:   l.arrival_time || null,
+          next_day:       l.next_day,
+          updated_at:     new Date().toISOString(),
+        }, { onConflict: 'flight_number' })
+      }
+    }
+    // Auto-sync departure_date on booking from first outbound leg
+    if (seg.direction === 'outbound' && seg.legs[0]?.departure_date) {
+      await supabase.from('bookings').update({ departure_date: seg.legs[0].departure_date }).eq('id', bookingId)
+    }
+
     showToast(`${seg.direction === 'outbound' ? 'Outbound' : 'Return'} segment added ✓`)
     setAdding(false); setSeg({ ...blankSeg }); onUpdate()
   }
@@ -804,8 +921,10 @@ function FlightsTab({ bookingId, outbound, returnFlts, suppliers, onUpdate, show
       pnr:             editForm.pnr || null,
       flight_supplier: editForm.flight_supplier || null,
       net_cost:        editForm.net_cost ? Number(editForm.net_cost) : null,
-      baggage_notes:   editForm.baggage_notes || null,
-      cabin_notes:     editForm.cabin_notes || null,
+      terminal:           editForm.terminal || null,
+      ticketing_deadline: editForm.ticketing_deadline || null,
+      baggage_notes:      editForm.baggage_notes || null,
+      cabin_notes:        editForm.cabin_notes || null,
     }).eq('id', id)
     setSaving(false)
     if (error) { showToast('Failed: ' + error.message, 'error'); return }
@@ -842,6 +961,19 @@ function FlightsTab({ bookingId, outbound, returnFlts, suppliers, onUpdate, show
             {Object.entries(segments).map(([sid, segLegs]: [string, any]) => {
               const first = segLegs[0]
               const segNet = first.net_cost
+              // Ticketing deadline: use stored value or auto-calc 12 weeks before first leg departure
+              const storedDeadline = first.ticketing_deadline
+              const autoDeadline = (() => {
+                const dep = first.departure_date
+                if (!dep) return null
+                const d = new Date(dep.includes('T') ? dep : dep + 'T12:00')
+                d.setDate(d.getDate() - 84)
+                return d.toISOString().split('T')[0]
+              })()
+              const deadlineDate = storedDeadline || autoDeadline
+              const deadlineLabel = deadlineDate ? new Date(deadlineDate + 'T12:00').toLocaleDateString('en-GB', { day:'numeric', month:'short', year:'numeric' }) : null
+              const isAutoDeadline = !storedDeadline && !!autoDeadline
+              const deadlineUrgent = deadlineDate ? (new Date(deadlineDate + 'T12:00').getTime() - Date.now()) < 14 * 24 * 3600 * 1000 : false
               return (
                 <div key={sid} style={{ border:'1px solid var(--border)', borderRadius:'8px', overflow:'hidden' }}>
                   {/* Segment header */}
@@ -852,6 +984,14 @@ function FlightsTab({ bookingId, outbound, returnFlts, suppliers, onUpdate, show
                     <span style={{ fontSize:'12px', fontWeight:'600', color:'var(--text-primary)' }}>{first.cabin_class}</span>
                     {first.flight_supplier && <span style={{ fontSize:'12px', color:'var(--accent)' }}>via {first.flight_supplier}</span>}
                     {first.pnr && <span style={{ fontSize:'12px', fontFamily:'monospace', background:'var(--bg-tertiary)', padding:'1px 8px', borderRadius:'4px' }}>PNR: <strong>{first.pnr}</strong></span>}
+                    {deadlineLabel && (
+                      <span style={{ fontSize:'11.5px', padding:'2px 8px', borderRadius:'4px', fontWeight:'600',
+                        background: deadlineUrgent ? '#fee2e2' : isAutoDeadline ? 'var(--bg-tertiary)' : '#fef3c7',
+                        color: deadlineUrgent ? '#dc2626' : isAutoDeadline ? 'var(--text-muted)' : '#92400e',
+                      }}>
+                        🎫 Ticket by {deadlineLabel}{isAutoDeadline ? ' (auto)' : ''}
+                      </span>
+                    )}
                     {segNet != null && segNet > 0 && <span style={{ fontSize:'12px', color:'var(--green)', fontWeight:'600', marginLeft:'auto' }}>Net: {fmt(segNet)}</span>}
                     {first.baggage_notes && <span style={{ fontSize:'11.5px', color:'var(--text-muted)' }}>🧳 {first.baggage_notes}</span>}
                   </div>
@@ -878,6 +1018,8 @@ function FlightsTab({ bookingId, outbound, returnFlts, suppliers, onUpdate, show
                                 </select>
                               </div>
                               <div><label className="label">Net Cost (£)</label><input className="input" type="number" value={editForm.net_cost||''} onChange={e=>setEditForm((p:any)=>({...p,net_cost:e.target.value}))}/></div>
+                              <div><label className="label">Terminal</label><input className="input" placeholder="e.g. N, S, 2" value={editForm.terminal||''} onChange={e=>setEditForm((p:any)=>({...p,terminal:e.target.value}))}/></div>
+                              <div><label className="label">Ticketing Deadline</label><input className="input" type="date" value={editForm.ticketing_deadline||''} onChange={e=>setEditForm((p:any)=>({...p,ticketing_deadline:e.target.value}))}/></div>
                               <div><label className="label">Baggage</label><input className="input" value={editForm.baggage_notes||''} onChange={e=>setEditForm((p:any)=>({...p,baggage_notes:e.target.value}))}/></div>
                               <div style={{ gridColumn:'1/-1' }}><label className="label">Cabin Notes</label><input className="input" value={editForm.cabin_notes||''} onChange={e=>setEditForm((p:any)=>({...p,cabin_notes:e.target.value}))}/></div>
                             </div>
@@ -896,7 +1038,7 @@ function FlightsTab({ bookingId, outbound, returnFlts, suppliers, onUpdate, show
                                 {f.next_day && <span style={{ fontSize:'10px', color:'var(--amber)', background:'#fef3c7', padding:'1px 5px', borderRadius:'3px' }}>+1</span>}
                               </div>
                               <div style={{ fontSize:'13px', color:'var(--text-primary)' }}>
-                                <strong>{f.origin}</strong> {f.departure_time && <span style={{ color:'var(--text-muted)' }}>{f.departure_time}</span>} → <strong>{f.destination}</strong> {f.arrival_time && <span style={{ color:'var(--text-muted)' }}>{f.arrival_time}</span>}
+                                <strong>{f.origin}</strong>{f.terminal && <span style={{ fontSize:'11px', color:'var(--text-muted)', marginLeft:'3px' }}>T{f.terminal}</span>} {f.departure_time && <span style={{ color:'var(--text-muted)' }}>{f.departure_time}</span>} → <strong>{f.destination}</strong> {f.arrival_time && <span style={{ color:'var(--text-muted)' }}>{f.arrival_time}</span>}
                                 <span style={{ color:'var(--text-muted)', fontSize:'12px', marginLeft:'8px' }}>{fmtDate(f.departure_date)}</span>
                               </div>
                               {f.cabin_notes && <div style={{ fontSize:'11.5px', color:'var(--amber)', marginTop:'2px' }}>ℹ {f.cabin_notes}</div>}
@@ -950,7 +1092,7 @@ function FlightsTab({ bookingId, outbound, returnFlts, suppliers, onUpdate, show
           {/* Segment-level fields (shared across all legs) */}
           <div style={{ background:'var(--bg-secondary)', borderRadius:'8px', padding:'14px 16px', marginBottom:'16px' }}>
             <div style={{ fontSize:'11px', fontWeight:'700', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:'10px' }}>Segment Details — shared across all legs</div>
-            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr 1fr 1fr', gap:'10px' }}>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr 1fr 1fr 1fr', gap:'10px' }}>
               <div>
                 <label className="label">Supplier</label>
                 <select className="input" value={seg.flight_supplier} onChange={e=>setSeg((p:any)=>({...p,flight_supplier:e.target.value}))}>
@@ -962,6 +1104,10 @@ function FlightsTab({ bookingId, outbound, returnFlts, suppliers, onUpdate, show
               <div><label className="label">Net Cost (£)</label><input className="input" type="number" placeholder="0.00" value={seg.net_cost} onChange={e=>setSeg((p:any)=>({...p,net_cost:e.target.value}))}/></div>
               <div><label className="label">Cabin Class</label><select className="input" value={seg.cabin_class} onChange={e=>setSeg((p:any)=>({...p,cabin_class:e.target.value}))}>{CABIN_CLASSES.map(c=><option key={c}>{c}</option>)}</select></div>
               <div><label className="label">Baggage</label><input className="input" placeholder="2 × 23kg" value={seg.baggage_notes} onChange={e=>setSeg((p:any)=>({...p,baggage_notes:e.target.value}))}/></div>
+              <div>
+                <label className="label">Ticketing Deadline <span style={{ color:'var(--text-muted)', fontWeight:'400' }}>(auto: −12wk)</span></label>
+                <input className="input" type="date" value={seg.ticketing_deadline} onChange={e=>setSeg((p:any)=>({...p,ticketing_deadline:e.target.value}))}/>
+              </div>
             </div>
           </div>
 
@@ -1701,37 +1847,54 @@ function PaymentsTab({ booking, payments, balance, onUpdate, showToast }: any) {
 function CostingTab({ booking, flights, accommodations, transfers, extras, payments, suppliers, onUpdate, showToast }: any) {
   const [editingBalDue, setEditingBalDue] = useState(false)
   const [balDueDraft, setBalDueDraft]     = useState(booking.balance_due_date?.split('T')[0] || '')
+  const [ccDraft, setCcDraft]             = useState(String(booking.cc_surcharge || ''))
+  const [editingCc, setEditingCc]         = useState(false)
+  const [syncing, setSyncing]             = useState(false)
 
   const sell      = booking.total_sell || booking.deals?.deal_value || 0
   const discount  = booking.discount || 0
-  const clientNet = sell - discount
+  const ccSurch   = booking.cc_surcharge || 0
+  const clientNet = sell - discount - ccSurch
 
-  // Build cost lines from existing component data
+  // Build cost lines — one per segment (dedup by segment_id for flights)
   const costLines: { label: string; supplier: string; netCost: number }[] = []
+  const seenSegments = new Set<string>()
   for (const f of (flights || [])) {
-    if (f.net_cost) costLines.push({
-      label:    `${f.airline || ''} ${f.flight_number || ''} (${f.origin}→${f.destination})`.trim(),
+    if (!f.net_cost) continue
+    const segKey = `${f.direction}-${f.segment_id ?? f.id}`
+    if (seenSegments.has(segKey)) continue
+    seenSegments.add(segKey)
+    // label: first leg of segment origin→destination
+    const segLegs = (flights || []).filter((x: Flight) => x.direction === f.direction && (x.segment_id ?? x.id) === (f.segment_id ?? f.id))
+    const origin  = segLegs[0]?.origin || f.origin
+    const dest    = segLegs[segLegs.length - 1]?.destination || f.destination
+    const airline = f.airline || ''
+    costLines.push({
+      label:    `${airline} (${origin}→${dest})`.trim(),
       supplier: f.flight_supplier || '—',
       netCost:  f.net_cost,
     })
   }
   for (const a of accommodations) {
-    if (a.net_cost) costLines.push({
+    if (!a.net_cost) continue
+    costLines.push({
       label:    a.hotel_name || 'Accommodation',
       supplier: suppliers.find((s: Supplier) => s.id === a.supplier_id)?.name || '—',
       netCost:  a.net_cost,
     })
   }
   for (const t of transfers) {
-    if (t.net_cost) costLines.push({
-      label:    `Transfer${t.transfer_type ? ` (${TRANSFER_TYPES.find((x: any) => x.value === t.transfer_type)?.label || t.transfer_type})` : ''}`,
+    if (!t.net_cost) continue
+    costLines.push({
+      label:    `Transfer (${TRANSFER_TYPES.find((x: any) => x.value === t.transfer_type)?.label || t.transfer_type})`,
       supplier: suppliers.find((s: Supplier) => s.id === t.supplier_id)?.name || t.supplier_name || '—',
       netCost:  t.net_cost,
     })
   }
   for (const e of extras) {
-    if (e.net_cost) costLines.push({
-      label:    e.description || e.extra_type || 'Extra',
+    if (!e.net_cost) continue
+    costLines.push({
+      label:    e.description || (e.extra_type || '').replace('_',' ') || 'Extra',
       supplier: e.supplier || '—',
       netCost:  e.net_cost,
     })
@@ -1741,13 +1904,12 @@ function CostingTab({ booking, flights, accommodations, transfers, extras, payme
   const excess       = sell - totalNetCost
   const grossComm    = clientNet - totalNetCost
 
-  // Receipt rows with running totals and type labels
   const totalPaid = payments.reduce((a: number, p: Payment) => a + (p.amount || 0), 0)
   let running = 0
   const receiptRows = payments.map((p: Payment, i: number) => {
     running += p.amount
     const owing = sell - running
-    const type  = i === 0 ? 'Deposit' : (i === payments.length - 1 && owing <= 0) ? 'Balance' : 'Intrim'
+    const type  = i === 0 ? 'Deposit' : (i === payments.length - 1 && owing <= 0) ? 'Balance' : 'Interim'
     return { ...p, amountOwing: Math.max(0, owing), type, runningTotal: running }
   })
   const balanceDue = sell - totalPaid
@@ -1755,9 +1917,25 @@ function CostingTab({ booking, flights, accommodations, transfers, extras, payme
   async function saveBalDue() {
     const { error } = await supabase.from('bookings').update({ balance_due_date: balDueDraft || null }).eq('id', booking.id)
     if (error) { showToast('Failed: ' + error.message, 'error'); return }
-    showToast('Balance due date updated ✓')
-    setEditingBalDue(false)
-    onUpdate()
+    showToast('Balance due date updated ✓'); setEditingBalDue(false); onUpdate()
+  }
+
+  async function saveCcSurcharge() {
+    const { error } = await supabase.from('bookings').update({ cc_surcharge: Number(ccDraft) || 0 }).eq('id', booking.id)
+    if (error) { showToast('Failed: ' + error.message, 'error'); return }
+    showToast('CC surcharge updated ✓'); setEditingCc(false); onUpdate()
+  }
+
+  async function pushToOverview() {
+    if (totalNetCost === 0) { showToast('No costs entered yet', 'error'); return }
+    setSyncing(true)
+    const { error } = await supabase.from('bookings').update({
+      total_net:    totalNetCost,
+      gross_profit: grossComm,
+    }).eq('id', booking.id)
+    setSyncing(false)
+    if (error) { showToast('Failed: ' + error.message, 'error'); return }
+    showToast('Total net & gross profit pushed to Overview ✓'); onUpdate()
   }
 
   const TH = ({ children, right }: { children: string; right?: boolean }) => (
@@ -1769,11 +1947,18 @@ function CostingTab({ booking, flights, accommodations, transfers, extras, payme
 
       {/* ── Cost Breakdown ── */}
       <div className="card" style={{ padding:'20px 22px' }}>
-        <div style={{ fontFamily:'Fraunces,serif', fontSize:'17px', fontWeight:'300', marginBottom:'16px' }}>Cost Details</div>
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'16px' }}>
+          <div style={{ fontFamily:'Fraunces,serif', fontSize:'17px', fontWeight:'300' }}>Cost Details</div>
+          {totalNetCost > 0 && (
+            <button className="btn btn-cta btn-xs" onClick={pushToOverview} disabled={syncing}>
+              {syncing ? 'Pushing…' : '⟳ Push to Overview'}
+            </button>
+          )}
+        </div>
 
         {costLines.length === 0 ? (
           <div style={{ fontSize:'13px', color:'var(--text-muted)', fontStyle:'italic' }}>
-            No net costs entered yet. Add costs in the Accommodation, Transfers, or Extras tabs.
+            No net costs entered yet. Add costs in the Flights, Accommodation, Transfers or Extras tabs.
           </div>
         ) : (
           <>
@@ -1783,26 +1968,21 @@ function CostingTab({ booking, flights, accommodations, transfers, extras, payme
                   <tr style={{ borderBottom:'2px solid var(--border)' }}>
                     <TH>Component</TH>
                     <TH>Supplier</TH>
-                    <TH right>Supplier Gross</TH>
-                    <TH right>Gross Margin</TH>
-                    <TH right>Margin %</TH>
+                    <TH right>Net Cost</TH>
                   </tr>
                 </thead>
                 <tbody>
-                  {costLines.map((line, i) => {
-                    const proportional = totalNetCost > 0 ? (line.netCost / totalNetCost) * clientNet : 0
-                    const margin       = proportional - line.netCost
-                    const marginPct    = proportional > 0 ? (margin / proportional) * 100 : 0
-                    return (
-                      <tr key={i} style={{ borderBottom:'1px solid var(--border)' }}>
-                        <td style={{ padding:'10px 10px', fontWeight:'500', color:'var(--text-primary)' }}>{line.label}</td>
-                        <td style={{ padding:'10px 10px', color:'var(--text-muted)' }}>{line.supplier}</td>
-                        <td style={{ padding:'10px 10px', textAlign:'right', fontFamily:'monospace' }}>{fmt(line.netCost)}</td>
-                        <td style={{ padding:'10px 10px', textAlign:'right', fontFamily:'monospace', color: margin >= 0 ? 'var(--green)' : 'var(--red)' }}>{fmt(margin)}</td>
-                        <td style={{ padding:'10px 10px', textAlign:'right', color:'var(--text-muted)' }}>{marginPct.toFixed(1)}%</td>
-                      </tr>
-                    )
-                  })}
+                  {costLines.map((line, i) => (
+                    <tr key={i} style={{ borderBottom:'1px solid var(--border)' }}>
+                      <td style={{ padding:'10px 10px', fontWeight:'500', color:'var(--text-primary)' }}>{line.label}</td>
+                      <td style={{ padding:'10px 10px', color:'var(--text-muted)' }}>{line.supplier}</td>
+                      <td style={{ padding:'10px 10px', textAlign:'right', fontFamily:'monospace', fontWeight:'500' }}>{fmt(line.netCost)}</td>
+                    </tr>
+                  ))}
+                  <tr style={{ background:'var(--bg-secondary)', borderTop:'2px solid var(--border)' }}>
+                    <td colSpan={2} style={{ padding:'10px', fontWeight:'700', fontSize:'13px' }}>Total Net Cost</td>
+                    <td style={{ padding:'10px', textAlign:'right', fontFamily:'monospace', fontWeight:'700', fontSize:'15px' }}>{fmt(totalNetCost)}</td>
+                  </tr>
                 </tbody>
               </table>
             </div>
@@ -1811,22 +1991,23 @@ function CostingTab({ booking, flights, accommodations, transfers, extras, payme
             <div style={{ borderTop:'2px solid var(--border)', marginTop:'4px', paddingTop:'16px', display:'grid', gridTemplateColumns:'1fr 1fr', gap:'24px' }}>
               <div style={{ display:'flex', flexDirection:'column', gap:'9px' }}>
                 {[
-                  { label:'Total Net Cost',      val: fmt(totalNetCost), bold: true  },
-                  { label:'Excess',              val: fmt(excess),       color:'var(--text-muted)' },
-                  { label:'Discount',            val: discount > 0 ? `− ${fmt(discount)}` : '—', color:'var(--amber)' },
+                  { label:'Total Net Cost', val: fmt(totalNetCost), bold: true },
+                  { label:'Excess',         val: fmt(excess),       color:'var(--text-muted)' },
+                  { label:'Discount',       val: discount > 0 ? `− ${fmt(discount)}` : '—', color:'var(--amber)' },
+                  { label:'CC Surcharge',   val: ccSurch > 0 ? `− ${fmt(ccSurch)}` : '—', color:'var(--amber)' },
                 ].map(r => (
                   <div key={r.label} style={{ display:'flex', justifyContent:'space-between' }}>
                     <span style={{ fontSize:'12.5px', color:'var(--text-muted)' }}>{r.label}</span>
-                    <span style={{ fontSize:'13px', fontFamily:'monospace', color: r.color || 'var(--text-primary)', fontWeight: r.bold ? '700' : '500' }}>{r.val}</span>
+                    <span style={{ fontSize:'13px', fontFamily:'monospace', color: (r as any).color || 'var(--text-primary)', fontWeight: (r as any).bold ? '700' : '500' }}>{r.val}</span>
                   </div>
                 ))}
               </div>
               <div style={{ display:'flex', flexDirection:'column', gap:'9px' }}>
                 {[
-                  { label:'Client Total',    val: fmt(sell),       color:'var(--accent-mid)', bold: true },
-                  { label:'Client Net',      val: fmt(clientNet),  color:'var(--text-primary)', bold: true },
-                  { label:'Gross Comm',      val: fmt(grossComm),  color: grossComm >= 0 ? 'var(--green)' : 'var(--red)', bold: true },
-                  { label:'Net Comm',        val: fmt(grossComm),  color: grossComm >= 0 ? 'var(--green)' : 'var(--red)', bold: true },
+                  { label:'Client Total',  val: fmt(sell),      color:'var(--accent-mid)', bold: true },
+                  { label:'Client Net',    val: fmt(clientNet), color:'var(--text-primary)', bold: true },
+                  { label:'Gross Comm',    val: fmt(grossComm), color: grossComm >= 0 ? 'var(--green)' : 'var(--red)', bold: true },
+                  { label:'Net Comm',      val: fmt(grossComm), color: grossComm >= 0 ? 'var(--green)' : 'var(--red)', bold: true },
                 ].map(r => (
                   <div key={r.label} style={{ display:'flex', justifyContent:'space-between' }}>
                     <span style={{ fontSize:'12.5px', color:'var(--text-muted)' }}>{r.label}</span>
@@ -1834,6 +2015,26 @@ function CostingTab({ booking, flights, accommodations, transfers, extras, payme
                   </div>
                 ))}
               </div>
+            </div>
+
+            {/* CC surcharge inline editor */}
+            <div style={{ marginTop:'14px', padding:'12px 14px', background:'var(--bg-secondary)', borderRadius:'8px', display:'flex', alignItems:'center', gap:'12px' }}>
+              <span style={{ fontSize:'12.5px', color:'var(--text-muted)', flex:1 }}>CC Surcharge (credit card fee charged by management)</span>
+              {editingCc ? (
+                <div style={{ display:'flex', gap:'6px', alignItems:'center' }}>
+                  <span style={{ fontSize:'13px' }}>£</span>
+                  <input className="input" type="number" value={ccDraft} onChange={e=>setCcDraft(e.target.value)} style={{ width:'90px', fontSize:'13px', padding:'4px 8px' }} autoFocus />
+                  <button className="btn btn-cta btn-xs" onClick={saveCcSurcharge}>Save</button>
+                  <button className="btn btn-secondary btn-xs" onClick={()=>setEditingCc(false)}>Cancel</button>
+                </div>
+              ) : (
+                <div style={{ display:'flex', gap:'8px', alignItems:'center' }}>
+                  <span style={{ fontSize:'14px', fontWeight:'600', fontFamily:'monospace', color: ccSurch > 0 ? 'var(--amber)' : 'var(--text-muted)' }}>
+                    {ccSurch > 0 ? fmt(ccSurch) : '—'}
+                  </span>
+                  <button onClick={()=>setEditingCc(true)} style={{ background:'none', border:'none', cursor:'pointer', fontSize:'12px', color:'var(--text-muted)', opacity:0.7 }}>✏</button>
+                </div>
+              )}
             </div>
           </>
         )}
