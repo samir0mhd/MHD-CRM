@@ -760,7 +760,6 @@ function FlightsTab({ bookingId, outbound, returnFlts, suppliers, onUpdate, show
       arrival_date: form.arrival_date || null, arrival_time: form.arrival_time || null,
       next_day: form.next_day, cabin_class: form.cabin_class,
       pnr: form.pnr || null, flight_supplier: form.flight_supplier || null,
-      net_cost: form.net_cost ? Number(form.net_cost) : null,
       baggage_notes: form.baggage_notes || null, cabin_notes: form.cabin_notes || null,
     })
     setSaving(false)
