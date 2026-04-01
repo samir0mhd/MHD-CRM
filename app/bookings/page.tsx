@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState, useRef } from 'react'
+import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import Link from 'next/link'
 
@@ -137,7 +138,7 @@ export default function BookingsPage() {
   const [loading, setLoading]           = useState(true)
   const [search, setSearch]             = useState('')
   const [statusFilter, setStatusFilter] = useState<string>('ALL')
-  const [selectedBooking, setSelected]  = useState<Booking | null>(null)
+  const router                           = useRouter()
   const [toast, setToast]               = useState<string | null>(null)
   const toastTimer                      = useRef<any>(null)
 
@@ -276,7 +277,7 @@ export default function BookingsPage() {
                   return (
                     <tr key={booking.id}
                       style={{ borderBottom: '1px solid var(--border)', cursor: 'pointer', transition: 'background 0.12s' }}
-                      onClick={() => setSelected(booking)}
+                      onClick={() => router.push(`/bookings/${booking.id}`)}
                       onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-tertiary)')}
                       onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
 
@@ -376,16 +377,6 @@ export default function BookingsPage() {
           </div>
         )}
       </div>
-
-      {/* Booking detail panel */}
-      {selectedBooking && (
-        <BookingDetailPanel
-          booking={selectedBooking}
-          onClose={() => setSelected(null)}
-          onRefresh={() => { loadBookings(); setSelected(null) }}
-          showToast={showToast}
-        />
-      )}
 
       {toast && <div className="toast">{toast}</div>}
     </div>

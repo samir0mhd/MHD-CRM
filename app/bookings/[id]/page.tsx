@@ -1,0 +1,1341 @@
+'use client'
+
+import { useEffect, useState, useRef } from 'react'
+import { useParams, useRouter } from 'next/navigation'
+import { supabase } from '@/lib/supabase'
+import Link from 'next/link'
+
+// ── TYPES ────────────────────────────────────────────────────
+type Booking = {
+  id: number
+  booking_reference: string
+  deal_id: number
+  status: string
+  departure_date: string | null
+  return_date: string | null
+  balance_due_date: string | null
+  deposit_received: boolean
+  destination: string | null
+  total_sell: number | null
+  total_net: number | null
+  gross_profit: number | null
+  discount: number | null
+  final_profit: number | null
+  booking_notes: string | null
+  created_at: string
+  deals?: { id: number; title: string; deal_value: number; clients?: Client }
+}
+type Client = { id: number; first_name: string; last_name: string; phone: string; email: string }
+type Passenger = {
+  id: number; booking_id: number; title: string; first_name: string; last_name: string
+  date_of_birth: string | null; passenger_type: string; is_lead: boolean
+  passport_number: string | null; passport_expiry: string | null
+}
+type Flight = {
+  id: number; booking_id: number; direction: string; leg_order: number
+  flight_number: string | null; airline: string | null; origin: string | null; destination: string | null
+  departure_date: string | null; departure_time: string | null
+  arrival_date: string | null; arrival_time: string | null; next_day: boolean
+  cabin_class: string; pnr: string | null; flight_supplier: string | null
+  baggage_notes: string | null; cabin_notes: string | null
+}
+type Accommodation = {
+  id: number; booking_id: number; stay_order: number
+  hotel_id: number | null; hotel_name: string | null; supplier_id: number | null
+  hotel_confirmation: string | null; checkin_date: string | null; checkout_date: string | null
+  nights: number | null; room_type: string | null; room_quantity: number; board_basis: string | null
+  adults: number; children: number; infants: number; net_cost: number | null
+  special_occasion: string | null; special_requests: string | null
+  reservation_status: string; reservation_sent_at: string | null; reservation_email_to: string | null
+}
+type Transfer = {
+  id: number; booking_id: number; supplier_id: number | null; supplier_name: string | null
+  transfer_type: string; meet_greet: boolean; local_rep: boolean
+  arrival_date: string | null; arrival_time: string | null; arrival_flight: string | null
+  departure_date: string | null; departure_time: string | null; departure_flight: string | null
+  inter_hotel_dates: string | null; net_cost: number | null; notes: string | null
+}
+type Extra = {
+  id: number; booking_id: number; extra_type: string | null; description: string | null
+  supplier: string | null; net_cost: number | null; sell_price: number | null; notes: string | null
+}
+type Payment = {
+  id: number; booking_id: number; amount: number; payment_date: string
+  debit_card: number; credit_card: number; amex: number; bank_transfer: number
+  notes: string | null; invoice_sent: boolean; invoice_sent_at: string | null
+}
+type BookingTask = {
+  id: number; booking_id: number; task_name: string; task_key: string
+  category: string; sort_order: number; is_done: boolean
+  completed_at: string | null; notes: string | null; due_date: string | null
+}
+type Hotel = { id: number; name: string; room_types: string[] | null; meal_plans: string[] | null; reservation_email: string | null; reservation_phone: string | null; reservation_address: string | null; reservation_contact: string | null }
+type Supplier = { id: number; name: string; type: string | null }
+
+// ── CONSTANTS ────────────────────────────────────────────────
+const CABIN_CLASSES = ['Economy', 'Premium Economy', 'Business Class', 'First Class']
+const BOARD_BASIS   = ['Room Only', 'Bed & Breakfast', 'Half Board', 'Full Board', 'All Inclusive', 'Ultra All Inclusive', 'Premium All Inclusive', 'Gourmet Half Board', 'Gourmet Bliss', 'Serenity Plus', 'Beachcomber Plus', 'Dine Around']
+const TRANSFER_TYPES = [
+  { value: 'private',      label: 'Private (up to 2 pax)' },
+  { value: 'comfort_plus', label: 'Comfort Plus (up to 3 pax)' },
+  { value: 'family',       label: 'Special Family (up to 7 pax)' },
+  { value: 'coach',        label: 'Standard Coach' },
+]
+const SPECIAL_OCCASIONS = ['Honeymoon', 'Anniversary', 'Birthday', 'Retirement', 'Family Gathering', 'New Year Celebration', 'Christmas', 'Proposal', 'Other']
+const RES_STATUS: Record<string, { label: string; color: string }> = {
+  pending:     { label: 'Pending',       color: '#94a3b8' },
+  sent:        { label: 'Email Sent',    color: '#f59e0b' },
+  confirmed:   { label: 'Confirmed',     color: '#10b981' },
+  ref_received:{ label: 'Ref Received',  color: '#6366f1' },
+}
+const TITLES = ['Mr', 'Mrs', 'Ms', 'Miss', 'Dr', 'Master']
+const PAX_TYPES = ['Adult', 'Child', 'Infant']
+const TASK_TEMPLATE = [
+  { key:'deposit_received',      name:'Deposit received',               category:'Financial',     sort:1  },
+  { key:'balance_due_set',       name:'Balance due date set',           category:'Financial',     sort:2  },
+  { key:'balance_chased',        name:'Balance payment chased',         category:'Financial',     sort:3  },
+  { key:'balance_received',      name:'Balance payment received',       category:'Financial',     sort:4  },
+  { key:'final_costing',         name:'Final costing confirmed',        category:'Financial',     sort:5  },
+  { key:'flights_ticketed',      name:'Flights ticketed',               category:'Flights',       sort:6  },
+  { key:'ticket_numbers',        name:'Ticket numbers recorded',        category:'Flights',       sort:7  },
+  { key:'etickets_sent',         name:'E-tickets sent to client',       category:'Flights',       sort:8  },
+  { key:'hotel_confirmation',    name:'Hotel confirmation received',    category:'Accommodation', sort:9  },
+  { key:'rooming_list',          name:'Hotel rooming list sent',        category:'Accommodation', sort:10 },
+  { key:'special_requests',      name:'Special requests confirmed',     category:'Accommodation', sort:11 },
+  { key:'transfers_booked',      name:'Transfers booked with DMC',      category:'Transfers',     sort:12 },
+  { key:'transfer_confirmation', name:'Transfer confirmation received', category:'Transfers',     sort:13 },
+  { key:'arrival_details_sent',  name:'Arrival details sent to DMC',   category:'Transfers',     sort:14 },
+  { key:'booking_confirmation',  name:'Booking confirmation sent',      category:'Documents',     sort:15 },
+  { key:'travel_docs',           name:'Travel documents issued',        category:'Documents',     sort:16 },
+  { key:'welcome_pack',          name:'Welcome pack sent',              category:'Documents',     sort:17 },
+  { key:'atol_certificate',      name:'ATOL certificate issued',        category:'Documents',     sort:18 },
+  { key:'predeparture_call',     name:'Pre-departure call made',        category:'Pre-Departure', sort:19 },
+  { key:'emergency_contact',     name:'Emergency contact confirmed',    category:'Pre-Departure', sort:20 },
+  { key:'welcome_back_call',     name:'Welcome back call made',         category:'Post-Trip',     sort:21 },
+  { key:'review_requested',      name:'Review requested (Trustpilot)',  category:'Post-Trip',     sort:22 },
+  { key:'rebook_conversation',   name:'Re-booking conversation started',category:'Post-Trip',     sort:23 },
+]
+const CAT_COLORS: Record<string,string> = {
+  Financial:'#10b981', Flights:'#3b82f6', Accommodation:'#8b5cf6',
+  Transfers:'#f97316', Documents:'#f59e0b', 'Pre-Departure':'#ec4899', 'Post-Trip':'#14b8a6',
+}
+const CAT_ICONS: Record<string,string> = {
+  Financial:'💷', Flights:'✈', Accommodation:'🏨',
+  Transfers:'🚗', Documents:'📄', 'Pre-Departure':'📞', 'Post-Trip':'🌟',
+}
+
+// ── HELPERS ──────────────────────────────────────────────────
+const fmt     = (n: number | null) => '£' + (n || 0).toLocaleString('en-GB', { maximumFractionDigits: 0 })
+const fmtDate = (d: string | null) => !d ? '—' : new Date(d + 'T12:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+const daysUntil = (d: string | null) => !d ? null : Math.ceil((new Date(d).getTime() - Date.now()) / 86400000)
+
+function calcNights(checkin: string | null, checkout: string | null): number | null {
+  if (!checkin || !checkout) return null
+  return Math.round((new Date(checkout).getTime() - new Date(checkin).getTime()) / 86400000)
+}
+
+// ── PAGE ─────────────────────────────────────────────────────
+export default function BookingDetailPage() {
+  const { id }    = useParams()
+  const router    = useRouter()
+
+  const [booking, setBooking]           = useState<Booking | null>(null)
+  const [passengers, setPassengers]     = useState<Passenger[]>([])
+  const [flights, setFlights]           = useState<Flight[]>([])
+  const [accommodations, setAccoms]     = useState<Accommodation[]>([])
+  const [transfers, setTransfers]       = useState<Transfer[]>([])
+  const [extras, setExtras]             = useState<Extra[]>([])
+  const [payments, setPayments]         = useState<Payment[]>([])
+  const [tasks, setTasks]               = useState<BookingTask[]>([])
+  const [hotels, setHotels]             = useState<Hotel[]>([])
+  const [suppliers, setSuppliers]       = useState<Supplier[]>([])
+  const [loading, setLoading]           = useState(true)
+  const [tab, setTab]                   = useState<'overview'|'passengers'|'flights'|'accommodation'|'transfers'|'extras'|'payments'|'tasks'>('overview')
+  const [toast, setToast]               = useState<{ msg: string; type: 'success'|'error' } | null>(null)
+  const [saving, setSaving]             = useState(false)
+  const toastTimer                      = useRef<any>(null)
+
+  useEffect(() => { loadAll() }, [id])
+
+  async function loadAll() {
+    setLoading(true)
+    const [
+      { data: bk }, { data: pax }, { data: fl }, { data: ac },
+      { data: tr }, { data: ex }, { data: pay }, { data: tk },
+      { data: ht }, { data: sup },
+    ] = await Promise.all([
+      supabase.from('bookings').select('*, deals(id,title,deal_value,clients(*))').eq('id', id).single(),
+      supabase.from('booking_passengers').select('*').eq('booking_id', id).order('is_lead', { ascending: false }),
+      supabase.from('booking_flights').select('*').eq('booking_id', id).order('direction').order('leg_order'),
+      supabase.from('booking_accommodations').select('*').eq('booking_id', id).order('stay_order'),
+      supabase.from('booking_transfers').select('*').eq('booking_id', id),
+      supabase.from('booking_extras').select('*').eq('booking_id', id),
+      supabase.from('booking_payments').select('*').eq('booking_id', id).order('payment_date'),
+      supabase.from('booking_tasks').select('*').eq('booking_id', id).order('sort_order'),
+      supabase.from('hotel_list').select('id,name,room_types,meal_plans,reservation_email,reservation_phone,reservation_address,reservation_contact').order('name'),
+      supabase.from('suppliers').select('id,name,type').order('name'),
+    ])
+    setBooking(bk)
+    setPassengers(pax || [])
+    setFlights(fl || [])
+    setAccoms(ac || [])
+    setTransfers(tr || [])
+    setExtras(ex || [])
+    setPayments(pay || [])
+    if (tk && tk.length > 0) {
+      setTasks(tk)
+    } else if (bk) {
+      // auto-init tasks for new bookings
+      const inserts = TASK_TEMPLATE.map(t => ({ booking_id: Number(id), task_name: t.name, task_key: t.key, category: t.category, sort_order: t.sort, is_done: false }))
+      const { data: newTasks } = await supabase.from('booking_tasks').insert(inserts).select()
+      setTasks(newTasks || [])
+    }
+    setHotels(ht || [])
+    setSuppliers(sup || [])
+    setLoading(false)
+  }
+
+  function showToast(msg: string, type: 'success'|'error' = 'success') {
+    setToast({ msg, type })
+    if (toastTimer.current) clearTimeout(toastTimer.current)
+    toastTimer.current = setTimeout(() => setToast(null), 3000)
+  }
+
+  if (loading) return <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:'80vh' }}><div style={{ color:'var(--text-muted)', fontSize:'14px' }}>Loading booking…</div></div>
+  if (!booking) return <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:'80vh' }}><div style={{ color:'var(--text-muted)', fontSize:'14px' }}>Booking not found</div></div>
+
+  const client      = booking.deals?.clients
+  const totalPaid   = payments.reduce((a, p) => a + (p.amount || 0), 0)
+  const balance     = (booking.total_sell || booking.deals?.deal_value || 0) - totalPaid
+  const tasksDone   = tasks.filter(t => t.is_done).length
+  const taskPct     = tasks.length ? Math.round((tasksDone / tasks.length) * 100) : 0
+  const depDays     = daysUntil(booking.departure_date)
+  const balDays     = daysUntil(booking.balance_due_date)
+  const outbound    = flights.filter(f => f.direction === 'outbound').sort((a,b) => a.leg_order - b.leg_order)
+  const returnFlts  = flights.filter(f => f.direction === 'return').sort((a,b) => a.leg_order - b.leg_order)
+
+  const TABS = [
+    { key:'overview',      label:'Overview'                              },
+    { key:'passengers',    label:`Passengers (${passengers.length})`    },
+    { key:'flights',       label:`Flights (${flights.length})`          },
+    { key:'accommodation', label:`Accommodation (${accommodations.length})` },
+    { key:'transfers',     label:`Transfers (${transfers.length})`      },
+    { key:'extras',        label:`Extras (${extras.length})`            },
+    { key:'payments',      label:`Payments (${payments.length})`        },
+    { key:'tasks',         label:`Tasks ${taskPct}%`                    },
+  ] as const
+
+  return (
+    <div>
+      {/* Header */}
+      <div className="page-header">
+        <div style={{ display:'flex', alignItems:'center', gap:'12px' }}>
+          <Link href="/bookings" style={{ color:'var(--text-muted)', textDecoration:'none', fontSize:'13px' }}>← Bookings</Link>
+          <div>
+            <div style={{ display:'flex', alignItems:'center', gap:'10px' }}>
+              <div className="page-title" style={{ fontSize:'22px', fontFamily:'monospace', letterSpacing:'0.05em' }}>{booking.booking_reference}</div>
+              <span style={{ fontSize:'12px', padding:'3px 10px', borderRadius:'20px', background:'#e6f4ee', color:'#10b981', fontWeight:'500' }}>{booking.status}</span>
+            </div>
+            <div style={{ fontSize:'13px', color:'var(--text-muted)', marginTop:'2px' }}>
+              {client ? `${client.first_name} ${client.last_name}` : '—'} · {fmtDate(booking.departure_date)}{booking.return_date ? ` → ${fmtDate(booking.return_date)}` : ''}
+              {booking.destination ? ` · ${booking.destination}` : ''}
+            </div>
+          </div>
+        </div>
+        <div style={{ display:'flex', gap:'8px' }}>
+          <Link href={`/deals/${booking.deal_id}`}><button className="btn btn-secondary">← Deal</button></Link>
+        </div>
+      </div>
+
+      {/* Balance due alert */}
+      {balDays !== null && balDays <= 14 && balDays >= 0 && balance > 0 && (
+        <div style={{ margin:'0 0 16px', background:'#fdeaea', border:'1px solid var(--red)', borderRadius:'10px', padding:'12px 18px', display:'flex', alignItems:'center', gap:'10px' }}>
+          <span style={{ fontSize:'18px' }}>⚠️</span>
+          <div style={{ flex:1, fontSize:'13.5px', color:'var(--red)', fontWeight:'500' }}>
+            Balance of {fmt(balance)} due {balDays === 0 ? 'TODAY' : `in ${balDays} day${balDays===1?'':'s'}`} — {fmtDate(booking.balance_due_date)}
+          </div>
+        </div>
+      )}
+
+      <div className="page-body">
+        {/* Tabs */}
+        <div style={{ display:'flex', borderBottom:'1px solid var(--border)', marginBottom:'20px', overflowX:'auto' }}>
+          {TABS.map(t => (
+            <button key={t.key} onClick={() => setTab(t.key as any)}
+              style={{ padding:'10px 16px', border:'none', background:'transparent', fontSize:'13px', cursor:'pointer', whiteSpace:'nowrap',
+                color: tab===t.key ? 'var(--accent)' : 'var(--text-muted)',
+                fontWeight: tab===t.key ? '500' : '400',
+                borderBottom: tab===t.key ? '2px solid var(--accent)' : '2px solid transparent',
+                marginBottom:'-1px' }}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        {/* ── OVERVIEW TAB ─────────────────────────────── */}
+        {tab === 'overview' && (
+          <OverviewTab booking={booking} client={client} payments={payments}
+            totalPaid={totalPaid} balance={balance} taskPct={taskPct}
+            tasksDone={tasksDone} tasksTotal={tasks.length}
+            depDays={depDays} accommodations={accommodations} outbound={outbound}
+            onUpdate={loadAll} showToast={showToast} />
+        )}
+
+        {/* ── PASSENGERS TAB ───────────────────────────── */}
+        {tab === 'passengers' && (
+          <PassengersTab bookingId={booking.id} passengers={passengers} onUpdate={loadAll} showToast={showToast} />
+        )}
+
+        {/* ── FLIGHTS TAB ──────────────────────────────── */}
+        {tab === 'flights' && (
+          <FlightsTab bookingId={booking.id} outbound={outbound} returnFlts={returnFlts}
+            onUpdate={loadAll} showToast={showToast} />
+        )}
+
+        {/* ── ACCOMMODATION TAB ────────────────────────── */}
+        {tab === 'accommodation' && (
+          <AccommodationTab bookingId={booking.id} accommodations={accommodations}
+            hotels={hotels} suppliers={suppliers} passengers={passengers}
+            onUpdate={loadAll} showToast={showToast} />
+        )}
+
+        {/* ── TRANSFERS TAB ────────────────────────────── */}
+        {tab === 'transfers' && (
+          <TransfersTab bookingId={booking.id} transfers={transfers} suppliers={suppliers}
+            flights={flights} onUpdate={loadAll} showToast={showToast} />
+        )}
+
+        {/* ── EXTRAS TAB ───────────────────────────────── */}
+        {tab === 'extras' && (
+          <ExtrasTab bookingId={booking.id} extras={extras} onUpdate={loadAll} showToast={showToast} />
+        )}
+
+        {/* ── PAYMENTS TAB ─────────────────────────────── */}
+        {tab === 'payments' && (
+          <PaymentsTab booking={booking} payments={payments} balance={balance}
+            onUpdate={loadAll} showToast={showToast} />
+        )}
+
+        {/* ── TASKS TAB ────────────────────────────────── */}
+        {tab === 'tasks' && (
+          <TasksTab tasks={tasks} onUpdate={loadAll} showToast={showToast} />
+        )}
+      </div>
+
+      {toast && <div className={`toast ${toast.type}`}>{toast.msg}</div>}
+    </div>
+  )
+}
+
+// ── OVERVIEW TAB ─────────────────────────────────────────────
+function OverviewTab({ booking, client, payments, totalPaid, balance, taskPct, tasksDone, tasksTotal, depDays, accommodations, outbound, onUpdate, showToast }: any) {
+  const [editing, setEditing] = useState(false)
+  const [form, setForm]       = useState({
+    destination:    booking.destination || '',
+    total_sell:     booking.total_sell || booking.deals?.deal_value || '',
+    total_net:      booking.total_net || '',
+    gross_profit:   booking.gross_profit || '',
+    discount:       booking.discount || '0',
+    return_date:    booking.return_date?.split('T')[0] || '',
+    balance_due_date: booking.balance_due_date?.split('T')[0] || '',
+    booking_notes:  booking.booking_notes || '',
+  })
+  const [saving, setSaving] = useState(false)
+
+  async function save() {
+    setSaving(true)
+    const { error } = await supabase.from('bookings').update({
+      destination:      form.destination || null,
+      total_sell:       form.total_sell ? Number(form.total_sell) : null,
+      total_net:        form.total_net ? Number(form.total_net) : null,
+      gross_profit:     form.gross_profit ? Number(form.gross_profit) : null,
+      discount:         Number(form.discount) || 0,
+      return_date:      form.return_date || null,
+      balance_due_date: form.balance_due_date || null,
+      booking_notes:    form.booking_notes || null,
+    }).eq('id', booking.id)
+    setSaving(false)
+    if (error) { showToast('Save failed: ' + error.message, 'error'); return }
+    showToast('Booking updated ✓')
+    setEditing(false)
+    onUpdate()
+  }
+
+  const sell     = booking.total_sell || booking.deals?.deal_value || 0
+  const profit   = booking.gross_profit || 0
+  const commission = profit > 0 ? (profit - 10) * 0.1 : 0
+  const firstHotel = accommodations[0]
+  const firstFlight = outbound[0]
+
+  return (
+    <div style={{ display:'grid', gridTemplateColumns:'1fr 320px', gap:'20px' }}>
+      <div style={{ display:'flex', flexDirection:'column', gap:'16px' }}>
+
+        {/* Financial summary */}
+        <div className="card" style={{ padding:'20px 22px' }}>
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'16px' }}>
+            <div style={{ fontFamily:'Fraunces,serif', fontSize:'17px', fontWeight:'300' }}>Financials</div>
+            <button className="btn btn-secondary btn-xs" onClick={() => setEditing(!editing)}>{editing ? 'Cancel' : '✏ Edit'}</button>
+          </div>
+
+          {editing ? (
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px' }}>
+              <div><label className="label">Destination</label><input className="input" placeholder="e.g. Mauritius, Dubai" value={form.destination} onChange={e => setForm(p=>({...p,destination:e.target.value}))}/></div>
+              <div><label className="label">Return Date</label><input className="input" type="date" value={form.return_date} onChange={e => setForm(p=>({...p,return_date:e.target.value}))}/></div>
+              <div><label className="label">Balance Due Date</label><input className="input" type="date" value={form.balance_due_date} onChange={e => setForm(p=>({...p,balance_due_date:e.target.value}))}/></div>
+              <div><label className="label">Total Sell (£)</label><input className="input" type="number" value={form.total_sell} onChange={e => setForm(p=>({...p,total_sell:e.target.value}))}/></div>
+              <div><label className="label">Total Net (£)</label><input className="input" type="number" value={form.total_net} onChange={e => setForm(p=>({...p,total_net:e.target.value}))}/></div>
+              <div><label className="label">Gross Profit (£)</label><input className="input" type="number" value={form.gross_profit} onChange={e => setForm(p=>({...p,gross_profit:e.target.value}))}/></div>
+              <div><label className="label">Discount (£)</label><input className="input" type="number" value={form.discount} onChange={e => setForm(p=>({...p,discount:e.target.value}))}/></div>
+              <div style={{ gridColumn:'1/-1' }}><label className="label">Booking Notes</label><textarea className="input" style={{ minHeight:'70px', resize:'vertical', fontSize:'13px' }} value={form.booking_notes} onChange={e => setForm(p=>({...p,booking_notes:e.target.value}))}/></div>
+              <div style={{ gridColumn:'1/-1', display:'flex', gap:'8px', justifyContent:'flex-end' }}>
+                <button className="btn btn-secondary" onClick={() => setEditing(false)}>Cancel</button>
+                <button className="btn btn-cta" onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
+              </div>
+            </div>
+          ) : (
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:'14px' }}>
+              {[
+                { label:'Invoice Total', val:fmt(sell),    color:'var(--accent-mid)' },
+                { label:'Total Net',     val:fmt(booking.total_net), color:'var(--text-muted)' },
+                { label:'Gross Profit',  val:fmt(profit),   color:'var(--green)' },
+                { label:'Discount',      val:fmt(booking.discount), color:'var(--amber)' },
+                { label:'Total Paid',    val:fmt(totalPaid), color:'var(--green)' },
+                { label:'Balance Due',   val:fmt(balance),  color: balance > 0 ? 'var(--red)' : 'var(--green)' },
+              ].map(s => (
+                <div key={s.label} style={{ background:'var(--bg-secondary)', borderRadius:'8px', padding:'12px 14px' }}>
+                  <div style={{ fontSize:'11px', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:'4px' }}>{s.label}</div>
+                  <div style={{ fontSize:'20px', fontWeight:'600', color:s.color, fontFamily:'Outfit,sans-serif' }}>{s.val}</div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {!editing && profit > 0 && (
+            <div style={{ marginTop:'12px', padding:'10px 14px', background:'var(--bg-tertiary)', borderRadius:'8px', display:'flex', gap:'20px' }}>
+              <div style={{ fontSize:'12px', color:'var(--text-muted)' }}>Commission formula: <span style={{ color:'var(--text-primary)', fontWeight:'500' }}>(£{profit.toLocaleString()} - £10) × 10% = <span style={{ color:'var(--green)', fontWeight:'600' }}>{fmt(commission)}</span></span></div>
+            </div>
+          )}
+        </div>
+
+        {/* Trip summary */}
+        {(firstHotel || firstFlight) && (
+          <div className="card" style={{ padding:'20px 22px' }}>
+            <div style={{ fontFamily:'Fraunces,serif', fontSize:'17px', fontWeight:'300', marginBottom:'14px' }}>Trip Summary</div>
+            <div style={{ display:'flex', flexDirection:'column', gap:'10px' }}>
+              {firstFlight && (
+                <div style={{ display:'flex', gap:'12px', alignItems:'center' }}>
+                  <span style={{ fontSize:'18px' }}>✈</span>
+                  <div>
+                    <div style={{ fontSize:'13.5px', fontWeight:'500' }}>{firstFlight.origin} → {firstFlight.destination}</div>
+                    <div style={{ fontSize:'12px', color:'var(--text-muted)' }}>{firstFlight.airline} {firstFlight.flight_number} · {fmtDate(firstFlight.departure_date)} · {firstFlight.cabin_class}</div>
+                  </div>
+                </div>
+              )}
+              {accommodations.map((a: Accommodation) => (
+                <div key={a.id} style={{ display:'flex', gap:'12px', alignItems:'center' }}>
+                  <span style={{ fontSize:'18px' }}>🏨</span>
+                  <div>
+                    <div style={{ fontSize:'13.5px', fontWeight:'500' }}>{a.hotel_name}</div>
+                    <div style={{ fontSize:'12px', color:'var(--text-muted)' }}>{fmtDate(a.checkin_date)} → {fmtDate(a.checkout_date)} · {a.nights || calcNights(a.checkin_date, a.checkout_date)} nights · {a.board_basis} · {a.room_type}</div>
+                    {a.special_occasion && <div style={{ fontSize:'11.5px', color:'var(--accent)' }}>🎉 {a.special_occasion}</div>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Notes */}
+        {booking.booking_notes && !editing && (
+          <div className="card" style={{ padding:'16px 18px' }}>
+            <div style={{ fontSize:'12px', color:'var(--text-muted)', marginBottom:'6px', textTransform:'uppercase', letterSpacing:'0.06em' }}>Booking Notes</div>
+            <div style={{ fontSize:'13.5px', color:'var(--text-primary)', lineHeight:'1.6' }}>{booking.booking_notes}</div>
+          </div>
+        )}
+      </div>
+
+      {/* Right sidebar */}
+      <div style={{ display:'flex', flexDirection:'column', gap:'14px' }}>
+        {/* Client */}
+        <div className="card" style={{ padding:'16px 18px' }}>
+          <div style={{ fontSize:'11px', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:'10px' }}>Lead Client</div>
+          {client ? (
+            <div>
+              <div style={{ fontSize:'15px', fontWeight:'500', marginBottom:'6px' }}>{client.first_name} {client.last_name}</div>
+              {client.phone && <div style={{ fontSize:'13px', color:'var(--text-muted)', marginBottom:'3px' }}>📞 {client.phone}</div>}
+              {client.email && <a href={`mailto:${client.email}`} style={{ fontSize:'13px', color:'var(--accent)', textDecoration:'none', display:'block' }}>✉ {client.email}</a>}
+            </div>
+          ) : <div style={{ color:'var(--text-muted)', fontSize:'13px' }}>No client linked</div>}
+        </div>
+
+        {/* Key dates */}
+        <div className="card" style={{ padding:'16px 18px' }}>
+          <div style={{ fontSize:'11px', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:'10px' }}>Key Dates</div>
+          <div style={{ display:'flex', flexDirection:'column', gap:'8px' }}>
+            {[
+              { label:'Booked', val:fmtDate(booking.created_at), color:'var(--text-muted)' },
+              { label:'Departure', val:fmtDate(booking.departure_date), sub: depDays !== null && depDays >= 0 ? `${depDays}d away` : depDays !== null ? 'Departed' : '', color:'var(--accent)' },
+              { label:'Return', val:fmtDate(booking.return_date), color:'var(--text-muted)' },
+              { label:'Balance Due', val:fmtDate(booking.balance_due_date), sub: balance <= 0 ? 'Paid ✓' : undefined, color: balance <= 0 ? 'var(--green)' : 'var(--red)' },
+            ].map(d => (
+              <div key={d.label} style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline' }}>
+                <span style={{ fontSize:'12px', color:'var(--text-muted)' }}>{d.label}</span>
+                <div style={{ textAlign:'right' }}>
+                  <span style={{ fontSize:'13px', color:d.color, fontWeight:'500' }}>{d.val}</span>
+                  {d.sub && <div style={{ fontSize:'10.5px', color:'var(--text-muted)' }}>{d.sub}</div>}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Task progress */}
+        <div className="card" style={{ padding:'16px 18px' }}>
+          <div style={{ display:'flex', justifyContent:'space-between', marginBottom:'10px' }}>
+            <div style={{ fontSize:'11px', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.06em' }}>Task Progress</div>
+            <span style={{ fontSize:'12px', color: taskPct===100 ? 'var(--green)' : 'var(--text-muted)' }}>{tasksDone}/{tasksTotal}</span>
+          </div>
+          <div style={{ height:'6px', background:'var(--border)', borderRadius:'3px', overflow:'hidden' }}>
+            <div style={{ height:'100%', width:`${taskPct}%`, background: taskPct===100 ? 'var(--green)' : 'var(--accent)', borderRadius:'3px', transition:'width 0.3s' }}/>
+          </div>
+          <div style={{ fontSize:'11.5px', color:'var(--text-muted)', marginTop:'6px' }}>{taskPct}% complete</div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── PASSENGERS TAB ───────────────────────────────────────────
+function PassengersTab({ bookingId, passengers, onUpdate, showToast }: any) {
+  const blank = { title:'Mr', first_name:'', last_name:'', date_of_birth:'', passenger_type:'Adult', is_lead:false, passport_number:'', passport_expiry:'' }
+  const [adding, setAdding]   = useState(false)
+  const [form, setForm]       = useState({ ...blank })
+  const [saving, setSaving]   = useState(false)
+  const [editing, setEditing] = useState<number | null>(null)
+  const [editForm, setEditForm] = useState<any>({})
+
+  async function addPassenger() {
+    if (!form.first_name.trim() || !form.last_name.trim()) { showToast('Name required', 'error'); return }
+    setSaving(true)
+    const { error } = await supabase.from('booking_passengers').insert({
+      booking_id: bookingId, title: form.title, first_name: form.first_name.trim(),
+      last_name: form.last_name.trim(), date_of_birth: form.date_of_birth || null,
+      passenger_type: form.passenger_type, is_lead: passengers.length === 0 ? true : form.is_lead,
+      passport_number: form.passport_number || null, passport_expiry: form.passport_expiry || null,
+    })
+    setSaving(false)
+    if (error) { showToast('Failed: ' + error.message, 'error'); return }
+    showToast('Passenger added ✓')
+    setAdding(false); setForm({ ...blank }); onUpdate()
+  }
+
+  async function saveEdit(id: number) {
+    await supabase.from('booking_passengers').update({
+      title: editForm.title, first_name: editForm.first_name, last_name: editForm.last_name,
+      date_of_birth: editForm.date_of_birth || null, passenger_type: editForm.passenger_type,
+      is_lead: editForm.is_lead, passport_number: editForm.passport_number || null,
+      passport_expiry: editForm.passport_expiry || null,
+    }).eq('id', id)
+    showToast('Passenger updated ✓')
+    setEditing(null); onUpdate()
+  }
+
+  async function deletePax(id: number) {
+    await supabase.from('booking_passengers').delete().eq('id', id)
+    showToast('Passenger removed')
+    onUpdate()
+  }
+
+  return (
+    <div>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'16px' }}>
+        <div style={{ fontFamily:'Fraunces,serif', fontSize:'17px', fontWeight:'300' }}>Passengers ({passengers.length})</div>
+        <button className="btn btn-cta" onClick={() => setAdding(true)}>+ Add Passenger</button>
+      </div>
+
+      <div style={{ display:'flex', flexDirection:'column', gap:'10px' }}>
+        {passengers.map((p: Passenger) => (
+          <div key={p.id} className="card" style={{ padding:'16px 18px', borderLeft:`3px solid ${p.is_lead ? 'var(--gold,#f59e0b)' : 'var(--border)'}` }}>
+            {editing === p.id ? (
+              <div style={{ display:'grid', gridTemplateColumns:'80px 1fr 1fr', gap:'10px' }}>
+                <div><label className="label">Title</label><select className="input" value={editForm.title} onChange={e=>setEditForm((f:any)=>({...f,title:e.target.value}))}>{TITLES.map(t=><option key={t}>{t}</option>)}</select></div>
+                <div><label className="label">First Name</label><input className="input" value={editForm.first_name} onChange={e=>setEditForm((f:any)=>({...f,first_name:e.target.value}))}/></div>
+                <div><label className="label">Last Name</label><input className="input" value={editForm.last_name} onChange={e=>setEditForm((f:any)=>({...f,last_name:e.target.value}))}/></div>
+                <div><label className="label">DOB</label><input className="input" type="date" value={editForm.date_of_birth||''} onChange={e=>setEditForm((f:any)=>({...f,date_of_birth:e.target.value}))}/></div>
+                <div><label className="label">Type</label><select className="input" value={editForm.passenger_type} onChange={e=>setEditForm((f:any)=>({...f,passenger_type:e.target.value}))}>{PAX_TYPES.map(t=><option key={t}>{t}</option>)}</select></div>
+                <div style={{ display:'flex', alignItems:'center', gap:'8px', paddingTop:'18px' }}>
+                  <input type="checkbox" checked={editForm.is_lead} onChange={e=>setEditForm((f:any)=>({...f,is_lead:e.target.checked}))}/> <span style={{ fontSize:'13px' }}>Lead passenger</span>
+                </div>
+                <div style={{ gridColumn:'1/-1', display:'flex', gap:'8px', justifyContent:'flex-end' }}>
+                  <button className="btn btn-secondary btn-xs" onClick={()=>setEditing(null)}>Cancel</button>
+                  <button className="btn btn-cta btn-xs" onClick={()=>saveEdit(p.id)}>Save</button>
+                </div>
+              </div>
+            ) : (
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                <div>
+                  <div style={{ display:'flex', alignItems:'center', gap:'8px', marginBottom:'4px' }}>
+                    <span style={{ fontSize:'15px', fontWeight:'500' }}>{p.title} {p.first_name} {p.last_name}</span>
+                    {p.is_lead && <span style={{ fontSize:'10px', background:'#fef3c7', color:'#d97706', padding:'1px 7px', borderRadius:'10px', fontWeight:'600' }}>LEAD</span>}
+                    <span style={{ fontSize:'11px', color:'var(--text-muted)', background:'var(--bg-tertiary)', padding:'1px 7px', borderRadius:'10px' }}>{p.passenger_type}</span>
+                  </div>
+                  <div style={{ fontSize:'12px', color:'var(--text-muted)', display:'flex', gap:'16px' }}>
+                    {p.date_of_birth && <span>DOB: {fmtDate(p.date_of_birth)}</span>}
+                    {p.passport_number && <span>Passport: {p.passport_number}{p.passport_expiry ? ` (exp ${fmtDate(p.passport_expiry)})` : ''}</span>}
+                  </div>
+                </div>
+                <div style={{ display:'flex', gap:'6px' }}>
+                  <button className="btn btn-secondary btn-xs" onClick={()=>{ setEditing(p.id); setEditForm({...p, date_of_birth: p.date_of_birth?.split('T')[0]||'', passport_expiry: p.passport_expiry?.split('T')[0]||'' }) }}>Edit</button>
+                  <button className="btn btn-ghost btn-xs" style={{ color:'var(--red)' }} onClick={()=>deletePax(p.id)}>✕</button>
+                </div>
+              </div>
+            )}
+          </div>
+        ))}
+
+        {adding && (
+          <div className="card" style={{ padding:'18px 20px', border:'1.5px solid var(--accent)' }}>
+            <div style={{ fontFamily:'Fraunces,serif', fontSize:'15px', fontWeight:'300', marginBottom:'14px' }}>New Passenger</div>
+            <div style={{ display:'grid', gridTemplateColumns:'80px 1fr 1fr 130px', gap:'10px', marginBottom:'10px' }}>
+              <div><label className="label">Title</label><select className="input" value={form.title} onChange={e=>setForm(p=>({...p,title:e.target.value}))}>{TITLES.map(t=><option key={t}>{t}</option>)}</select></div>
+              <div><label className="label">First Name *</label><input className="input" autoFocus value={form.first_name} onChange={e=>setForm(p=>({...p,first_name:e.target.value}))}/></div>
+              <div><label className="label">Last Name *</label><input className="input" value={form.last_name} onChange={e=>setForm(p=>({...p,last_name:e.target.value}))}/></div>
+              <div><label className="label">Type</label><select className="input" value={form.passenger_type} onChange={e=>setForm(p=>({...p,passenger_type:e.target.value}))}>{PAX_TYPES.map(t=><option key={t}>{t}</option>)}</select></div>
+              <div><label className="label">Date of Birth</label><input className="input" type="date" value={form.date_of_birth} onChange={e=>setForm(p=>({...p,date_of_birth:e.target.value}))}/></div>
+            </div>
+            <div style={{ display:'flex', gap:'8px', justifyContent:'flex-end' }}>
+              <button className="btn btn-secondary" onClick={()=>setAdding(false)}>Cancel</button>
+              <button className="btn btn-cta" onClick={addPassenger} disabled={saving}>{saving?'Adding…':'Add Passenger'}</button>
+            </div>
+          </div>
+        )}
+
+        {passengers.length === 0 && !adding && (
+          <div className="card" style={{ padding:'32px', textAlign:'center' }}>
+            <div style={{ color:'var(--text-muted)', fontSize:'13px', marginBottom:'12px' }}>No passengers added yet</div>
+            <button className="btn btn-cta" onClick={() => setAdding(true)}>+ Add First Passenger</button>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ── FLIGHTS TAB ──────────────────────────────────────────────
+function FlightsTab({ bookingId, outbound, returnFlts, onUpdate, showToast }: any) {
+  const blankFlight = { direction:'outbound', leg_order:1, flight_number:'', airline:'', origin:'', destination:'', departure_date:'', departure_time:'', arrival_date:'', arrival_time:'', next_day:false, cabin_class:'Economy', pnr:'', flight_supplier:'', baggage_notes:'', cabin_notes:'' }
+  const [adding, setAdding]     = useState<'outbound'|'return'|null>(null)
+  const [form, setForm]         = useState<any>({ ...blankFlight })
+  const [saving, setSaving]     = useState(false)
+
+  async function addFlight() {
+    if (!form.flight_number.trim()) { showToast('Flight number required', 'error'); return }
+    setSaving(true)
+    const legs = adding === 'outbound' ? outbound : returnFlts
+    const { error } = await supabase.from('booking_flights').insert({
+      ...form,
+      booking_id:  bookingId,
+      direction:   adding,
+      leg_order:   legs.length + 1,
+      departure_date: form.departure_date || null,
+      arrival_date:   form.arrival_date || null,
+    })
+    setSaving(false)
+    if (error) { showToast('Failed: ' + error.message, 'error'); return }
+    showToast('Flight added ✓')
+    setAdding(null); onUpdate()
+  }
+
+  async function deleteFlight(id: number) {
+    await supabase.from('booking_flights').delete().eq('id', id)
+    showToast('Flight removed')
+    onUpdate()
+  }
+
+  function FlightGroup({ legs, direction }: { legs: Flight[]; direction: 'outbound'|'return' }) {
+    return (
+      <div className="card" style={{ padding:'18px 20px', marginBottom:'14px' }}>
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px' }}>
+          <div style={{ fontFamily:'Fraunces,serif', fontSize:'16px', fontWeight:'300' }}>
+            {direction === 'outbound' ? '✈ Outbound' : '✈ Return'}
+          </div>
+          <button className="btn btn-secondary btn-xs" onClick={() => { setAdding(direction); setForm({ ...blankFlight, direction }) }}>+ Add Leg</button>
+        </div>
+        {legs.length === 0 ? (
+          <div style={{ color:'var(--text-muted)', fontSize:'13px', fontStyle:'italic' }}>No {direction} flights yet</div>
+        ) : (
+          <div style={{ display:'flex', flexDirection:'column', gap:'10px' }}>
+            {legs.map((f: Flight, i: number) => (
+              <div key={f.id} style={{ display:'flex', gap:'12px', alignItems:'flex-start', padding:'12px 14px', background:'var(--bg-secondary)', borderRadius:'8px' }}>
+                <div style={{ width:'24px', height:'24px', borderRadius:'50%', background:'var(--accent)', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, fontSize:'11px', color:'white', fontWeight:'700' }}>{i+1}</div>
+                <div style={{ flex:1 }}>
+                  <div style={{ display:'flex', alignItems:'center', gap:'10px', marginBottom:'4px' }}>
+                    <span style={{ fontSize:'15px', fontWeight:'600', fontFamily:'monospace' }}>{f.flight_number}</span>
+                    <span style={{ fontSize:'13px', color:'var(--text-muted)' }}>{f.airline}</span>
+                    <span style={{ fontSize:'11.5px', background:'var(--bg-tertiary)', padding:'2px 8px', borderRadius:'4px', color:'var(--accent)' }}>{f.cabin_class}</span>
+                    {f.next_day && <span style={{ fontSize:'11px', color:'var(--amber)', background:'#fef3c7', padding:'1px 6px', borderRadius:'4px' }}>Next Day</span>}
+                  </div>
+                  <div style={{ fontSize:'13px', color:'var(--text-primary)', marginBottom:'3px' }}>
+                    <strong>{f.origin}</strong> {f.departure_time} → <strong>{f.destination}</strong> {f.arrival_time}
+                  </div>
+                  <div style={{ fontSize:'12px', color:'var(--text-muted)', display:'flex', gap:'12px' }}>
+                    <span>{fmtDate(f.departure_date)}</span>
+                    {f.pnr && <span>PNR: <strong>{f.pnr}</strong></span>}
+                    {f.flight_supplier && <span>via {f.flight_supplier}</span>}
+                    {f.baggage_notes && <span>🧳 {f.baggage_notes}</span>}
+                  </div>
+                  {f.cabin_notes && <div style={{ fontSize:'12px', color:'var(--amber)', marginTop:'3px' }}>ℹ {f.cabin_notes}</div>}
+                </div>
+                <button className="btn btn-ghost btn-xs" style={{ color:'var(--red)' }} onClick={() => deleteFlight(f.id)}>✕</button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <div>
+      <FlightGroup legs={outbound} direction="outbound" />
+      <FlightGroup legs={returnFlts} direction="return" />
+
+      {adding && (
+        <div className="card" style={{ padding:'20px 22px', border:'1.5px solid var(--accent)' }}>
+          <div style={{ fontFamily:'Fraunces,serif', fontSize:'16px', fontWeight:'300', marginBottom:'14px' }}>
+            Add {adding === 'outbound' ? 'Outbound' : 'Return'} Leg {(adding === 'outbound' ? outbound : returnFlts).length + 1}
+          </div>
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:'10px', marginBottom:'12px' }}>
+            <div><label className="label">Flight Number *</label><input className="input" autoFocus placeholder="e.g. BA2065" value={form.flight_number} onChange={e=>setForm((p:any)=>({...p,flight_number:e.target.value}))}/></div>
+            <div><label className="label">Airline</label><input className="input" placeholder="e.g. British Airways" value={form.airline} onChange={e=>setForm((p:any)=>({...p,airline:e.target.value}))}/></div>
+            <div><label className="label">Cabin Class</label><select className="input" value={form.cabin_class} onChange={e=>setForm((p:any)=>({...p,cabin_class:e.target.value}))}>{CABIN_CLASSES.map(c=><option key={c}>{c}</option>)}</select></div>
+            <div><label className="label">Origin (airport code)</label><input className="input" placeholder="e.g. LGW" value={form.origin} onChange={e=>setForm((p:any)=>({...p,origin:e.target.value.toUpperCase()}))}/></div>
+            <div><label className="label">Destination</label><input className="input" placeholder="e.g. MRU" value={form.destination} onChange={e=>setForm((p:any)=>({...p,destination:e.target.value.toUpperCase()}))}/></div>
+            <div><label className="label">Departure Date</label><input className="input" type="date" value={form.departure_date} onChange={e=>setForm((p:any)=>({...p,departure_date:e.target.value}))}/></div>
+            <div><label className="label">Depart Time</label><input className="input" placeholder="e.g. 21:00" value={form.departure_time} onChange={e=>setForm((p:any)=>({...p,departure_time:e.target.value}))}/></div>
+            <div><label className="label">Arrive Time</label><input className="input" placeholder="e.g. 11:55" value={form.arrival_time} onChange={e=>setForm((p:any)=>({...p,arrival_time:e.target.value}))}/></div>
+            <div style={{ display:'flex', alignItems:'center', gap:'8px', paddingTop:'18px' }}>
+              <input type="checkbox" id="nxtday" checked={form.next_day} onChange={e=>setForm((p:any)=>({...p,next_day:e.target.checked}))}/> <label htmlFor="nxtday" style={{ fontSize:'13px', cursor:'pointer' }}>Arrives next day</label>
+            </div>
+            <div><label className="label">PNR / Booking Ref</label><input className="input" placeholder="e.g. Q5WR5B" value={form.pnr} onChange={e=>setForm((p:any)=>({...p,pnr:e.target.value.toUpperCase()}))}/></div>
+            <div><label className="label">Flight Supplier</label><input className="input" placeholder="e.g. Aviate, Lime, Amadeus" value={form.flight_supplier} onChange={e=>setForm((p:any)=>({...p,flight_supplier:e.target.value}))}/></div>
+            <div><label className="label">Baggage Notes</label><input className="input" placeholder="e.g. 2 x 23kg per person" value={form.baggage_notes} onChange={e=>setForm((p:any)=>({...p,baggage_notes:e.target.value}))}/></div>
+            <div style={{ gridColumn:'1/-1' }}><label className="label">Cabin Class Notes</label><input className="input" placeholder="e.g. Mr Smith travelling Business Class" value={form.cabin_notes} onChange={e=>setForm((p:any)=>({...p,cabin_notes:e.target.value}))}/></div>
+          </div>
+          <div style={{ display:'flex', gap:'8px', justifyContent:'flex-end' }}>
+            <button className="btn btn-secondary" onClick={() => setAdding(null)}>Cancel</button>
+            <button className="btn btn-cta" onClick={addFlight} disabled={saving}>{saving?'Adding…':'Add Flight Leg'}</button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── ACCOMMODATION TAB ────────────────────────────────────────
+function AccommodationTab({ bookingId, accommodations, hotels, suppliers, passengers, onUpdate, showToast }: any) {
+  const blankAccom = { hotel_id:'', hotel_name:'', supplier_id:'', hotel_confirmation:'', checkin_date:'', checkout_date:'', nights:'', room_type:'', room_quantity:'1', board_basis:'Half Board', adults:'2', children:'0', infants:'0', net_cost:'', special_occasion:'', special_requests:'', reservation_status:'pending', reservation_email_to:'' }
+  const [adding, setAdding]     = useState(false)
+  const [form, setForm]         = useState<any>({ ...blankAccom })
+  const [saving, setSaving]     = useState(false)
+  const totalAdults   = passengers.filter((p:Passenger) => p.passenger_type === 'Adult').length
+  const totalChildren = passengers.filter((p:Passenger) => p.passenger_type === 'Child').length
+
+  function onHotelSelect(hotelId: string) {
+    const hotel = hotels.find((h: Hotel) => h.id === Number(hotelId))
+    setForm((p: any) => ({
+      ...p,
+      hotel_id: hotelId,
+      hotel_name: hotel?.name || p.hotel_name,
+      reservation_email_to: hotel?.reservation_email || p.reservation_email_to,
+    }))
+  }
+
+  async function addAccom() {
+    if (!form.hotel_name.trim()) { showToast('Hotel name required', 'error'); return }
+    setSaving(true)
+    const nights = form.nights ? Number(form.nights) : calcNights(form.checkin_date, form.checkout_date)
+    const { error } = await supabase.from('booking_accommodations').insert({
+      booking_id: bookingId, stay_order: accommodations.length + 1,
+      hotel_id: form.hotel_id ? Number(form.hotel_id) : null,
+      hotel_name: form.hotel_name.trim(),
+      supplier_id: form.supplier_id ? Number(form.supplier_id) : null,
+      hotel_confirmation: form.hotel_confirmation || null,
+      checkin_date: form.checkin_date || null, checkout_date: form.checkout_date || null,
+      nights: nights || null, room_type: form.room_type || null,
+      room_quantity: Number(form.room_quantity) || 1, board_basis: form.board_basis || null,
+      adults: Number(form.adults) || 2, children: Number(form.children) || 0, infants: Number(form.infants) || 0,
+      net_cost: form.net_cost ? Number(form.net_cost) : null,
+      special_occasion: form.special_occasion || null, special_requests: form.special_requests || null,
+      reservation_status: form.reservation_status,
+      reservation_email_to: form.reservation_email_to || null,
+    })
+    setSaving(false)
+    if (error) { showToast('Failed: ' + error.message, 'error'); return }
+    showToast('Stay added ✓')
+    setAdding(false); onUpdate()
+  }
+
+  async function updateResStatus(id: number, status: string) {
+    await supabase.from('booking_accommodations').update({ reservation_status: status, ...(status === 'sent' ? { reservation_sent_at: new Date().toISOString() } : {}) }).eq('id', id)
+    showToast('Status updated')
+    onUpdate()
+  }
+
+  async function deleteAccom(id: number) {
+    await supabase.from('booking_accommodations').delete().eq('id', id)
+    showToast('Stay removed'); onUpdate()
+  }
+
+  const selectedHotel = form.hotel_id ? hotels.find((h: Hotel) => h.id === Number(form.hotel_id)) : null
+
+  return (
+    <div>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'16px' }}>
+        <div style={{ fontFamily:'Fraunces,serif', fontSize:'17px', fontWeight:'300' }}>Accommodation ({accommodations.length} {accommodations.length===1?'stay':'stays'})</div>
+        <button className="btn btn-cta" onClick={() => { setAdding(true); setForm({ ...blankAccom, adults: String(totalAdults||2), children: String(totalChildren||0) }) }}>+ Add Stay</button>
+      </div>
+
+      <div style={{ display:'flex', flexDirection:'column', gap:'12px' }}>
+        {accommodations.map((a: Accommodation, i: number) => {
+          const resCfg = RES_STATUS[a.reservation_status] || RES_STATUS.pending
+          return (
+            <div key={a.id} className="card" style={{ padding:'18px 20px' }}>
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:'12px' }}>
+                <div>
+                  <div style={{ display:'flex', alignItems:'center', gap:'8px' }}>
+                    <span style={{ fontFamily:'Fraunces,serif', fontSize:'16px', fontWeight:'300' }}>Stay {i+1}</span>
+                    <span style={{ fontSize:'11px', padding:'2px 8px', borderRadius:'10px', background:`${resCfg.color}18`, color:resCfg.color, fontWeight:'500' }}>{resCfg.label}</span>
+                    {a.hotel_confirmation && <span style={{ fontSize:'11px', color:'var(--green)', background:'var(--green-light)', padding:'2px 8px', borderRadius:'10px' }}>Ref: {a.hotel_confirmation}</span>}
+                  </div>
+                  <div style={{ fontSize:'18px', fontWeight:'300', fontFamily:'Fraunces,serif', marginTop:'4px' }}>{a.hotel_name}</div>
+                </div>
+                <div style={{ display:'flex', gap:'6px' }}>
+                  <select className="input" style={{ fontSize:'11.5px', padding:'4px 8px', width:'auto' }}
+                    value={a.reservation_status} onChange={e => updateResStatus(a.id, e.target.value)}>
+                    {Object.entries(RES_STATUS).map(([k,v]) => <option key={k} value={k}>{v.label}</option>)}
+                  </select>
+                  <button className="btn btn-ghost btn-xs" style={{ color:'var(--red)' }} onClick={() => deleteAccom(a.id)}>✕</button>
+                </div>
+              </div>
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:'10px', fontSize:'13px' }}>
+                <div><span style={{ color:'var(--text-muted)', fontSize:'11px' }}>CHECK IN</span><div style={{ fontWeight:'500' }}>{fmtDate(a.checkin_date)}</div></div>
+                <div><span style={{ color:'var(--text-muted)', fontSize:'11px' }}>CHECK OUT</span><div style={{ fontWeight:'500' }}>{fmtDate(a.checkout_date)}</div></div>
+                <div><span style={{ color:'var(--text-muted)', fontSize:'11px' }}>NIGHTS</span><div style={{ fontWeight:'500' }}>{a.nights || calcNights(a.checkin_date, a.checkout_date) || '—'}</div></div>
+                <div><span style={{ color:'var(--text-muted)', fontSize:'11px' }}>ROOM</span><div style={{ fontWeight:'500' }}>{a.room_type || '—'} × {a.room_quantity}</div></div>
+                <div><span style={{ color:'var(--text-muted)', fontSize:'11px' }}>BOARD</span><div style={{ fontWeight:'500' }}>{a.board_basis || '—'}</div></div>
+                <div><span style={{ color:'var(--text-muted)', fontSize:'11px' }}>PAX</span><div style={{ fontWeight:'500' }}>{a.adults}A {a.children>0?`${a.children}C`:''} {a.infants>0?`${a.infants}I`:''}</div></div>
+                <div><span style={{ color:'var(--text-muted)', fontSize:'11px' }}>NET COST</span><div style={{ fontWeight:'500', color:'var(--accent)' }}>{a.net_cost ? fmt(a.net_cost) : '—'}</div></div>
+                {a.special_occasion && <div><span style={{ color:'var(--text-muted)', fontSize:'11px' }}>OCCASION</span><div style={{ color:'var(--gold,#f59e0b)', fontWeight:'500' }}>🎉 {a.special_occasion}</div></div>}
+              </div>
+              {a.special_requests && (
+                <div style={{ marginTop:'10px', padding:'8px 12px', background:'var(--bg-secondary)', borderRadius:'6px', fontSize:'12.5px', color:'var(--text-muted)', borderLeft:'2px solid var(--accent)' }}>
+                  <strong style={{ color:'var(--text-primary)' }}>Special Requests:</strong> {a.special_requests}
+                </div>
+              )}
+            </div>
+          )
+        })}
+
+        {adding && (
+          <div className="card" style={{ padding:'20px 22px', border:'1.5px solid var(--accent)' }}>
+            <div style={{ fontFamily:'Fraunces,serif', fontSize:'16px', fontWeight:'300', marginBottom:'16px' }}>Add Stay {accommodations.length + 1}</div>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'12px' }}>
+              <div style={{ gridColumn:'1/-1' }}>
+                <label className="label">Hotel</label>
+                <select className="input" value={form.hotel_id} onChange={e => onHotelSelect(e.target.value)}>
+                  <option value="">Select from directory…</option>
+                  {hotels.map((h: Hotel) => <option key={h.id} value={h.id}>{h.name}</option>)}
+                </select>
+              </div>
+              {!form.hotel_id && (
+                <div style={{ gridColumn:'1/-1' }}>
+                  <label className="label">Or enter hotel name manually</label>
+                  <input className="input" placeholder="Hotel name" value={form.hotel_name} onChange={e=>setForm((p:any)=>({...p,hotel_name:e.target.value}))}/>
+                </div>
+              )}
+              <div>
+                <label className="label">Supplier</label>
+                <select className="input" value={form.supplier_id} onChange={e=>setForm((p:any)=>({...p,supplier_id:e.target.value}))}>
+                  <option value="">No supplier</option>
+                  {suppliers.filter((s:Supplier)=>s.type==='hotel'||s.type==='dmc').map((s:Supplier)=><option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
+              </div>
+              <div><label className="label">Hotel Confirmation Ref</label><input className="input" placeholder="Optional" value={form.hotel_confirmation} onChange={e=>setForm((p:any)=>({...p,hotel_confirmation:e.target.value}))}/></div>
+              <div><label className="label">Check In</label><input className="input" type="date" value={form.checkin_date} onChange={e=>setForm((p:any)=>({...p,checkin_date:e.target.value}))}/></div>
+              <div><label className="label">Check Out</label><input className="input" type="date" value={form.checkout_date} onChange={e=>setForm((p:any)=>({...p,checkout_date:e.target.value}))}/></div>
+              <div>
+                <label className="label">Room Type</label>
+                <input className="input" list="room-types-list" placeholder="e.g. Prestige Room" value={form.room_type} onChange={e=>setForm((p:any)=>({...p,room_type:e.target.value}))}/>
+                {selectedHotel?.room_types?.length && <datalist id="room-types-list">{selectedHotel.room_types.map((r:string)=><option key={r} value={r}/>)}</datalist>}
+              </div>
+              <div><label className="label">Rooms</label><input className="input" type="number" min="1" value={form.room_quantity} onChange={e=>setForm((p:any)=>({...p,room_quantity:e.target.value}))}/></div>
+              <div>
+                <label className="label">Board Basis</label>
+                <select className="input" value={form.board_basis} onChange={e=>setForm((p:any)=>({...p,board_basis:e.target.value}))}>
+                  {BOARD_BASIS.map(b=><option key={b}>{b}</option>)}
+                  {selectedHotel?.meal_plans?.filter((m:string)=>!BOARD_BASIS.includes(m)).map((m:string)=><option key={m}>{m}</option>)}
+                </select>
+              </div>
+              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:'8px' }}>
+                <div><label className="label">Adults</label><input className="input" type="number" min="0" value={form.adults} onChange={e=>setForm((p:any)=>({...p,adults:e.target.value}))}/></div>
+                <div><label className="label">Children</label><input className="input" type="number" min="0" value={form.children} onChange={e=>setForm((p:any)=>({...p,children:e.target.value}))}/></div>
+                <div><label className="label">Infants</label><input className="input" type="number" min="0" value={form.infants} onChange={e=>setForm((p:any)=>({...p,infants:e.target.value}))}/></div>
+              </div>
+              <div><label className="label">Net Cost (£)</label><input className="input" type="number" placeholder="0.00" value={form.net_cost} onChange={e=>setForm((p:any)=>({...p,net_cost:e.target.value}))}/></div>
+              <div>
+                <label className="label">Special Occasion</label>
+                <select className="input" value={form.special_occasion} onChange={e=>setForm((p:any)=>({...p,special_occasion:e.target.value}))}>
+                  <option value="">None</option>
+                  {SPECIAL_OCCASIONS.map(o=><option key={o}>{o}</option>)}
+                </select>
+              </div>
+              <div style={{ gridColumn:'1/-1' }}>
+                <label className="label">Special Requests</label>
+                <textarea className="input" style={{ minHeight:'70px', resize:'vertical', fontSize:'13px' }} placeholder="Early check-in, ground floor room, room configuration…" value={form.special_requests} onChange={e=>setForm((p:any)=>({...p,special_requests:e.target.value}))}/>
+              </div>
+              <div style={{ gridColumn:'1/-1' }}>
+                <label className="label">Reservation Email To</label>
+                <input className="input" type="email" placeholder="reservations@hotel.com" value={form.reservation_email_to} onChange={e=>setForm((p:any)=>({...p,reservation_email_to:e.target.value}))}/>
+              </div>
+            </div>
+            <div style={{ display:'flex', gap:'8px', justifyContent:'flex-end', marginTop:'14px' }}>
+              <button className="btn btn-secondary" onClick={() => setAdding(false)}>Cancel</button>
+              <button className="btn btn-cta" onClick={addAccom} disabled={saving}>{saving?'Adding…':'Add Stay'}</button>
+            </div>
+          </div>
+        )}
+
+        {accommodations.length === 0 && !adding && (
+          <div className="card" style={{ padding:'32px', textAlign:'center' }}>
+            <div style={{ color:'var(--text-muted)', fontSize:'13px', marginBottom:'12px' }}>No accommodation added yet</div>
+            <button className="btn btn-cta" onClick={() => setAdding(true)}>+ Add First Stay</button>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ── TRANSFERS TAB ────────────────────────────────────────────
+function TransfersTab({ bookingId, transfers, suppliers, flights, onUpdate, showToast }: any) {
+  const blankTransfer = { supplier_id:'', supplier_name:'', transfer_type:'private', meet_greet:true, local_rep:true, arrival_date:'', arrival_time:'', arrival_flight:'', departure_date:'', departure_time:'', departure_flight:'', inter_hotel_dates:'', net_cost:'', notes:'' }
+  const [adding, setAdding] = useState(false)
+  const [form, setForm]     = useState<any>({ ...blankTransfer })
+  const [saving, setSaving] = useState(false)
+
+  const arrFlight = flights.find((f: Flight) => f.direction === 'outbound' && f.destination?.includes('MRU'))
+  const depFlight = flights.find((f: Flight) => f.direction === 'return' && f.origin?.includes('MRU'))
+
+  async function addTransfer() {
+    setSaving(true)
+    const { error } = await supabase.from('booking_transfers').insert({
+      booking_id: bookingId,
+      supplier_id: form.supplier_id ? Number(form.supplier_id) : null,
+      supplier_name: form.supplier_name || null,
+      transfer_type: form.transfer_type,
+      meet_greet: form.meet_greet, local_rep: form.local_rep,
+      arrival_date: form.arrival_date || null, arrival_time: form.arrival_time || null,
+      arrival_flight: form.arrival_flight || null,
+      departure_date: form.departure_date || null, departure_time: form.departure_time || null,
+      departure_flight: form.departure_flight || null,
+      inter_hotel_dates: form.inter_hotel_dates || null,
+      net_cost: form.net_cost ? Number(form.net_cost) : null,
+      notes: form.notes || null,
+    })
+    setSaving(false)
+    if (error) { showToast('Failed: ' + error.message, 'error'); return }
+    showToast('Transfer added ✓')
+    setAdding(false); onUpdate()
+  }
+
+  async function deleteTransfer(id: number) {
+    await supabase.from('booking_transfers').delete().eq('id', id)
+    showToast('Transfer removed'); onUpdate()
+  }
+
+  return (
+    <div>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'16px' }}>
+        <div style={{ fontFamily:'Fraunces,serif', fontSize:'17px', fontWeight:'300' }}>Transfers</div>
+        <button className="btn btn-cta" onClick={() => {
+          setAdding(true)
+          setForm({
+            ...blankTransfer,
+            arrival_flight: arrFlight ? arrFlight.flight_number : '',
+            arrival_date:   arrFlight ? arrFlight.arrival_date : '',
+            arrival_time:   arrFlight ? arrFlight.arrival_time : '',
+            departure_flight: depFlight ? depFlight.flight_number : '',
+            departure_date:   depFlight ? depFlight.departure_date : '',
+            departure_time:   depFlight ? depFlight.departure_time : '',
+          })
+        }}>+ Add Transfers</button>
+      </div>
+
+      {transfers.map((t: Transfer) => (
+        <div key={t.id} className="card" style={{ padding:'18px 20px', marginBottom:'12px' }}>
+          <div style={{ display:'flex', justifyContent:'space-between', marginBottom:'12px' }}>
+            <div>
+              <div style={{ fontFamily:'Fraunces,serif', fontSize:'16px', fontWeight:'300', marginBottom:'4px' }}>
+                {t.supplier_name || 'Transfer'} — {TRANSFER_TYPES.find(x=>x.value===t.transfer_type)?.label || t.transfer_type}
+              </div>
+              <div style={{ display:'flex', gap:'8px' }}>
+                {t.meet_greet && <span style={{ fontSize:'11px', background:'var(--accent-light)', color:'var(--accent)', padding:'2px 8px', borderRadius:'4px' }}>Meet & Greet</span>}
+                {t.local_rep && <span style={{ fontSize:'11px', background:'var(--green-light)', color:'var(--green)', padding:'2px 8px', borderRadius:'4px' }}>Local Rep</span>}
+              </div>
+            </div>
+            <button className="btn btn-ghost btn-xs" style={{ color:'var(--red)' }} onClick={() => deleteTransfer(t.id)}>✕</button>
+          </div>
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px', fontSize:'13px' }}>
+            <div style={{ padding:'10px 12px', background:'var(--bg-secondary)', borderRadius:'8px' }}>
+              <div style={{ fontSize:'11px', color:'var(--text-muted)', marginBottom:'4px' }}>ARRIVAL</div>
+              <div style={{ fontWeight:'500' }}>{t.arrival_flight} · {fmtDate(t.arrival_date)} {t.arrival_time}</div>
+            </div>
+            <div style={{ padding:'10px 12px', background:'var(--bg-secondary)', borderRadius:'8px' }}>
+              <div style={{ fontSize:'11px', color:'var(--text-muted)', marginBottom:'4px' }}>DEPARTURE</div>
+              <div style={{ fontWeight:'500' }}>{t.departure_flight} · {fmtDate(t.departure_date)} {t.departure_time}</div>
+            </div>
+          </div>
+          {t.inter_hotel_dates && <div style={{ marginTop:'8px', fontSize:'12.5px', color:'var(--text-muted)' }}>Inter-hotel: {t.inter_hotel_dates}</div>}
+          {t.net_cost && <div style={{ marginTop:'6px', fontSize:'13px', color:'var(--accent)' }}>Net: {fmt(t.net_cost)}</div>}
+          {t.notes && <div style={{ marginTop:'8px', fontSize:'12.5px', color:'var(--text-muted)', fontStyle:'italic' }}>{t.notes}</div>}
+        </div>
+      ))}
+
+      {adding && (
+        <div className="card" style={{ padding:'20px 22px', border:'1.5px solid var(--accent)' }}>
+          <div style={{ fontFamily:'Fraunces,serif', fontSize:'16px', fontWeight:'300', marginBottom:'16px' }}>Add Transfers</div>
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'12px' }}>
+            <div>
+              <label className="label">Supplier</label>
+              <select className="input" value={form.supplier_id} onChange={e=>{
+                const sup = suppliers.find((s:Supplier)=>s.id===Number(e.target.value))
+                setForm((p:any)=>({...p,supplier_id:e.target.value,supplier_name:sup?.name||p.supplier_name}))
+              }}>
+                <option value="">Select supplier…</option>
+                {suppliers.filter((s:Supplier)=>s.type==='transfer'||s.type==='dmc').map((s:Supplier)=><option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="label">Transfer Type</label>
+              <select className="input" value={form.transfer_type} onChange={e=>setForm((p:any)=>({...p,transfer_type:e.target.value}))}>
+                {TRANSFER_TYPES.map(t=><option key={t.value} value={t.value}>{t.label}</option>)}
+              </select>
+            </div>
+            <div style={{ display:'flex', gap:'16px', paddingTop:'4px' }}>
+              <label style={{ display:'flex', gap:'8px', alignItems:'center', fontSize:'13px', cursor:'pointer' }}><input type="checkbox" checked={form.meet_greet} onChange={e=>setForm((p:any)=>({...p,meet_greet:e.target.checked}))}/> Meet & Greet</label>
+              <label style={{ display:'flex', gap:'8px', alignItems:'center', fontSize:'13px', cursor:'pointer' }}><input type="checkbox" checked={form.local_rep} onChange={e=>setForm((p:any)=>({...p,local_rep:e.target.checked}))}/> Local Rep</label>
+            </div>
+            <div><label className="label">Net Cost (£)</label><input className="input" type="number" value={form.net_cost} onChange={e=>setForm((p:any)=>({...p,net_cost:e.target.value}))}/></div>
+            <div><label className="label">Arrival Flight</label><input className="input" placeholder="e.g. BA2065" value={form.arrival_flight} onChange={e=>setForm((p:any)=>({...p,arrival_flight:e.target.value.toUpperCase()}))}/></div>
+            <div><label className="label">Arrival Date & Time</label><div style={{ display:'flex', gap:'8px' }}><input className="input" type="date" value={form.arrival_date} onChange={e=>setForm((p:any)=>({...p,arrival_date:e.target.value}))}/><input className="input" style={{ width:'100px' }} placeholder="09:25" value={form.arrival_time} onChange={e=>setForm((p:any)=>({...p,arrival_time:e.target.value}))}/></div></div>
+            <div><label className="label">Departure Flight</label><input className="input" placeholder="e.g. BA2064" value={form.departure_flight} onChange={e=>setForm((p:any)=>({...p,departure_flight:e.target.value.toUpperCase()}))}/></div>
+            <div><label className="label">Departure Date & Time</label><div style={{ display:'flex', gap:'8px' }}><input className="input" type="date" value={form.departure_date} onChange={e=>setForm((p:any)=>({...p,departure_date:e.target.value}))}/><input className="input" style={{ width:'100px' }} placeholder="20:45" value={form.departure_time} onChange={e=>setForm((p:any)=>({...p,departure_time:e.target.value}))}/></div></div>
+            <div style={{ gridColumn:'1/-1' }}><label className="label">Inter-Hotel Transfer Dates</label><input className="input" placeholder="e.g. 17-05-2026" value={form.inter_hotel_dates} onChange={e=>setForm((p:any)=>({...p,inter_hotel_dates:e.target.value}))}/></div>
+            <div style={{ gridColumn:'1/-1' }}><label className="label">Notes</label><textarea className="input" style={{ minHeight:'60px', resize:'vertical', fontSize:'13px' }} value={form.notes} onChange={e=>setForm((p:any)=>({...p,notes:e.target.value}))}/></div>
+          </div>
+          <div style={{ display:'flex', gap:'8px', justifyContent:'flex-end', marginTop:'14px' }}>
+            <button className="btn btn-secondary" onClick={() => setAdding(false)}>Cancel</button>
+            <button className="btn btn-cta" onClick={addTransfer} disabled={saving}>{saving?'Adding…':'Add Transfers'}</button>
+          </div>
+        </div>
+      )}
+
+      {transfers.length === 0 && !adding && (
+        <div className="card" style={{ padding:'32px', textAlign:'center' }}>
+          <div style={{ color:'var(--text-muted)', fontSize:'13px', marginBottom:'12px' }}>No transfers added yet</div>
+          <button className="btn btn-cta" onClick={() => setAdding(true)}>+ Add Transfers</button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── EXTRAS TAB ───────────────────────────────────────────────
+function ExtrasTab({ bookingId, extras, onUpdate, showToast }: any) {
+  const blank = { extra_type:'lounge', description:'', supplier:'', net_cost:'', sell_price:'', notes:'' }
+  const EXTRA_TYPES = ['lounge', 'parking', 'fast_track', 'seat_upgrade', 'excursion', 'travel_insurance', 'other']
+  const [adding, setAdding] = useState(false)
+  const [form, setForm]     = useState<any>({ ...blank })
+  const [saving, setSaving] = useState(false)
+
+  async function addExtra() {
+    setSaving(true)
+    const { error } = await supabase.from('booking_extras').insert({
+      booking_id: bookingId, extra_type: form.extra_type,
+      description: form.description || null, supplier: form.supplier || null,
+      net_cost: form.net_cost ? Number(form.net_cost) : null,
+      sell_price: form.sell_price ? Number(form.sell_price) : null,
+      notes: form.notes || null,
+    })
+    setSaving(false)
+    if (error) { showToast('Failed: ' + error.message, 'error'); return }
+    showToast('Extra added ✓')
+    setAdding(false); onUpdate()
+  }
+
+  async function deleteExtra(id: number) {
+    await supabase.from('booking_extras').delete().eq('id', id)
+    showToast('Extra removed'); onUpdate()
+  }
+
+  const totalExtrasNet = extras.reduce((a: number, e: Extra) => a + (e.net_cost || 0), 0)
+
+  return (
+    <div>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'16px' }}>
+        <div style={{ fontFamily:'Fraunces,serif', fontSize:'17px', fontWeight:'300' }}>Holiday Extras {totalExtrasNet > 0 && <span style={{ fontSize:'13px', color:'var(--accent)', fontFamily:'Outfit,sans-serif' }}>· {fmt(totalExtrasNet)} net</span>}</div>
+        <button className="btn btn-cta" onClick={() => setAdding(true)}>+ Add Extra</button>
+      </div>
+
+      <div style={{ display:'flex', flexDirection:'column', gap:'8px' }}>
+        {extras.map((e: Extra) => (
+          <div key={e.id} className="card" style={{ padding:'14px 18px', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+            <div>
+              <div style={{ fontSize:'13.5px', fontWeight:'500', textTransform:'capitalize' }}>{e.extra_type?.replace('_',' ')} {e.description ? `— ${e.description}` : ''}</div>
+              <div style={{ fontSize:'12px', color:'var(--text-muted)', marginTop:'2px' }}>
+                {e.supplier && <span>{e.supplier} · </span>}
+                {e.net_cost && <span>Net: {fmt(e.net_cost)} · </span>}
+                {e.sell_price && <span>Sell: {fmt(e.sell_price)}</span>}
+              </div>
+              {e.notes && <div style={{ fontSize:'12px', color:'var(--text-muted)', fontStyle:'italic', marginTop:'2px' }}>{e.notes}</div>}
+            </div>
+            <button className="btn btn-ghost btn-xs" style={{ color:'var(--red)' }} onClick={() => deleteExtra(e.id)}>✕</button>
+          </div>
+        ))}
+
+        {adding && (
+          <div className="card" style={{ padding:'18px 20px', border:'1.5px solid var(--accent)' }}>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px' }}>
+              <div>
+                <label className="label">Type</label>
+                <select className="input" value={form.extra_type} onChange={e=>setForm((p:any)=>({...p,extra_type:e.target.value}))}>
+                  {EXTRA_TYPES.map(t=><option key={t} value={t}>{t.replace('_',' ')}</option>)}
+                </select>
+              </div>
+              <div><label className="label">Description</label><input className="input" placeholder="e.g. Aspire Lounge, LGW" value={form.description} onChange={e=>setForm((p:any)=>({...p,description:e.target.value}))}/></div>
+              <div><label className="label">Supplier</label><input className="input" placeholder="e.g. Holiday Extras" value={form.supplier} onChange={e=>setForm((p:any)=>({...p,supplier:e.target.value}))}/></div>
+              <div><label className="label">Net Cost (£)</label><input className="input" type="number" value={form.net_cost} onChange={e=>setForm((p:any)=>({...p,net_cost:e.target.value}))}/></div>
+              <div><label className="label">Sell Price (£)</label><input className="input" type="number" value={form.sell_price} onChange={e=>setForm((p:any)=>({...p,sell_price:e.target.value}))}/></div>
+              <div><label className="label">Notes</label><input className="input" value={form.notes} onChange={e=>setForm((p:any)=>({...p,notes:e.target.value}))}/></div>
+            </div>
+            <div style={{ display:'flex', gap:'8px', justifyContent:'flex-end', marginTop:'12px' }}>
+              <button className="btn btn-secondary" onClick={() => setAdding(false)}>Cancel</button>
+              <button className="btn btn-cta" onClick={addExtra} disabled={saving}>{saving?'Adding…':'Add Extra'}</button>
+            </div>
+          </div>
+        )}
+
+        {extras.length === 0 && !adding && (
+          <div className="card" style={{ padding:'32px', textAlign:'center' }}>
+            <div style={{ color:'var(--text-muted)', fontSize:'13px', marginBottom:'12px' }}>No extras added</div>
+            <button className="btn btn-cta" onClick={() => setAdding(true)}>+ Add Extra</button>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ── PAYMENTS TAB ─────────────────────────────────────────────
+function PaymentsTab({ booking, payments, balance, onUpdate, showToast }: any) {
+  const blank = { amount:'', payment_date: new Date().toISOString().split('T')[0], debit_card:'', credit_card:'', amex:'', bank_transfer:'', notes:'' }
+  const [adding, setAdding] = useState(false)
+  const [form, setForm]     = useState<any>({ ...blank })
+  const [saving, setSaving] = useState(false)
+  const totalPaid           = payments.reduce((a: number, p: Payment) => a + (p.amount || 0), 0)
+  const sell                = booking.total_sell || booking.deals?.deal_value || 0
+
+  async function addPayment() {
+    const total = (Number(form.debit_card)||0) + (Number(form.credit_card)||0) + (Number(form.amex)||0) + (Number(form.bank_transfer)||0)
+    const amount = total || Number(form.amount)
+    if (!amount) { showToast('Enter payment amount', 'error'); return }
+    setSaving(true)
+    const { error } = await supabase.from('booking_payments').insert({
+      booking_id: booking.id, amount,
+      payment_date: form.payment_date,
+      debit_card: Number(form.debit_card) || 0,
+      credit_card: Number(form.credit_card) || 0,
+      amex: Number(form.amex) || 0,
+      bank_transfer: Number(form.bank_transfer) || 0,
+      notes: form.notes || null,
+    })
+    setSaving(false)
+    if (error) { showToast('Failed: ' + error.message, 'error'); return }
+    showToast('Payment recorded ✓')
+    setAdding(false); setForm({ ...blank }); onUpdate()
+  }
+
+  async function markInvoiceSent(id: number) {
+    await supabase.from('booking_payments').update({ invoice_sent: true, invoice_sent_at: new Date().toISOString() }).eq('id', id)
+    showToast('Invoice marked as sent')
+    onUpdate()
+  }
+
+  async function deletePayment(id: number) {
+    await supabase.from('booking_payments').delete().eq('id', id)
+    showToast('Payment removed'); onUpdate()
+  }
+
+  const pctPaid = sell > 0 ? Math.min(100, Math.round((totalPaid / sell) * 100)) : 0
+
+  return (
+    <div>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'16px' }}>
+        <div style={{ fontFamily:'Fraunces,serif', fontSize:'17px', fontWeight:'300' }}>Payments</div>
+        <button className="btn btn-cta" onClick={() => setAdding(true)}>+ Add Payment</button>
+      </div>
+
+      {/* Payment progress */}
+      <div className="card" style={{ padding:'18px 20px', marginBottom:'16px' }}>
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:'16px', marginBottom:'14px' }}>
+          <div>
+            <div style={{ fontSize:'11px', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:'4px' }}>Invoice Total</div>
+            <div style={{ fontSize:'22px', fontWeight:'600', color:'var(--text-primary)' }}>{fmt(sell)}</div>
+          </div>
+          <div>
+            <div style={{ fontSize:'11px', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:'4px' }}>Total Paid</div>
+            <div style={{ fontSize:'22px', fontWeight:'600', color:'var(--green)' }}>{fmt(totalPaid)}</div>
+          </div>
+          <div>
+            <div style={{ fontSize:'11px', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:'4px' }}>Balance Remaining</div>
+            <div style={{ fontSize:'22px', fontWeight:'600', color: balance > 0 ? 'var(--red)' : 'var(--green)' }}>{balance > 0 ? fmt(balance) : 'PAID ✓'}</div>
+          </div>
+        </div>
+        <div style={{ height:'6px', background:'var(--border)', borderRadius:'3px', overflow:'hidden' }}>
+          <div style={{ height:'100%', width:`${pctPaid}%`, background: pctPaid===100 ? 'var(--green)' : 'var(--accent)', borderRadius:'3px', transition:'width 0.3s' }}/>
+        </div>
+        <div style={{ fontSize:'11.5px', color:'var(--text-muted)', marginTop:'6px' }}>{pctPaid}% paid</div>
+      </div>
+
+      {/* Payment history */}
+      <div style={{ display:'flex', flexDirection:'column', gap:'8px' }}>
+        {payments.map((p: Payment, i: number) => {
+          const breakdown = [
+            p.debit_card > 0 && `Debit: ${fmt(p.debit_card)}`,
+            p.credit_card > 0 && `Credit: ${fmt(p.credit_card)}`,
+            p.amex > 0 && `Amex: ${fmt(p.amex)}`,
+            p.bank_transfer > 0 && `Bank: ${fmt(p.bank_transfer)}`,
+          ].filter(Boolean).join(' · ')
+
+          return (
+            <div key={p.id} className="card" style={{ padding:'14px 18px' }}>
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                <div>
+                  <div style={{ display:'flex', alignItems:'center', gap:'10px', marginBottom:'4px' }}>
+                    <span style={{ fontSize:'15px', fontWeight:'600', color:'var(--green)' }}>{fmt(p.amount)}</span>
+                    <span style={{ fontSize:'12px', color:'var(--text-muted)' }}>{fmtDate(p.payment_date)}</span>
+                    <span style={{ fontSize:'10px', background:'var(--bg-tertiary)', padding:'1px 7px', borderRadius:'10px', color:'var(--text-muted)' }}>Payment {i+1}</span>
+                  </div>
+                  {breakdown && <div style={{ fontSize:'12px', color:'var(--text-muted)' }}>{breakdown}</div>}
+                  {p.notes && <div style={{ fontSize:'12px', color:'var(--text-muted)', fontStyle:'italic', marginTop:'2px' }}>{p.notes}</div>}
+                </div>
+                <div style={{ display:'flex', gap:'6px', alignItems:'center' }}>
+                  {p.invoice_sent ? (
+                    <span style={{ fontSize:'11px', color:'var(--green)', background:'var(--green-light)', padding:'2px 8px', borderRadius:'4px' }}>Invoice Sent ✓</span>
+                  ) : (
+                    <button className="btn btn-secondary btn-xs" onClick={() => markInvoiceSent(p.id)}>Mark Invoice Sent</button>
+                  )}
+                  <button className="btn btn-ghost btn-xs" style={{ color:'var(--red)' }} onClick={() => deletePayment(p.id)}>✕</button>
+                </div>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      {adding && (
+        <div className="card" style={{ padding:'20px 22px', border:'1.5px solid var(--accent)', marginTop:'12px' }}>
+          <div style={{ fontFamily:'Fraunces,serif', fontSize:'16px', fontWeight:'300', marginBottom:'16px' }}>Record Payment</div>
+          <div style={{ background:'var(--bg-secondary)', borderRadius:'8px', padding:'14px 16px', marginBottom:'14px' }}>
+            <div style={{ fontSize:'12px', color:'var(--text-muted)', marginBottom:'10px' }}>Split by payment method (leave 0 if not used)</div>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr 1fr', gap:'10px' }}>
+              <div><label className="label">Debit Card (£)</label><input className="input" type="number" min="0" step="0.01" placeholder="0.00" value={form.debit_card} onChange={e=>setForm((p:any)=>({...p,debit_card:e.target.value}))}/></div>
+              <div><label className="label">Credit Card (£)</label><input className="input" type="number" min="0" step="0.01" placeholder="0.00" value={form.credit_card} onChange={e=>setForm((p:any)=>({...p,credit_card:e.target.value}))}/></div>
+              <div><label className="label">Amex (£)</label><input className="input" type="number" min="0" step="0.01" placeholder="0.00" value={form.amex} onChange={e=>setForm((p:any)=>({...p,amex:e.target.value}))}/></div>
+              <div><label className="label">Bank Transfer (£)</label><input className="input" type="number" min="0" step="0.01" placeholder="0.00" value={form.bank_transfer} onChange={e=>setForm((p:any)=>({...p,bank_transfer:e.target.value}))}/></div>
+            </div>
+            <div style={{ marginTop:'10px', fontSize:'13px', color:'var(--text-primary)' }}>
+              Total: <strong style={{ color:'var(--green)' }}>
+                {fmt((Number(form.debit_card)||0)+(Number(form.credit_card)||0)+(Number(form.amex)||0)+(Number(form.bank_transfer)||0))}
+              </strong>
+            </div>
+          </div>
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px', marginBottom:'12px' }}>
+            <div><label className="label">Payment Date</label><input className="input" type="date" value={form.payment_date} onChange={e=>setForm((p:any)=>({...p,payment_date:e.target.value}))}/></div>
+            <div><label className="label">Notes</label><input className="input" placeholder="Optional" value={form.notes} onChange={e=>setForm((p:any)=>({...p,notes:e.target.value}))}/></div>
+          </div>
+          <div style={{ display:'flex', gap:'8px', justifyContent:'flex-end' }}>
+            <button className="btn btn-secondary" onClick={() => setAdding(false)}>Cancel</button>
+            <button className="btn btn-cta" onClick={addPayment} disabled={saving}>{saving?'Recording…':'Record Payment'}</button>
+          </div>
+        </div>
+      )}
+
+      {payments.length === 0 && !adding && (
+        <div className="card" style={{ padding:'32px', textAlign:'center', marginTop:'12px' }}>
+          <div style={{ color:'var(--text-muted)', fontSize:'13px', marginBottom:'12px' }}>No payments recorded yet</div>
+          <button className="btn btn-cta" onClick={() => setAdding(true)}>+ Record First Payment</button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── TASKS TAB ────────────────────────────────────────────────
+function TasksTab({ tasks, onUpdate, showToast }: any) {
+  const categories = Array.from(new Set(TASK_TEMPLATE.map(t => t.category)))
+  const tasksDone  = tasks.filter((t: BookingTask) => t.is_done).length
+  const taskPct    = tasks.length ? Math.round((tasksDone / tasks.length) * 100) : 0
+
+  async function toggle(task: BookingTask) {
+    const newDone = !task.is_done
+    await supabase.from('booking_tasks').update({ is_done: newDone, completed_at: newDone ? new Date().toISOString() : null }).eq('id', task.id)
+    onUpdate()
+  }
+
+  return (
+    <div>
+      {/* Progress */}
+      <div className="card" style={{ padding:'16px 20px', marginBottom:'16px', display:'flex', alignItems:'center', gap:'16px' }}>
+        <div style={{ flex:1 }}>
+          <div style={{ height:'8px', background:'var(--border)', borderRadius:'4px', overflow:'hidden' }}>
+            <div style={{ height:'100%', width:`${taskPct}%`, background: taskPct===100 ? 'var(--green)' : 'var(--accent)', borderRadius:'4px', transition:'width 0.3s' }}/>
+          </div>
+        </div>
+        <div style={{ fontSize:'14px', fontWeight:'600', color: taskPct===100 ? 'var(--green)' : 'var(--text-primary)', whiteSpace:'nowrap' }}>{tasksDone}/{tasks.length} complete · {taskPct}%</div>
+      </div>
+
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(300px, 1fr))', gap:'12px' }}>
+        {categories.map(cat => {
+          const catTasks = TASK_TEMPLATE.filter(t => t.category === cat).map(t => tasks.find((tk: BookingTask) => tk.task_key === t.key)).filter(Boolean)
+          const doneCnt = catTasks.filter((t: BookingTask) => t.is_done).length
+          const color   = CAT_COLORS[cat] || 'var(--accent)'
+          return (
+            <div key={cat} className="card" style={{ padding:'16px 18px' }}>
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'12px' }}>
+                <div style={{ display:'flex', alignItems:'center', gap:'6px' }}>
+                  <span>{CAT_ICONS[cat]}</span>
+                  <span style={{ fontSize:'13px', fontWeight:'600', color }}>{cat}</span>
+                </div>
+                <span style={{ fontSize:'11.5px', color: doneCnt===catTasks.length ? 'var(--green)' : 'var(--text-muted)' }}>{doneCnt}/{catTasks.length}</span>
+              </div>
+              <div style={{ display:'flex', flexDirection:'column', gap:'6px' }}>
+                {catTasks.map((task: BookingTask) => (
+                  <label key={task.id} style={{ display:'flex', gap:'10px', alignItems:'center', cursor:'pointer', padding:'6px 8px', borderRadius:'6px', transition:'background 0.1s' }}
+                    onMouseEnter={e=>(e.currentTarget.style.background='var(--bg-secondary)')}
+                    onMouseLeave={e=>(e.currentTarget.style.background='transparent')}>
+                    <input type="checkbox" checked={task.is_done} onChange={() => toggle(task)} style={{ width:'15px', height:'15px', accentColor:color, cursor:'pointer', flexShrink:0 }}/>
+                    <span style={{ fontSize:'13px', color: task.is_done ? 'var(--text-muted)' : 'var(--text-primary)', textDecoration: task.is_done ? 'line-through' : 'none', flex:1 }}>{task.task_name}</span>
+                    {task.is_done && task.completed_at && <span style={{ fontSize:'10.5px', color:'var(--text-muted)', whiteSpace:'nowrap' }}>{fmtDate(task.completed_at)}</span>}
+                  </label>
+                ))}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
