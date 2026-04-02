@@ -3,6 +3,8 @@
 import { useEffect, useState, useRef } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
+import { getAccessContext, isManager, type StaffUser } from '@/lib/access'
+import { buildFieldAuditEntries, logAuditEntries } from '@/lib/audit'
 import Link from 'next/link'
 
 // ── TYPES ────────────────────────────────────────────────────
@@ -11,6 +13,7 @@ type Booking = {
   booking_reference: string
   deal_id: number
   status: string
+  booking_status: string | null
   departure_date: string | null
   return_date: string | null
   balance_due_date: string | null
@@ -23,10 +26,17 @@ type Booking = {
   final_profit: number | null
   booking_notes: string | null
   cc_surcharge: number | null
+  balance_cleared_at: string | null
+  staff_id: number | null
   created_at: string
-  deals?: { id: number; title: string; deal_value: number; clients?: Client }
+  cancellation_type: 'deposit_only' | 'post_payment' | 'tickets_issued' | null
+  cancellation_date: string | null
+  cancellation_actioned_by: string | null
+  cancellation_checklist: Record<string, boolean> | null
+  cancellation_notes: string | null
+  deals?: { id: number; title: string; deal_value: number; staff_id?: number | null; clients?: Client }
 }
-type Client = { id: number; first_name: string; last_name: string; phone: string; email: string }
+type Client = { id: number; first_name: string; last_name: string; phone: string; email: string; owner_staff_id?: number | null }
 type Passenger = {
   id: number; booking_id: number; title: string; first_name: string; last_name: string
   date_of_birth: string | null; passenger_type: string; is_lead: boolean
@@ -117,45 +127,66 @@ const PAX_TYPES = ['Adult', 'Child', 'Infant']
 const TASK_TEMPLATE = [
   { key:'deposit_received',      name:'Deposit received',               category:'Financial',     sort:1  },
   { key:'balance_due_set',       name:'Balance due date set',           category:'Financial',     sort:2  },
-  { key:'balance_chased',        name:'Balance payment chased',         category:'Financial',     sort:3  },
-  { key:'balance_received',      name:'Balance payment received',       category:'Financial',     sort:4  },
-  { key:'final_costing',         name:'Final costing confirmed',        category:'Financial',     sort:5  },
-  { key:'flights_ticketed',      name:'Flights ticketed',               category:'Flights',       sort:6  },
-  { key:'ticket_numbers',        name:'Ticket numbers recorded',        category:'Flights',       sort:7  },
-  { key:'etickets_sent',         name:'E-tickets sent to client',       category:'Flights',       sort:8  },
-  { key:'hotel_confirmation',    name:'Hotel confirmation received',    category:'Accommodation', sort:9  },
-  { key:'rooming_list',          name:'Hotel rooming list sent',        category:'Accommodation', sort:10 },
-  { key:'special_requests',      name:'Special requests confirmed',     category:'Accommodation', sort:11 },
-  { key:'transfers_booked',      name:'Transfers booked with DMC',      category:'Transfers',     sort:12 },
-  { key:'transfer_confirmation', name:'Transfer confirmation received', category:'Transfers',     sort:13 },
-  { key:'arrival_details_sent',  name:'Arrival details sent to DMC',   category:'Transfers',     sort:14 },
-  { key:'booking_confirmation',  name:'Booking confirmation sent',      category:'Documents',     sort:15 },
-  { key:'travel_docs',           name:'Travel documents issued',        category:'Documents',     sort:16 },
-  { key:'welcome_pack',          name:'Welcome pack sent',              category:'Documents',     sort:17 },
-  { key:'atol_certificate',      name:'ATOL certificate issued',        category:'Documents',     sort:18 },
-  { key:'predeparture_call',     name:'Pre-departure call made',        category:'Pre-Departure', sort:19 },
-  { key:'emergency_contact',     name:'Emergency contact confirmed',    category:'Pre-Departure', sort:20 },
-  { key:'welcome_back_call',     name:'Welcome back call made',         category:'Post-Trip',     sort:21 },
-  { key:'review_requested',      name:'Review requested (Trustpilot)',  category:'Post-Trip',     sort:22 },
-  { key:'rebook_conversation',   name:'Re-booking conversation started',category:'Post-Trip',     sort:23 },
+  { key:'balance_received',      name:'Balance received',               category:'Financial',     sort:3  },
+  { key:'final_costing',         name:'Final costing confirmed',        category:'Financial',     sort:4  },
+  { key:'flights_ticketed',      name:'Flights ticketed',               category:'Flights',       sort:5  },
+  { key:'etickets_sent',         name:'E-tickets sent to client',       category:'Flights',       sort:6  },
+  { key:'hotel_confirmation',    name:'Hotel confirmation received',    category:'Accommodation', sort:7  },
+  { key:'special_requests',      name:'Special requests confirmed',     category:'Accommodation', sort:8  },
+  { key:'transfer_confirmation', name:'Transfers confirmed',            category:'Transfers',     sort:9  },
+  { key:'booking_confirmation',  name:'Booking confirmation sent',      category:'Documents',     sort:10 },
+  { key:'travel_docs',           name:'Travel documents issued',        category:'Documents',     sort:11 },
+  { key:'atol_certificate',      name:'ATOL certificate issued',        category:'Documents',     sort:12 },
+  { key:'predeparture_call',     name:'Pre-departure contact made',     category:'Pre-Departure', sort:13 },
+  { key:'review_requested',      name:'Post-trip review requested',     category:'Post-Trip',     sort:14 },
+  { key:'rebook_conversation',   name:'Re-book conversation started',   category:'Post-Trip',     sort:15 },
 ]
+const CANCELLATION_FOLLOWUP_LABELS: Record<string, string> = {
+  flights: 'Cancel flights with supplier',
+  accommodation: 'Cancel accommodation with supplier',
+  transfers: 'Cancel transfers with supplier',
+  extras: 'Cancel extras / activities with supplier',
+}
 const CAT_COLORS: Record<string,string> = {
   Financial:'#10b981', Flights:'#3b82f6', Accommodation:'#8b5cf6',
-  Transfers:'#f97316', Documents:'#f59e0b', 'Pre-Departure':'#ec4899', 'Post-Trip':'#14b8a6',
+  Transfers:'#f97316', Documents:'#f59e0b', 'Pre-Departure':'#ec4899', 'Post-Trip':'#14b8a6', Operations:'#6366f1',
 }
 const CAT_ICONS: Record<string,string> = {
   Financial:'💷', Flights:'✈', Accommodation:'🏨',
-  Transfers:'🚗', Documents:'📄', 'Pre-Departure':'📞', 'Post-Trip':'🌟',
+  Transfers:'🚗', Documents:'📄', 'Pre-Departure':'📞', 'Post-Trip':'🌟', Operations:'🛎',
 }
 
 // ── HELPERS ──────────────────────────────────────────────────
 const fmt     = (n: number | null | undefined) => '£' + (n || 0).toLocaleString('en-GB', { maximumFractionDigits: 0 })
 const fmtDate = (d: string | null) => !d ? '—' : new Date(d.includes('T') ? d : d + 'T12:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
 const daysUntil = (d: string | null) => !d ? null : Math.ceil((new Date(d).getTime() - Date.now()) / 86400000)
+const TASK_CATEGORY_ORDER = ['Financial', 'Flights', 'Accommodation', 'Transfers', 'Documents', 'Pre-Departure', 'Post-Trip', 'Operations']
 
 function calcNights(checkin: string | null, checkout: string | null): number | null {
   if (!checkin || !checkout) return null
   return Math.round((new Date(checkout).getTime() - new Date(checkin).getTime()) / 86400000)
+}
+
+function asDateOnly(d: string | null | undefined) {
+  return d ? d.split('T')[0] : null
+}
+
+function getFlightDerivedDates(flights: Flight[]) {
+  const outbound = flights
+    .filter(f => f.direction === 'outbound' && f.departure_date)
+    .sort((a, b) => new Date(a.departure_date!).getTime() - new Date(b.departure_date!).getTime())
+  const returns = flights
+    .filter(f => f.direction === 'return' && (f.arrival_date || f.departure_date))
+    .sort((a, b) => {
+      const aDate = a.arrival_date || a.departure_date || ''
+      const bDate = b.arrival_date || b.departure_date || ''
+      return new Date(aDate).getTime() - new Date(bDate).getTime()
+    })
+
+  return {
+    departure_date: asDateOnly(outbound[0]?.departure_date),
+    return_date: asDateOnly(returns[returns.length - 1]?.arrival_date || returns[returns.length - 1]?.departure_date),
+  }
 }
 
 // ── PAGE ─────────────────────────────────────────────────────
@@ -170,6 +201,8 @@ export default function BookingDetailPage() {
   const [transfers, setTransfers]       = useState<Transfer[]>([])
   const [extras, setExtras]             = useState<Extra[]>([])
   const [payments, setPayments]         = useState<Payment[]>([])
+  const [currentStaff, setCurrentStaff] = useState<StaffUser | null>(null)
+  const [staffUsers, setStaffUsers]     = useState<StaffUser[]>([])
   const [tasks, setTasks]               = useState<BookingTask[]>([])
   const [hotels, setHotels]             = useState<Hotel[]>([])
   const [suppliers, setSuppliers]       = useState<Supplier[]>([])
@@ -177,9 +210,87 @@ export default function BookingDetailPage() {
   const [tab, setTab]                   = useState<'overview'|'passengers'|'flights'|'accommodation'|'transfers'|'extras'|'payments'|'costing'|'tasks'|'documents'>('overview')
   const [toast, setToast]               = useState<{ msg: string; type: 'success'|'error' } | null>(null)
   const [saving, setSaving]             = useState(false)
+  const [cancelModal, setCancelModal]   = useState(false)
+  const [ownerDraft, setOwnerDraft]     = useState('')
+  const [savingOwner, setSavingOwner]   = useState(false)
   const toastTimer                      = useRef<any>(null)
 
   useEffect(() => { loadAll() }, [id])
+  useEffect(() => { void loadAccess() }, [])
+
+  async function loadAccess() {
+    const { staffUsers, currentStaff } = await getAccessContext()
+    setStaffUsers(staffUsers)
+    setCurrentStaff(currentStaff)
+  }
+
+  async function reconcileTasks(bk: Booking, fl: Flight[], ac: Accommodation[], tr: Transfer[], pay: Payment[], existingTasks: BookingTask[]) {
+    const templateMap = new Map(TASK_TEMPLATE.map(task => [task.key, task]))
+    let nextTasks = existingTasks.filter(
+      task =>
+        task.task_key.startsWith('ops_request_') ||
+        task.task_key.startsWith('cancel_followup_') ||
+        templateMap.has(task.task_key)
+    )
+
+    const missingTemplates = TASK_TEMPLATE.filter(task => !nextTasks.some(existing => existing.task_key === task.key))
+    if (missingTemplates.length > 0) {
+      const { data: inserted } = await supabase.from('booking_tasks').insert(
+        missingTemplates.map(task => ({
+          booking_id: Number(id),
+          task_name: task.name,
+          task_key: task.key,
+          category: task.category,
+          sort_order: task.sort,
+          is_done: false,
+        }))
+      ).select()
+      nextTasks = [...nextTasks, ...(inserted || [])]
+    }
+
+    const totalPaid = pay.reduce((sum, payment) => sum + (payment.amount || 0), 0)
+    const sell = bk.total_sell || bk.deals?.deal_value || 0
+    const derivedDone: Record<string, boolean> = {
+      deposit_received: totalPaid > 0 || !!bk.deposit_received,
+      balance_due_set: !!bk.balance_due_date,
+      balance_received: sell > 0 ? totalPaid >= sell : false,
+      final_costing: bk.total_net != null && (bk.final_profit != null || bk.gross_profit != null),
+      flights_ticketed: fl.length === 0 || fl.every(flight => !!flight.pnr),
+      hotel_confirmation: ac.length === 0 || ac.every(stay => !!stay.hotel_confirmation || ['confirmed', 'ref_received'].includes(stay.reservation_status)),
+      special_requests: ac.length === 0 || ac.every(stay => !stay.special_requests || ['confirmed', 'ref_received'].includes(stay.reservation_status)),
+      transfer_confirmation:
+        tr.length === 0 ||
+        tr.every(transfer => !!transfer.supplier_name && (!!transfer.arrival_flight || !!transfer.departure_flight || !!transfer.inter_hotel_dates || !!transfer.notes)),
+    }
+
+    const updates = nextTasks.flatMap(task => {
+      const template = templateMap.get(task.task_key)
+      if (!template) return []
+      const desiredDone = Object.prototype.hasOwnProperty.call(derivedDone, task.task_key) ? derivedDone[task.task_key] : task.is_done
+      const patch: Partial<BookingTask> & { id?: number } = {}
+      if (task.task_name !== template.name) patch.task_name = template.name
+      if (task.category !== template.category) patch.category = template.category
+      if (task.sort_order !== template.sort) patch.sort_order = template.sort
+      if (task.is_done !== desiredDone) {
+        patch.is_done = desiredDone
+        patch.completed_at = desiredDone ? (task.completed_at || new Date().toISOString()) : null
+      }
+      return Object.keys(patch).length > 0 ? [{ id: task.id, ...patch }] : []
+    })
+
+    if (updates.length > 0) {
+      await Promise.all(updates.map(update => {
+        const { id: taskId, ...patch } = update
+        return supabase.from('booking_tasks').update(patch).eq('id', taskId!)
+      }))
+      nextTasks = nextTasks.map(task => {
+        const update = updates.find(item => item.id === task.id)
+        return update ? { ...task, ...update } : task
+      })
+    }
+
+    return nextTasks.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))
+  }
 
   async function loadAll() {
     setLoading(true)
@@ -188,7 +299,7 @@ export default function BookingDetailPage() {
       { data: tr }, { data: ex }, { data: pay }, { data: tk },
       { data: ht }, { data: sup },
     ] = await Promise.all([
-      supabase.from('bookings').select('*, deals(id,title,deal_value,clients(*))').eq('id', id).single(),
+      supabase.from('bookings').select('*, deals(id,title,deal_value,staff_id,clients(*))').eq('id', id).single(),
       supabase.from('booking_passengers').select('*').eq('booking_id', id).order('is_lead', { ascending: false }),
       supabase.from('booking_flights').select('*').eq('booking_id', id).order('direction').order('leg_order'),
       supabase.from('booking_accommodations').select('*').eq('booking_id', id).order('stay_order'),
@@ -200,6 +311,7 @@ export default function BookingDetailPage() {
       supabase.from('suppliers').select('id,name,type').order('name'),
     ])
     setBooking(bk)
+    setOwnerDraft(String(bk?.staff_id || bk?.deals?.clients?.owner_staff_id || ''))
     setPassengers(pax || [])
     setFlights(fl || [])
     setAccoms(ac || [])
@@ -207,7 +319,7 @@ export default function BookingDetailPage() {
     setExtras(ex || [])
     setPayments(pay || [])
     if (tk && tk.length > 0) {
-      setTasks(tk)
+      setTasks(await reconcileTasks(bk, fl || [], ac || [], tr || [], pay || [], tk))
     } else if (bk) {
       // auto-init tasks for new bookings
       const inserts = TASK_TEMPLATE.map(t => ({ booking_id: Number(id), task_name: t.name, task_key: t.key, category: t.category, sort_order: t.sort, is_done: false }))
@@ -225,6 +337,72 @@ export default function BookingDetailPage() {
     toastTimer.current = setTimeout(() => setToast(null), 3000)
   }
 
+  async function saveOwnership() {
+    if (!booking || !isManager(currentStaff) || !ownerDraft) return
+    const nextStaffId = Number(ownerDraft)
+    const auditEntries = [
+      ...(client
+        ? buildFieldAuditEntries({
+            entityType: 'client',
+            entityId: client.id,
+            performedBy: currentStaff,
+            action: 'ownership_reassigned',
+            before: { owner_staff_id: client.owner_staff_id ?? null },
+            after: { owner_staff_id: nextStaffId },
+            fields: ['owner_staff_id'],
+            notes: `Ownership reassigned from booking ${booking.id}`,
+          })
+        : []),
+      ...buildFieldAuditEntries({
+        entityType: 'deal',
+        entityId: booking.deal_id,
+        performedBy: currentStaff,
+        action: 'ownership_reassigned',
+        before: { staff_id: booking.deals?.id ? (booking.deals as { staff_id?: number | null }).staff_id ?? null : null },
+        after: { staff_id: nextStaffId },
+        fields: ['staff_id'],
+        notes: `Realigned from booking ${booking.id}`,
+      }),
+      ...buildFieldAuditEntries({
+        entityType: 'booking',
+        entityId: booking.id,
+        performedBy: currentStaff,
+        action: 'ownership_reassigned',
+        before: { staff_id: booking.staff_id ?? null },
+        after: { staff_id: nextStaffId },
+        fields: ['staff_id'],
+        notes: 'Booking consultant updated',
+      }),
+    ]
+
+    if (auditEntries.length === 0) {
+      showToast('Ownership already aligned')
+      return
+    }
+
+    setSavingOwner(true)
+    try {
+      if (client && client.owner_staff_id !== nextStaffId) {
+        const { error } = await supabase.from('clients').update({ owner_staff_id: nextStaffId }).eq('id', client.id)
+        if (error) throw error
+      }
+
+      const { error: dealError } = await supabase.from('deals').update({ staff_id: nextStaffId }).eq('id', booking.deal_id)
+      if (dealError) throw dealError
+
+      const { error: bookingError } = await supabase.from('bookings').update({ staff_id: nextStaffId }).eq('id', booking.id)
+      if (bookingError) throw bookingError
+
+      await logAuditEntries(auditEntries)
+      showToast('Ownership updated ✓')
+      await loadAll()
+    } catch (err: any) {
+      showToast(err.message || 'Failed to update ownership', 'error')
+    } finally {
+      setSavingOwner(false)
+    }
+  }
+
   if (loading) return <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:'80vh' }}><div style={{ color:'var(--text-muted)', fontSize:'14px' }}>Loading booking…</div></div>
   if (!booking) return <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:'80vh' }}><div style={{ color:'var(--text-muted)', fontSize:'14px' }}>Booking not found</div></div>
 
@@ -237,6 +415,11 @@ export default function BookingDetailPage() {
   const balDays     = daysUntil(booking.balance_due_date)
   const outbound    = flights.filter(f => f.direction === 'outbound').sort((a,b) => a.leg_order - b.leg_order)
   const returnFlts  = flights.filter(f => f.direction === 'return').sort((a,b) => a.leg_order - b.leg_order)
+  const assignedStaffId = booking.staff_id || booking.deals?.staff_id || client?.owner_staff_id || null
+  const assignedStaff = staffUsers.find(staff => staff.id === assignedStaffId) || null
+  const ownershipMismatch =
+    (client?.owner_staff_id ?? null) !== (booking.staff_id ?? null) ||
+    (booking.deals?.staff_id ?? null) !== (booking.staff_id ?? null)
 
   const TABS = [
     { key:'overview',      label:'Overview'                              },
@@ -260,21 +443,54 @@ export default function BookingDetailPage() {
           <div>
             <div style={{ display:'flex', alignItems:'center', gap:'10px' }}>
               <div className="page-title" style={{ fontSize:'22px', fontFamily:'monospace', letterSpacing:'0.05em' }}>{booking.booking_reference}</div>
-              <span style={{ fontSize:'12px', padding:'3px 10px', borderRadius:'20px', background:'#e6f4ee', color:'#10b981', fontWeight:'500' }}>{booking.status}</span>
+              <span style={{ fontSize:'12px', padding:'3px 10px', borderRadius:'20px', fontWeight:'500',
+                background: booking.booking_status === 'cancelled' ? '#fee2e2' : '#e6f4ee',
+                color:      booking.booking_status === 'cancelled' ? '#dc2626' : '#10b981' }}>
+                {booking.booking_status === 'cancelled' ? 'CANCELLED' : booking.status}
+              </span>
             </div>
             <div style={{ fontSize:'13px', color:'var(--text-muted)', marginTop:'2px' }}>
               {client ? `${client.first_name} ${client.last_name}` : '—'} · {fmtDate(booking.departure_date)}{booking.return_date ? ` → ${fmtDate(booking.return_date)}` : ''}
               {booking.destination ? ` · ${booking.destination}` : ''}
+              {assignedStaff ? ` · Consultant: ${assignedStaff.name}` : ' · Consultant: Unassigned'}
             </div>
           </div>
         </div>
         <div style={{ display:'flex', gap:'8px' }}>
           <Link href={`/deals/${booking.deal_id}`}><button className="btn btn-secondary">← Deal</button></Link>
+          {booking.booking_status !== 'cancelled' && isManager(currentStaff) && (
+            <button className="btn" onClick={() => setCancelModal(true)}
+              style={{ background:'#fee2e2', color:'#dc2626', border:'1px solid #fca5a5', fontWeight:'500' }}>
+              Cancel Booking
+            </button>
+          )}
         </div>
       </div>
 
+      {/* Cancelled banner */}
+      {booking.booking_status === 'cancelled' && (
+        <div style={{ margin:'0 0 16px', background:'#fee2e2', border:'1px solid #fca5a5', borderRadius:'10px', padding:'14px 18px' }}>
+          <div style={{ display:'flex', alignItems:'center', gap:'10px', marginBottom: booking.cancellation_type ? '6px' : '0' }}>
+            <span style={{ fontSize:'18px' }}>🚫</span>
+            <div style={{ flex:1, fontSize:'13.5px', color:'#dc2626', fontWeight:'600' }}>
+              This booking has been cancelled
+              {booking.cancellation_date ? ` — ${fmtDate(booking.cancellation_date)}` : ''}
+              {booking.cancellation_actioned_by ? ` · actioned by ${booking.cancellation_actioned_by}` : ''}
+            </div>
+          </div>
+          {booking.cancellation_type && (
+            <div style={{ fontSize:'12.5px', color:'#b91c1c', paddingLeft:'28px' }}>
+              {booking.cancellation_type === 'deposit_only' && 'Deposit only paid — deposit retained as cancellation charge'}
+              {booking.cancellation_type === 'post_payment' && 'Full payment received — refer to Customer Service / Case Management'}
+              {booking.cancellation_type === 'tickets_issued' && 'Tickets already issued — handled by Ticketing & Admin department'}
+              {booking.cancellation_notes ? ` · ${booking.cancellation_notes}` : ''}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Balance due alert */}
-      {balDays !== null && balDays <= 14 && balDays >= 0 && balance > 0 && (
+      {booking.booking_status !== 'cancelled' && balDays !== null && balDays <= 14 && balDays >= 0 && balance > 0 && (
         <div style={{ margin:'0 0 16px', background:'#fdeaea', border:'1px solid var(--red)', borderRadius:'10px', padding:'12px 18px', display:'flex', alignItems:'center', gap:'10px' }}>
           <span style={{ fontSize:'18px' }}>⚠️</span>
           <div style={{ flex:1, fontSize:'13.5px', color:'var(--red)', fontWeight:'500' }}>
@@ -282,6 +498,43 @@ export default function BookingDetailPage() {
           </div>
         </div>
       )}
+
+      <div style={{ margin:'0 0 16px' }} className="card">
+        <div style={{ padding:'16px 18px', display:'flex', justifyContent:'space-between', gap:'16px', alignItems:'flex-start', flexWrap:'wrap' }}>
+          <div>
+            <div style={{ fontSize:'11px', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.07em', marginBottom:'4px' }}>Assigned Consultant</div>
+            <div style={{ fontSize:'14px', fontWeight:'600', color:'var(--text-primary)' }}>{assignedStaff?.name || 'Unassigned'}</div>
+            <div style={{ fontSize:'12px', color:'var(--text-muted)', marginTop:'2px' }}>
+              {assignedStaff?.role || 'Needs assignment to appear correctly in commission reporting'}
+            </div>
+          </div>
+
+          <div style={{ minWidth:'280px', display:'flex', flexDirection:'column', gap:'10px' }}>
+            {ownershipMismatch && (
+              <div style={{ background:'#fff7ed', border:'1px solid #fdba74', borderRadius:'10px', padding:'10px 12px', fontSize:'12px', color:'#9a3412', lineHeight:1.5 }}>
+                Client ownership and booking consultant are not aligned. Updating here will realign client, deal and booking together.
+              </div>
+            )}
+            {isManager(currentStaff) ? (
+              <>
+                <select className="input" value={ownerDraft} onChange={e => setOwnerDraft(e.target.value)}>
+                  <option value="">Select consultant…</option>
+                  {staffUsers.map(staff => <option key={staff.id} value={String(staff.id)}>{staff.name} · {staff.role || 'staff'}</option>)}
+                </select>
+                <div style={{ display:'flex', justifyContent:'flex-end' }}>
+                  <button className="btn btn-secondary" onClick={saveOwnership} disabled={savingOwner || !ownerDraft}>
+                    {savingOwner ? 'Saving…' : 'Update Ownership'}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <div style={{ fontSize:'12px', color:'var(--text-muted)' }}>
+                Ownership stays manager-controlled so commission and client ownership remain clean.
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
 
       <div className="page-body">
         {/* Tabs */}
@@ -300,12 +553,11 @@ export default function BookingDetailPage() {
 
         {/* ── OVERVIEW TAB ─────────────────────────────── */}
         {tab === 'overview' && (
-          <OverviewTab booking={booking} client={client} payments={payments}
-            totalPaid={totalPaid} balance={balance} taskPct={taskPct}
+          <OverviewTab booking={booking} client={client} balance={balance} taskPct={taskPct}
             tasksDone={tasksDone} tasksTotal={tasks.length}
             depDays={depDays} accommodations={accommodations} outbound={outbound}
-            flights={[...outbound,...returnFlts]} transfers={transfers} extras={extras}
-            suppliers={suppliers}
+            flights={[...outbound,...returnFlts]} transfers={transfers} extras={extras} tasks={tasks}
+            onJumpTab={setTab}
             onUpdate={loadAll} showToast={showToast} />
         )}
 
@@ -341,7 +593,7 @@ export default function BookingDetailPage() {
         {/* ── PAYMENTS TAB ─────────────────────────────── */}
         {tab === 'payments' && (
           <PaymentsTab booking={booking} payments={payments} balance={balance}
-            onUpdate={loadAll} showToast={showToast} />
+            onUpdate={loadAll} showToast={showToast} currentStaff={currentStaff} />
         )}
 
         {/* ── COSTING TAB ──────────────────────────────── */}
@@ -349,7 +601,7 @@ export default function BookingDetailPage() {
           <CostingTab booking={booking} flights={[...outbound, ...returnFlts]}
             accommodations={accommodations} transfers={transfers}
             extras={extras} payments={payments} suppliers={suppliers}
-            onUpdate={loadAll} showToast={showToast} />
+            onUpdate={loadAll} showToast={showToast} currentStaff={currentStaff} />
         )}
 
         {/* ── TASKS TAB ────────────────────────────────── */}
@@ -361,42 +613,112 @@ export default function BookingDetailPage() {
         {tab === 'documents' && (
           <DocumentsTab booking={booking} client={client} passengers={passengers}
             outbound={outbound} returnFlts={returnFlts} accommodations={accommodations}
-            transfers={transfers} payments={payments} />
+            transfers={transfers} payments={payments} tasks={tasks} onUpdate={loadAll} showToast={showToast} />
         )}
       </div>
 
       {toast && <div className={`toast ${toast.type}`}>{toast.msg}</div>}
+
+      {cancelModal && (
+        <CancellationModal
+          booking={booking}
+          hasFlights={flights.length > 0}
+          hasAccommodation={accommodations.length > 0}
+          hasTransfers={transfers.length > 0}
+          hasExtras={extras.length > 0}
+          totalPaid={totalPaid}
+          defaultActionedBy={currentStaff?.name || ''}
+          onClose={() => setCancelModal(false)}
+          onConfirm={async (type, checklist, notes, actionedBy) => {
+            const today = new Date().toISOString().split('T')[0]
+            const pendingFollowUps = Object.entries(checklist)
+              .filter(([, done]) => !done)
+              .map(([key]) => key)
+            const { error } = await supabase.from('bookings').update({
+              booking_status: 'cancelled',
+              status: 'CANCELLED',
+              cancellation_type: type,
+              cancellation_date: today,
+              cancellation_actioned_by: actionedBy,
+              cancellation_checklist: checklist,
+              cancellation_notes: notes || null,
+            }).eq('id', booking.id)
+            if (error) {
+              showToast(error.message || 'Failed to cancel booking', 'error')
+              return
+            }
+            if (pendingFollowUps.length > 0) {
+              const nextSort = Math.max(0, ...tasks.map(task => task.sort_order || 0)) + 1
+              await supabase.from('booking_tasks').insert(
+                pendingFollowUps.map((key, index) => ({
+                  booking_id: booking.id,
+                  task_name: CANCELLATION_FOLLOWUP_LABELS[key] || 'Cancellation follow-up',
+                  task_key: `cancel_followup_${key}_${Date.now()}_${index}`,
+                  category: 'Operations',
+                  sort_order: nextSort + index,
+                  is_done: false,
+                  due_date: today,
+                  notes: notes ? `Cancellation follow-up: ${notes}` : 'Created from booking cancellation checklist.',
+                }))
+              )
+            }
+            await logAuditEntries([{
+              entity_type: 'booking',
+              entity_id: booking.id,
+              action: 'booking_cancelled',
+              field_name: 'booking_status',
+              old_value: {
+                booking_status: booking.booking_status ?? null,
+                status: booking.status,
+              },
+              new_value: {
+                booking_status: 'cancelled',
+                status: 'CANCELLED',
+                cancellation_type: type,
+                cancellation_date: today,
+                cancellation_actioned_by: actionedBy,
+                cancellation_checklist: checklist,
+                cancellation_notes: notes || null,
+              },
+              performed_by_staff_id: currentStaff?.id ?? null,
+              performed_by_role: currentStaff?.role ?? null,
+              notes: pendingFollowUps.length > 0
+                ? `Booking cancelled with ${pendingFollowUps.length} supplier follow-up task${pendingFollowUps.length === 1 ? '' : 's'} created`
+                : 'Booking cancelled',
+            }])
+            setCancelModal(false)
+            showToast(
+              pendingFollowUps.length > 0
+                ? `Booking cancelled · ${pendingFollowUps.length} follow-up task${pendingFollowUps.length === 1 ? '' : 's'} sent to Today`
+                : 'Booking cancelled',
+              'success'
+            )
+            loadAll()
+          }}
+        />
+      )}
     </div>
   )
 }
 
 // ── OVERVIEW TAB ─────────────────────────────────────────────
-function OverviewTab({ booking, client, payments, totalPaid, balance, taskPct, tasksDone, tasksTotal, depDays, accommodations, outbound, flights, transfers, extras, suppliers, onUpdate, showToast }: any) {
-  const [editing, setEditing] = useState(false)
+function OverviewTab({ booking, client, balance, taskPct, tasksDone, tasksTotal, depDays, accommodations, outbound, flights, transfers, extras, tasks, onJumpTab, onUpdate, showToast }: any) {
   const [form, setForm]       = useState({
     destination:    booking.destination || '',
-    total_sell:     booking.total_sell || booking.deals?.deal_value || '',
-    discount:       booking.discount || '0',
-    cc_surcharge:   booking.cc_surcharge || '0',
-    return_date:    booking.return_date?.split('T')[0] || '',
-    balance_due_date: booking.balance_due_date?.split('T')[0] || '',
     booking_notes:  booking.booking_notes || '',
   })
   const [saving, setSaving]         = useState(false)
-  const [syncing, setSyncing]       = useState(false)
   const [editingBalDue, setEditingBalDue] = useState(false)
   const [balDueDraft, setBalDueDraft]     = useState(booking.balance_due_date?.split('T')[0] || '')
+  const [requestForm, setRequestForm] = useState({
+    task_name: '',
+    notes: '',
+    due_date: new Date().toISOString().split('T')[0],
+    category: 'Operations',
+  })
+  const [savingRequest, setSavingRequest] = useState(false)
 
-  // Auto-calculate totals from entered components
-  const flightNet = (flights || []).reduce((a: number, f: Flight) => a + (f.net_cost || 0), 0)
-  const accomNet  = (accommodations || []).reduce((a: number, x: any) => a + (x.net_cost || 0), 0)
-  const transNet  = (transfers || []).reduce((a: number, x: any) => a + (x.net_cost || 0), 0)
-  const extrasNet = (extras || []).reduce((a: number, x: any) => a + (x.net_cost || 0), 0)
-  const autoNet   = flightNet + accomNet + transNet + extrasNet
   const sell      = booking.total_sell || booking.deals?.deal_value || 0
-  const discount  = booking.discount || 0
-  const ccSurch   = booking.cc_surcharge || 0
-  const autoProfit = autoNet > 0 ? (sell - discount - ccSurch) - autoNet : 0
   const profit    = booking.gross_profit || 0
   const commission = profit > 0 ? (profit - 10) * 0.1 : 0
 
@@ -406,39 +728,27 @@ function OverviewTab({ booking, client, payments, totalPaid, balance, taskPct, t
     showToast('Balance due date updated ✓'); setEditingBalDue(false); onUpdate()
   }
 
-  async function syncFromCosting() {
-    if (autoNet === 0) { showToast('No component costs entered yet', 'error'); return }
-    setSyncing(true)
-    const { error } = await supabase.from('bookings').update({
-      total_net:    autoNet,
-      gross_profit: autoProfit,
-    }).eq('id', booking.id)
-    setSyncing(false)
-    if (error) { showToast('Sync failed: ' + error.message, 'error'); return }
-    showToast('Net & profit synced from components ✓'); onUpdate()
-  }
-
   async function save() {
     setSaving(true)
     const { error } = await supabase.from('bookings').update({
       destination:      form.destination || null,
-      total_sell:       form.total_sell ? Number(form.total_sell) : null,
-      discount:         Number(form.discount) || 0,
-      cc_surcharge:     Number(form.cc_surcharge) || 0,
-      return_date:      form.return_date || null,
-      balance_due_date: form.balance_due_date || null,
       booking_notes:    form.booking_notes || null,
     }).eq('id', booking.id)
     setSaving(false)
     if (error) { showToast('Save failed: ' + error.message, 'error'); return }
-    showToast('Booking updated ✓'); setEditing(false); onUpdate()
+    showToast('Overview details updated ✓'); onUpdate()
   }
 
   const firstFlight    = outbound[0]
   const firstHotel     = accommodations?.[0] ?? null
-  const flightDepDate  = firstFlight?.departure_date?.split('T')[0] ?? null
+  const derivedDates   = getFlightDerivedDates(flights || [])
+  const flightDepDate  = derivedDates.departure_date
+  const flightReturnDate = derivedDates.return_date
   const bookingDepDate = booking.departure_date?.split('T')[0] ?? null
+  const bookingReturnDate = booking.return_date?.split('T')[0] ?? null
   const depDateMismatch = flightDepDate && flightDepDate !== bookingDepDate
+  const returnDateMismatch = flightReturnDate && flightReturnDate !== bookingReturnDate
+  const operationalTasks = (tasks || []).filter((task: BookingTask) => task.task_key.startsWith('ops_request_') && !task.is_done && !!task.due_date)
 
   async function syncDepartureFromFlight() {
     if (!flightDepDate) return
@@ -447,87 +757,115 @@ function OverviewTab({ booking, client, payments, totalPaid, balance, taskPct, t
     showToast('Departure date synced from flight ✓'); onUpdate()
   }
 
+  async function syncReturnFromFlight() {
+    if (!flightReturnDate) return
+    const { error } = await supabase.from('bookings').update({ return_date: flightReturnDate }).eq('id', booking.id)
+    if (error) { showToast('Failed: ' + error.message, 'error'); return }
+    showToast('Return date synced from flights ✓'); onUpdate()
+  }
+
+  async function addClientRequest() {
+    const taskName = requestForm.task_name.trim()
+    const notes = requestForm.notes.trim()
+    if (!taskName && !notes) { showToast('Add the request or reminder first', 'error'); return }
+    if (!requestForm.due_date) { showToast('Choose a due date', 'error'); return }
+    setSavingRequest(true)
+    const nextSort = Math.max(0, ...(tasks || []).map((task: BookingTask) => task.sort_order || 0)) + 1
+    const { error } = await supabase.from('booking_tasks').insert({
+      booking_id: booking.id,
+      task_name: taskName || notes.slice(0, 80),
+      task_key: `ops_request_${Date.now()}`,
+      category: requestForm.category,
+      sort_order: nextSort,
+      is_done: false,
+      due_date: requestForm.due_date,
+      notes: notes || null,
+    })
+    setSavingRequest(false)
+    if (error) { showToast('Failed: ' + error.message, 'error'); return }
+    setRequestForm({
+      task_name: '',
+      notes: '',
+      due_date: new Date().toISOString().split('T')[0],
+      category: 'Operations',
+    })
+    showToast('Request added to Today work ✓')
+    onUpdate()
+  }
+
   return (
     <div style={{ display:'grid', gridTemplateColumns:'1fr 320px', gap:'20px' }}>
       <div style={{ display:'flex', flexDirection:'column', gap:'16px' }}>
-
-        {/* Financial summary */}
-        <div className="card" style={{ padding:'20px 22px' }}>
-          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'16px' }}>
-            <div style={{ fontFamily:'Fraunces,serif', fontSize:'17px', fontWeight:'300' }}>Financials</div>
-            <div style={{ display:'flex', gap:'6px' }}>
-              {autoNet > 0 && !editing && (
-                <button className="btn btn-secondary btn-xs" style={{ color:'var(--green)', borderColor:'var(--green)' }} onClick={syncFromCosting} disabled={syncing}>
-                  {syncing ? 'Syncing…' : '⟳ Sync from Costing'}
-                </button>
-              )}
-              <button className="btn btn-secondary btn-xs" onClick={() => setEditing(!editing)}>{editing ? 'Cancel' : '✏ Edit'}</button>
+        <div className="card" style={{ padding:'18px 20px' }}>
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'12px', flexWrap:'wrap' }}>
+            <div>
+              <div style={{ fontFamily:'Fraunces,serif', fontSize:'17px', fontWeight:'300' }}>Commercial</div>
+              <div style={{ fontSize:'12px', color:'var(--text-muted)', marginTop:'4px' }}>
+                Keep the overview client-and-trip focused. Financial work lives in Costing and Payments.
+              </div>
+            </div>
+            <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
+              <button className="btn btn-secondary btn-xs" onClick={() => onJumpTab('costing')}>Open Costing →</button>
+              <button className="btn btn-secondary btn-xs" onClick={() => onJumpTab('payments')}>Open Payments →</button>
             </div>
           </div>
-
-          {editing ? (
-            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px' }}>
-              <div><label className="label">Destination</label><input className="input" placeholder="e.g. Mauritius, Dubai" value={form.destination} onChange={e => setForm(p=>({...p,destination:e.target.value}))}/></div>
-              <div><label className="label">Return Date</label><input className="input" type="date" value={form.return_date} onChange={e => setForm(p=>({...p,return_date:e.target.value}))}/></div>
-              <div><label className="label">Balance Due Date</label><input className="input" type="date" value={form.balance_due_date} onChange={e => setForm(p=>({...p,balance_due_date:e.target.value}))}/></div>
-              <div><label className="label">Invoice Total (£)</label><input className="input" type="number" value={form.total_sell} onChange={e => setForm(p=>({...p,total_sell:e.target.value}))}/></div>
-              <div><label className="label">Discount (£)</label><input className="input" type="number" value={form.discount} onChange={e => setForm(p=>({...p,discount:e.target.value}))}/></div>
-              <div><label className="label">CC Surcharge (£)</label><input className="input" type="number" placeholder="0.00" value={form.cc_surcharge} onChange={e => setForm(p=>({...p,cc_surcharge:e.target.value}))}/></div>
-              <div style={{ gridColumn:'1/-1' }}><label className="label">Booking Notes</label><textarea className="input" style={{ minHeight:'70px', resize:'vertical', fontSize:'13px' }} value={form.booking_notes} onChange={e => setForm(p=>({...p,booking_notes:e.target.value}))}/></div>
-              <div style={{ gridColumn:'1/-1', display:'flex', gap:'8px', justifyContent:'flex-end' }}>
-                <button className="btn btn-secondary" onClick={() => setEditing(false)}>Cancel</button>
-                <button className="btn btn-cta" onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(4, minmax(0,1fr))', gap:'10px', marginTop:'14px' }}>
+            {[
+              { label:'Client Total', value: fmt(sell), color:'var(--accent-mid)' },
+              { label:'Gross Profit', value: fmt(profit), color: profit >= 0 ? 'var(--green)' : 'var(--red)' },
+              { label:'Balance', value: fmt(balance), color: balance > 0 ? 'var(--red)' : 'var(--green)' },
+              { label:'Commission', value: profit > 0 ? fmt(commission) : '—', color:'var(--text-primary)' },
+            ].map(item => (
+              <div key={item.label} style={{ background:'var(--bg-secondary)', borderRadius:'8px', padding:'12px 14px' }}>
+                <div style={{ fontSize:'11px', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:'4px' }}>{item.label}</div>
+                <div style={{ fontSize:'16px', fontWeight:'600', color:item.color }}>{item.value}</div>
               </div>
-            </div>
-          ) : (
-            <>
-              <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:'14px' }}>
-                {[
-                  { label:'Invoice Total', val:fmt(sell),              color:'var(--accent-mid)' },
-                  { label:'Total Net',     val:fmt(booking.total_net), color:'var(--text-muted)', hint: autoNet > 0 && booking.total_net !== autoNet ? `auto: ${fmt(autoNet)}` : '' },
-                  { label:'Gross Profit',  val:fmt(profit),            color:'var(--green)',     hint: autoNet > 0 && booking.gross_profit !== autoProfit ? `auto: ${fmt(autoProfit)}` : '' },
-                  { label:'Discount',      val:fmt(discount),          color:'var(--amber)' },
-                  { label:'CC Surcharge',  val:ccSurch > 0 ? fmt(ccSurch) : '—', color:'var(--amber)' },
-                  { label:'Total Paid',    val:fmt(totalPaid),         color:'var(--green)' },
-                  { label:'Balance Due',   val:fmt(balance),           color: balance > 0 ? 'var(--red)' : 'var(--green)' },
-                ].map(s => (
-                  <div key={s.label} style={{ background:'var(--bg-secondary)', borderRadius:'8px', padding:'12px 14px' }}>
-                    <div style={{ fontSize:'11px', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:'4px' }}>{s.label}</div>
-                    <div style={{ fontSize:'18px', fontWeight:'600', color:(s as any).color, fontFamily:'Outfit,sans-serif' }}>{s.val}</div>
-                    {(s as any).hint && <div style={{ fontSize:'10.5px', color:'var(--green)', marginTop:'2px' }}>{(s as any).hint}</div>}
-                  </div>
-                ))}
-              </div>
-              {autoNet > 0 && (
-                <div style={{ marginTop:'12px', padding:'10px 14px', background:'var(--bg-secondary)', borderRadius:'8px', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-                  <div style={{ fontSize:'12px', color:'var(--text-muted)' }}>
-                    Components: <span style={{ color:'var(--text-primary)', fontWeight:'500' }}>
-                      Flights {fmt(flightNet)} + Hotels {fmt(accomNet)} + Transfers {fmt(transNet)} + Extras {fmt(extrasNet)} = <strong>{fmt(autoNet)}</strong>
-                    </span>
-                  </div>
-                </div>
-              )}
-            </>
-          )}
-
-          {!editing && profit > 0 && (
-            <div style={{ marginTop:'10px', padding:'10px 14px', background:'var(--bg-tertiary)', borderRadius:'8px' }}>
-              <div style={{ fontSize:'12px', color:'var(--text-muted)' }}>Commission: <span style={{ color:'var(--text-primary)', fontWeight:'500' }}>(£{profit.toLocaleString()} - £10) × 10% = <span style={{ color:'var(--green)', fontWeight:'600' }}>{fmt(commission)}</span></span></div>
-            </div>
-          )}
+            ))}
+          </div>
         </div>
 
         {/* Trip summary */}
         {(firstHotel || firstFlight) && (
           <div className="card" style={{ padding:'20px 22px' }}>
-            <div style={{ fontFamily:'Fraunces,serif', fontSize:'17px', fontWeight:'300', marginBottom:'14px' }}>Trip Summary</div>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'12px', marginBottom:'14px', flexWrap:'wrap' }}>
+              <div>
+                <div style={{ fontFamily:'Fraunces,serif', fontSize:'17px', fontWeight:'300' }}>Trip Summary</div>
+                <div style={{ fontSize:'12px', color:'var(--text-muted)', marginTop:'4px' }}>
+                  Operational detail first, so we can see the shape of the trip at a glance.
+                </div>
+              </div>
+              <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
+                <button className="btn btn-secondary btn-xs" onClick={() => onJumpTab('flights')}>Flights →</button>
+                <button className="btn btn-secondary btn-xs" onClick={() => onJumpTab('accommodation')}>Hotels →</button>
+                <button className="btn btn-secondary btn-xs" onClick={() => onJumpTab('transfers')}>Transfers →</button>
+              </div>
+            </div>
             <div style={{ display:'flex', flexDirection:'column', gap:'10px' }}>
-              {firstFlight && (
-                <div style={{ display:'flex', gap:'12px', alignItems:'center' }}>
+              {outbound.length > 0 && (
+                <div style={{ display:'flex', gap:'12px', alignItems:'flex-start' }}>
                   <span style={{ fontSize:'18px' }}>✈</span>
                   <div>
-                    <div style={{ fontSize:'13.5px', fontWeight:'500' }}>{firstFlight.origin} → {firstFlight.destination}</div>
-                    <div style={{ fontSize:'12px', color:'var(--text-muted)' }}>{firstFlight.airline} {firstFlight.flight_number} · {fmtDate(firstFlight.departure_date)} · {firstFlight.cabin_class}</div>
+                    <div style={{ fontSize:'13.5px', fontWeight:'500' }}>Outbound flights</div>
+                    <div style={{ fontSize:'12px', color:'var(--text-muted)' }}>
+                      {outbound[0]?.origin} → {outbound[outbound.length - 1]?.destination} · {fmtDate(outbound[0]?.departure_date || null)}
+                    </div>
+                    <div style={{ fontSize:'12px', color:'var(--text-primary)', marginTop:'3px' }}>
+                      {outbound.map((f: Flight) => `${f.airline || 'Flight'} ${f.flight_number || ''}`.trim()).join(' · ')}
+                    </div>
+                  </div>
+                </div>
+              )}
+              {flights.filter((f: Flight) => f.direction === 'return').length > 0 && (
+                <div style={{ display:'flex', gap:'12px', alignItems:'flex-start' }}>
+                  <span style={{ fontSize:'18px' }}>↩</span>
+                  <div>
+                    <div style={{ fontSize:'13.5px', fontWeight:'500' }}>Return flights</div>
+                    <div style={{ fontSize:'12px', color:'var(--text-muted)' }}>
+                      {flights.filter((f: Flight) => f.direction === 'return')[0]?.origin} → {flights.filter((f: Flight) => f.direction === 'return').slice(-1)[0]?.destination} · {fmtDate(flightReturnDate)}
+                    </div>
+                    <div style={{ fontSize:'12px', color:'var(--text-primary)', marginTop:'3px' }}>
+                      {flights.filter((f: Flight) => f.direction === 'return').map((f: Flight) => `${f.airline || 'Flight'} ${f.flight_number || ''}`.trim()).join(' · ')}
+                    </div>
                   </div>
                 </div>
               )}
@@ -541,17 +879,100 @@ function OverviewTab({ booking, client, payments, totalPaid, balance, taskPct, t
                   </div>
                 </div>
               ))}
+              {transfers.length > 0 && (
+                <div style={{ display:'flex', gap:'12px', alignItems:'flex-start' }}>
+                  <span style={{ fontSize:'18px' }}>🚗</span>
+                  <div>
+                    <div style={{ fontSize:'13.5px', fontWeight:'500' }}>Transfers</div>
+                    <div style={{ fontSize:'12px', color:'var(--text-muted)' }}>
+                      {transfers.length} transfer{transfers.length !== 1 ? 's' : ''} booked
+                    </div>
+                    <div style={{ fontSize:'12px', color:'var(--text-primary)', marginTop:'3px' }}>
+                      {transfers.map((t: Transfer) => t.supplier_name || t.transfer_type).filter(Boolean).join(' · ')}
+                    </div>
+                  </div>
+                </div>
+              )}
+              {extras.length > 0 && (
+                <div style={{ display:'flex', gap:'12px', alignItems:'flex-start' }}>
+                  <span style={{ fontSize:'18px' }}>✨</span>
+                  <div>
+                    <div style={{ fontSize:'13.5px', fontWeight:'500' }}>Extras</div>
+                    <div style={{ fontSize:'12px', color:'var(--text-muted)' }}>
+                      {extras.length} extra{extras.length !== 1 ? 's' : ''} on this booking
+                    </div>
+                    <div style={{ fontSize:'12px', color:'var(--text-primary)', marginTop:'3px' }}>
+                      {extras.map((e: Extra) => e.description || e.extra_type || 'Extra').join(' · ')}
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         )}
 
-        {/* Notes */}
-        {booking.booking_notes && !editing && (
-          <div className="card" style={{ padding:'16px 18px' }}>
-            <div style={{ fontSize:'12px', color:'var(--text-muted)', marginBottom:'6px', textTransform:'uppercase', letterSpacing:'0.06em' }}>Booking Notes</div>
-            <div style={{ fontSize:'13.5px', color:'var(--text-primary)', lineHeight:'1.6' }}>{booking.booking_notes}</div>
+        {booking.status === 'CONFIRMED' && (
+          <div className="card" style={{ padding:'20px 22px' }}>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'12px', flexWrap:'wrap', marginBottom:'14px' }}>
+              <div>
+                <div style={{ fontFamily:'Fraunces,serif', fontSize:'17px', fontWeight:'300' }}>Client Request / Ops Reminder</div>
+                <div style={{ fontSize:'12px', color:'var(--text-muted)', marginTop:'4px' }}>
+                  Capture anything the client asks for and push it straight into Today work with a due date.
+                </div>
+              </div>
+              <button className="btn btn-secondary btn-xs" onClick={() => onJumpTab('tasks')}>Open Tasks →</button>
+            </div>
+            <div style={{ display:'grid', gridTemplateColumns:'1.2fr 1fr 150px auto', gap:'10px', marginBottom:'10px' }}>
+              <div>
+                <label className="label">Task</label>
+                <input className="input" placeholder="e.g. Pre-book tee time, quote extension, chase flight release" value={requestForm.task_name} onChange={e => setRequestForm(p => ({ ...p, task_name: e.target.value }))} />
+              </div>
+              <div>
+                <label className="label">Category</label>
+                <select className="input" value={requestForm.category} onChange={e => setRequestForm(p => ({ ...p, category: e.target.value }))}>
+                  {['Operations', 'Flights', 'Accommodation', 'Transfers', 'Documents', 'Financial'].map(cat => <option key={cat}>{cat}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="label">Due Date</label>
+                <input className="input" type="date" value={requestForm.due_date} onChange={e => setRequestForm(p => ({ ...p, due_date: e.target.value }))} />
+              </div>
+              <div style={{ display:'flex', alignItems:'end' }}>
+                <button className="btn btn-cta" onClick={addClientRequest} disabled={savingRequest}>{savingRequest ? 'Saving…' : 'Add to Today'}</button>
+              </div>
+            </div>
+            <div>
+              <label className="label">Details</label>
+              <textarea className="input" style={{ minHeight:'78px', resize:'vertical', fontSize:'13px' }} placeholder="Free text note, client request details, supplier follow-up needed, or a reminder for something not released yet." value={requestForm.notes} onChange={e => setRequestForm(p => ({ ...p, notes: e.target.value }))} />
+            </div>
+            {operationalTasks.length > 0 && (
+              <div style={{ marginTop:'14px', paddingTop:'14px', borderTop:'1px solid var(--border)', display:'flex', flexDirection:'column', gap:'8px' }}>
+                <div style={{ fontSize:'12px', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.06em' }}>Open Dated Requests</div>
+                {operationalTasks.slice(0, 3).map((task: BookingTask) => (
+                  <div key={task.id} style={{ background:'var(--bg-secondary)', borderRadius:'8px', padding:'10px 12px' }}>
+                    <div style={{ display:'flex', justifyContent:'space-between', gap:'10px' }}>
+                      <div style={{ fontSize:'13px', fontWeight:'500', color:'var(--text-primary)' }}>{task.task_name}</div>
+                      <div style={{ fontSize:'11px', color:'var(--text-muted)' }}>{fmtDate(task.due_date)}</div>
+                    </div>
+                    {task.notes && <div style={{ fontSize:'12px', color:'var(--text-muted)', marginTop:'4px' }}>{task.notes}</div>}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
+
+        {/* Notes */}
+        <div className="card" style={{ padding:'16px 18px' }}>
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'12px', marginBottom:'10px' }}>
+            <div style={{ fontSize:'12px', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.06em' }}>Booking Notes</div>
+            <button className="btn btn-secondary btn-xs" onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save Notes'}</button>
+          </div>
+          <div style={{ display:'grid', gap:'10px' }}>
+            <div><label className="label">Destination</label><input className="input" placeholder="e.g. Mauritius, Dubai" value={form.destination} onChange={e => setForm(p=>({...p,destination:e.target.value}))}/></div>
+            <div><label className="label">Booking Notes</label><textarea className="input" style={{ minHeight:'84px', resize:'vertical', fontSize:'13px' }} value={form.booking_notes} onChange={e => setForm(p=>({...p,booking_notes:e.target.value}))}/></div>
+          </div>
+        </div>
       </div>
 
       {/* Right sidebar */}
@@ -574,7 +995,6 @@ function OverviewTab({ booking, client, payments, totalPaid, balance, taskPct, t
           <div style={{ display:'flex', flexDirection:'column', gap:'8px' }}>
             {[
               { label:'Booked',    val:fmtDate(booking.created_at),    color:'var(--text-muted)', sub:'' },
-              { label:'Return',    val:fmtDate(booking.return_date),   color:'var(--text-muted)', sub:'' },
             ].map(d => (
               <div key={d.label} style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline' }}>
                 <span style={{ fontSize:'12px', color:'var(--text-muted)' }}>{d.label}</span>
@@ -600,6 +1020,21 @@ function OverviewTab({ booking, client, payments, totalPaid, balance, taskPct, t
                   : depDays !== null
                     ? <div style={{ fontSize:'10.5px', color:'var(--text-muted)' }}>Departed</div>
                     : null}
+              </div>
+            </div>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+              <span style={{ fontSize:'12px', color:'var(--text-muted)' }}>Return</span>
+              <div style={{ textAlign:'right' }}>
+                <div style={{ display:'flex', alignItems:'center', gap:'5px' }}>
+                  <span style={{ fontSize:'13px', color:'var(--text-primary)', fontWeight:'500' }}>{fmtDate(booking.return_date)}</span>
+                  {returnDateMismatch && (
+                    <button onClick={syncReturnFromFlight}
+                      style={{ background:'#ede9fe', border:'1px solid #c4b5fd', borderRadius:'4px', cursor:'pointer', fontSize:'10.5px', color:'#5b21b6', padding:'1px 6px', fontWeight:'600' }}
+                      title={`Flights return on ${fmtDate(flightReturnDate)} — click to sync`}>
+                      ⟳ {fmtDate(flightReturnDate)}
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
             {/* Balance Due — inline editable */}
@@ -770,7 +1205,7 @@ function LegForm({ leg, onChange, onRemove, idx, canRemove, idSuffix }: any) {
     if (!fn || fn.length < 4) return
     const { data } = await supabase.from('known_flights').select('*').eq('flight_number', fn.toUpperCase()).maybeSingle()
     if (!data) return
-    let filled: string[] = []
+    const filled: string[] = []
     if (data.airline && !leg.airline) { onChange('airline', data.airline); filled.push('airline') }
     if (data.departure_time && !leg.departure_time) { onChange('departure_time', data.departure_time); filled.push('depart time') }
     if (data.arrival_time && !leg.arrival_time) { onChange('arrival_time', data.arrival_time); filled.push('arrive time') }
@@ -849,6 +1284,15 @@ function FlightsTab({ bookingId, outbound, returnFlts, suppliers, onUpdate, show
   function addLeg() { setSeg((p: any) => ({ ...p, legs: [...p.legs, blankLeg()] })) }
   function removeLeg(idx: number) { setSeg((p: any) => ({ ...p, legs: p.legs.filter((_: any, i: number) => i !== idx) })) }
 
+  async function syncBookingDatesFromFlights() {
+    const { data: allFlights } = await supabase.from('booking_flights').select('direction,departure_date,arrival_date').eq('booking_id', bookingId)
+    const derived = getFlightDerivedDates((allFlights || []) as Flight[])
+    await supabase.from('bookings').update({
+      departure_date: derived.departure_date,
+      return_date: derived.return_date,
+    }).eq('id', bookingId)
+  }
+
   async function saveSegment() {
     if (seg.legs.some((l: any) => !l.flight_number.trim())) { showToast('All legs need a flight number', 'error'); return }
     setSaving(true)
@@ -897,10 +1341,7 @@ function FlightsTab({ bookingId, outbound, returnFlts, suppliers, onUpdate, show
         }, { onConflict: 'flight_number' })
       }
     }
-    // Auto-sync departure_date on booking from first outbound leg
-    if (seg.direction === 'outbound' && seg.legs[0]?.departure_date) {
-      await supabase.from('bookings').update({ departure_date: seg.legs[0].departure_date }).eq('id', bookingId)
-    }
+    await syncBookingDatesFromFlights()
 
     showToast(`${seg.direction === 'outbound' ? 'Outbound' : 'Return'} segment added ✓`)
     setAdding(false); setSeg({ ...blankSeg }); onUpdate()
@@ -928,11 +1369,13 @@ function FlightsTab({ bookingId, outbound, returnFlts, suppliers, onUpdate, show
     }).eq('id', id)
     setSaving(false)
     if (error) { showToast('Failed: ' + error.message, 'error'); return }
+    await syncBookingDatesFromFlights()
     showToast('Leg updated ✓'); setEditingLeg(null); onUpdate()
   }
 
   async function deleteLeg(id: number) {
     await supabase.from('booking_flights').delete().eq('id', id)
+    await syncBookingDatesFromFlights()
     showToast('Leg removed'); onUpdate()
   }
 
@@ -1699,20 +2142,30 @@ function ExtrasTab({ bookingId, extras, onUpdate, showToast }: any) {
 }
 
 // ── PAYMENTS TAB ─────────────────────────────────────────────
-function PaymentsTab({ booking, payments, balance, onUpdate, showToast }: any) {
+function PaymentsTab({ booking, payments, balance, onUpdate, showToast, currentStaff }: any) {
   const blank = { amount:'', payment_date: new Date().toISOString().split('T')[0], debit_card:'', credit_card:'', amex:'', bank_transfer:'', notes:'' }
   const [adding, setAdding] = useState(false)
   const [form, setForm]     = useState<any>({ ...blank })
   const [saving, setSaving] = useState(false)
   const totalPaid           = payments.reduce((a: number, p: Payment) => a + (p.amount || 0), 0)
   const sell                = booking.total_sell || booking.deals?.deal_value || 0
+  const paymentLockActive   = !!booking.balance_cleared_at || balance <= 0
+  const paymentLocked       = paymentLockActive && !isManager(currentStaff)
+
+  async function syncBookingPaymentFlags(newTotalPaid: number) {
+    await supabase.from('bookings').update({
+      deposit_received: newTotalPaid > 0,
+      balance_cleared_at: sell > 0 && newTotalPaid >= sell ? (booking.balance_cleared_at || new Date().toISOString()) : null,
+    }).eq('id', booking.id)
+  }
 
   async function addPayment() {
+    if (paymentLocked) { showToast('Payments are locked once the balance is cleared', 'error'); return }
     const total = (Number(form.debit_card)||0) + (Number(form.credit_card)||0) + (Number(form.amex)||0) + (Number(form.bank_transfer)||0)
     const amount = total || Number(form.amount)
     if (!amount) { showToast('Enter payment amount', 'error'); return }
     setSaving(true)
-    const { error } = await supabase.from('booking_payments').insert({
+    const { data, error } = await supabase.from('booking_payments').insert({
       booking_id: booking.id, amount,
       payment_date: form.payment_date,
       debit_card: Number(form.debit_card) || 0,
@@ -1720,9 +2173,22 @@ function PaymentsTab({ booking, payments, balance, onUpdate, showToast }: any) {
       amex: Number(form.amex) || 0,
       bank_transfer: Number(form.bank_transfer) || 0,
       notes: form.notes || null,
-    })
+    }).select('id').single()
     setSaving(false)
     if (error) { showToast('Failed: ' + error.message, 'error'); return }
+    await syncBookingPaymentFlags(totalPaid + amount)
+    if (data?.id) {
+      await logAuditEntries([{
+        entity_type: 'booking',
+        entity_id: booking.id,
+        action: 'payment_added',
+        field_name: 'booking_payments',
+        new_value: { payment_id: data.id, amount, payment_date: form.payment_date, notes: form.notes || null },
+        performed_by_staff_id: currentStaff?.id ?? null,
+        performed_by_role: currentStaff?.role ?? null,
+        notes: 'Payment recorded',
+      }])
+    }
     showToast('Payment recorded ✓')
     setAdding(false); setForm({ ...blank }); onUpdate()
   }
@@ -1734,7 +2200,20 @@ function PaymentsTab({ booking, payments, balance, onUpdate, showToast }: any) {
   }
 
   async function deletePayment(id: number) {
+    if (paymentLocked) { showToast('Payments are locked once the balance is cleared', 'error'); return }
+    const payment = payments.find((entry: Payment) => entry.id === id)
     await supabase.from('booking_payments').delete().eq('id', id)
+    await syncBookingPaymentFlags(Math.max(0, totalPaid - (payment?.amount || 0)))
+    await logAuditEntries([{
+      entity_type: 'booking',
+      entity_id: booking.id,
+      action: 'payment_deleted',
+      field_name: 'booking_payments',
+      old_value: payment || null,
+      performed_by_staff_id: currentStaff?.id ?? null,
+      performed_by_role: currentStaff?.role ?? null,
+      notes: 'Payment removed',
+    }])
     showToast('Payment removed'); onUpdate()
   }
 
@@ -1744,8 +2223,16 @@ function PaymentsTab({ booking, payments, balance, onUpdate, showToast }: any) {
     <div>
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'16px' }}>
         <div style={{ fontFamily:'Fraunces,serif', fontSize:'17px', fontWeight:'300' }}>Payments</div>
-        <button className="btn btn-cta" onClick={() => setAdding(true)}>+ Add Payment</button>
+        <button className="btn btn-cta" onClick={() => setAdding(true)} disabled={paymentLocked}>+ Add Payment</button>
       </div>
+
+      {paymentLockActive && (
+        <div style={{ marginBottom:'16px', background:isManager(currentStaff) ? '#eff6ff' : '#fff7ed', border:`1px solid ${isManager(currentStaff) ? '#93c5fd' : '#fdba74'}`, borderRadius:'10px', padding:'12px 16px', fontSize:'12.5px', color:isManager(currentStaff) ? '#1d4ed8' : '#9a3412' }}>
+          {isManager(currentStaff)
+            ? 'Balance has been cleared. Payments are locked for staff, but you can still override as manager if a correction is genuinely needed.'
+            : 'Balance has been cleared. Further payment changes are locked and require a manager override.'}
+        </div>
+      )}
 
       {/* Payment progress */}
       <div className="card" style={{ padding:'18px 20px', marginBottom:'16px' }}>
@@ -1797,7 +2284,7 @@ function PaymentsTab({ booking, payments, balance, onUpdate, showToast }: any) {
                   ) : (
                     <button className="btn btn-secondary btn-xs" onClick={() => markInvoiceSent(p.id)}>Mark Invoice Sent</button>
                   )}
-                  <button className="btn btn-ghost btn-xs" style={{ color:'var(--red)' }} onClick={() => deletePayment(p.id)}>✕</button>
+                  <button className="btn btn-ghost btn-xs" style={{ color:'var(--red)' }} onClick={() => deletePayment(p.id)} disabled={paymentLocked}>✕</button>
                 </div>
               </div>
             </div>
@@ -1836,7 +2323,7 @@ function PaymentsTab({ booking, payments, balance, onUpdate, showToast }: any) {
       {payments.length === 0 && !adding && (
         <div className="card" style={{ padding:'32px', textAlign:'center', marginTop:'12px' }}>
           <div style={{ color:'var(--text-muted)', fontSize:'13px', marginBottom:'12px' }}>No payments recorded yet</div>
-          <button className="btn btn-cta" onClick={() => setAdding(true)}>+ Record First Payment</button>
+          <button className="btn btn-cta" onClick={() => setAdding(true)} disabled={paymentLocked}>+ Record First Payment</button>
         </div>
       )}
     </div>
@@ -1844,7 +2331,7 @@ function PaymentsTab({ booking, payments, balance, onUpdate, showToast }: any) {
 }
 
 // ── COSTING TAB ──────────────────────────────────────────────
-function CostingTab({ booking, flights, accommodations, transfers, extras, payments, suppliers, onUpdate, showToast }: any) {
+function CostingTab({ booking, flights, accommodations, transfers, extras, payments, suppliers, onUpdate, showToast, currentStaff }: any) {
   const [editingBalDue, setEditingBalDue] = useState(false)
   const [balDueDraft, setBalDueDraft]     = useState(booking.balance_due_date?.split('T')[0] || '')
   const [ccDraft, setCcDraft]             = useState(String(booking.cc_surcharge || ''))
@@ -1905,6 +2392,7 @@ function CostingTab({ booking, flights, accommodations, transfers, extras, payme
   const grossComm    = clientNet - totalNetCost
 
   const totalPaid = payments.reduce((a: number, p: Payment) => a + (p.amount || 0), 0)
+  const managerMode = isManager(currentStaff)
   let running = 0
   const receiptRows = payments.map((p: Payment, i: number) => {
     running += p.amount
@@ -1921,12 +2409,14 @@ function CostingTab({ booking, flights, accommodations, transfers, extras, payme
   }
 
   async function saveCcSurcharge() {
+    if (!managerMode) { showToast('Only managers can change CC surcharge', 'error'); return }
     const { error } = await supabase.from('bookings').update({ cc_surcharge: Number(ccDraft) || 0 }).eq('id', booking.id)
     if (error) { showToast('Failed: ' + error.message, 'error'); return }
     showToast('CC surcharge updated ✓'); setEditingCc(false); onUpdate()
   }
 
   async function pushToOverview() {
+    if (!managerMode) { showToast('Only managers can change protected commercial fields', 'error'); return }
     if (totalNetCost === 0) { showToast('No costs entered yet', 'error'); return }
     setSyncing(true)
     const { error } = await supabase.from('bookings').update({
@@ -1935,6 +2425,17 @@ function CostingTab({ booking, flights, accommodations, transfers, extras, payme
     }).eq('id', booking.id)
     setSyncing(false)
     if (error) { showToast('Failed: ' + error.message, 'error'); return }
+    await logAuditEntries([{
+      entity_type: 'booking',
+      entity_id: booking.id,
+      action: 'commercial_fields_updated',
+      field_name: 'gross_profit',
+      old_value: { total_net: booking.total_net, gross_profit: booking.gross_profit, cc_surcharge: booking.cc_surcharge },
+      new_value: { total_net: totalNetCost, gross_profit: grossComm, cc_surcharge: Number(ccDraft) || 0 },
+      performed_by_staff_id: currentStaff?.id ?? null,
+      performed_by_role: currentStaff?.role ?? null,
+      notes: 'Costing pushed to overview',
+    }])
     showToast('Total net & gross profit pushed to Overview ✓'); onUpdate()
   }
 
@@ -1951,7 +2452,7 @@ function CostingTab({ booking, flights, accommodations, transfers, extras, payme
           <div style={{ fontFamily:'Fraunces,serif', fontSize:'17px', fontWeight:'300' }}>Cost Details</div>
           {totalNetCost > 0 && (
             <button className="btn btn-cta btn-xs" onClick={pushToOverview} disabled={syncing}>
-              {syncing ? 'Pushing…' : '⟳ Push to Overview'}
+              {syncing ? 'Pushing…' : managerMode ? '⟳ Push to Overview' : 'Manager Only'}
             </button>
           )}
         </div>
@@ -2032,7 +2533,7 @@ function CostingTab({ booking, flights, accommodations, transfers, extras, payme
                   <span style={{ fontSize:'14px', fontWeight:'600', fontFamily:'monospace', color: ccSurch > 0 ? 'var(--amber)' : 'var(--text-muted)' }}>
                     {ccSurch > 0 ? fmt(ccSurch) : '—'}
                   </span>
-                  <button onClick={()=>setEditingCc(true)} style={{ background:'none', border:'none', cursor:'pointer', fontSize:'12px', color:'var(--text-muted)', opacity:0.7 }}>✏</button>
+                  {managerMode && <button onClick={()=>setEditingCc(true)} style={{ background:'none', border:'none', cursor:'pointer', fontSize:'12px', color:'var(--text-muted)', opacity:0.7 }}>✏</button>}
                 </div>
               )}
             </div>
@@ -2130,20 +2631,38 @@ function CostingTab({ booking, flights, accommodations, transfers, extras, payme
 }
 
 // ── DOCUMENTS TAB ────────────────────────────────────────────
-function DocumentsTab({ booking, client, passengers, outbound, returnFlts, accommodations, transfers, payments }: any) {
+function DocumentsTab({ booking, client, passengers, outbound, returnFlts, accommodations, transfers, payments, tasks, onUpdate, showToast }: any) {
   const [activeDoc, setActiveDoc] = useState<string | null>(null)
   const [preview, setPreview]     = useState<string | null>(null)
 
   const ref        = booking.booking_reference
   const clientName = client ? `${client.first_name} ${client.last_name}` : 'Guest'
   const paxList    = passengers.map((p: Passenger) => `${p.title} ${p.first_name} ${p.last_name}`).join(', ')
+  const infantCount = passengers.filter((p: Passenger) => p.passenger_type === 'Infant').length
+  const passengerCountExInfants = Math.max(0, passengers.length - infantCount)
   const totalPaid  = payments.reduce((a: number, p: Payment) => a + (p.amount || 0), 0)
   const sell       = booking.total_sell || booking.deals?.deal_value || 0
   const balance    = sell - totalPaid
   const today      = new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })
+  const packageNights = (() => {
+    if (booking.departure_date && booking.return_date) return calcNights(booking.departure_date, booking.return_date)
+    const firstCheckIn = accommodations[0]?.checkin_date || null
+    const lastCheckOut = accommodations[accommodations.length - 1]?.checkout_date || null
+    return calcNights(firstCheckIn, lastCheckOut)
+  })()
+  const firstOutbound = outbound[0] || null
+  const lastInbound = returnFlts[returnFlts.length - 1] || null
+  const productDescription = `${booking.deals?.title || 'Package holiday'}${booking.destination ? ` to ${booking.destination}` : ''}${packageNights ? ` for ${packageNights} night${packageNights === 1 ? '' : 's'}` : ''}`
+
+  function airportLabel(code: string | null) {
+    if (!code) return '—'
+    const match = AIRPORTS.find(a => a.code === code)
+    return match ? `${match.name} (${match.code})` : code
+  }
 
   const DOCS = [
-    { id: 'confirmation', label: 'Booking Confirmation',  icon: '📋', desc: 'Cover letter with full trip summary & payment schedule' },
+    { id: 'invoice_confirmation', label: 'Invoice / Confirmation',  icon: '📋', desc: 'Commercial confirmation with trip summary and payment position' },
+    { id: 'booking_terms', label: 'Booking Terms & Conditions', icon: '📘', desc: 'Separate booking conditions document' },
     { id: 'itinerary',    label: 'Flight Itinerary',       icon: '✈',  desc: `${outbound.length + returnFlts.length} flight leg${outbound.length + returnFlts.length !== 1 ? 's' : ''}` },
     ...accommodations.map((a: Accommodation, i: number) => ({
       id: `accom_${a.id}_customer`,
@@ -2164,6 +2683,7 @@ function DocumentsTab({ booking, client, passengers, outbound, returnFlts, accom
       desc: t.supplier_name || 'Transfer details',
     })),
     { id: 'atol', label: 'ATOL Certificate', icon: '📜', desc: 'Air Travel Organiser\'s Licence certificate' },
+    ...(booking.booking_status === 'cancelled' ? [{ id: 'cancellation_invoice', label: 'Cancellation Invoice', icon: '🚫', desc: `Issued ${fmtDate(booking.cancellation_date)}` }] : []),
   ]
 
   const docStyles = `
@@ -2195,6 +2715,110 @@ function DocumentsTab({ booking, client, passengers, outbound, returnFlts, accom
       .badge-red { background: #fee2e2; color: #dc2626; }
       .footer { margin-top: 40px; padding-top: 14px; border-top: 1px solid #e5e7eb; font-size: 10.5px; color: #94a3b8; text-align: center; }
       .sign { margin-top: 28px; font-size: 13.5px; line-height: 1.8; }
+      .atol-wrap { padding: 0; display:flex; justify-content:center; }
+      .atol-canvas {
+        position: relative;
+        width: 760px;
+        height: 1080px;
+        background: linear-gradient(180deg, #fbf3c9 0%, #f8efbf 100%);
+        border: 1px solid #d7cfa2;
+        font-family: Arial, sans-serif;
+        color: #111;
+        overflow: hidden;
+      }
+      .atol-watermark {
+        position:absolute;
+        top: 118px;
+        right: 88px;
+        width: 260px;
+        height: 420px;
+        opacity: 0.12;
+        transform: rotate(32deg);
+        pointer-events:none;
+      }
+      .atol-watermark-box {
+        position:absolute;
+        inset: 36px 18px 40px 18px;
+        border: 22px solid #111827;
+      }
+      .atol-watermark-text {
+        position:absolute;
+        inset: 0;
+        display:flex;
+        align-items:center;
+        justify-content:center;
+        font-size: 118px;
+        font-weight: 700;
+        letter-spacing: -0.06em;
+      }
+      .atol-corner {
+        position:absolute;
+        top:-120px;
+        right:-70px;
+        width: 260px;
+        height: 260px;
+        border: 18px solid rgba(0,0,0,0.06);
+        transform: rotate(45deg);
+      }
+      .atol-text { position:absolute; left:0; right:0; text-align:center; }
+      .atol-banner { top: 34px; left: 58px; right: 58px; font-size: 12px; font-weight: 700; }
+      .atol-main-title { top: 72px; font-size: 52px; font-weight: 700; }
+      .atol-lead {
+        top: 144px;
+        left: 54px;
+        right: 54px;
+        font-size: 17px;
+        line-height: 1.2;
+        font-weight: 700;
+      }
+      .atol-sublead {
+        top: 206px;
+        left: 78px;
+        right: 78px;
+        font-size: 16px;
+        line-height: 1.25;
+      }
+      .atol-field {
+        position: absolute;
+        font-size: 12px;
+        line-height: 1.3;
+      }
+      .atol-field strong { font-size: 16px; display:block; margin-bottom: 4px; }
+      .atol-field p { margin: 0; }
+      .atol-protected-left { top: 306px; left: 54px; width: 410px; }
+      .atol-protected-right { top: 306px; left: 468px; width: 210px; }
+      .atol-what { top: 372px; left: 54px; width: 620px; }
+      .atol-who { top: 442px; left: 54px; width: 620px; }
+      .atol-protection-title {
+        position:absolute; top: 486px; left:0; right:0;
+        text-align:center; font-size: 22px; font-weight: 700;
+      }
+      .atol-body {
+        position:absolute; top: 522px; left: 58px; right: 58px;
+        font-size: 12px; line-height: 1.25;
+      }
+      .atol-body p { margin: 0 0 12px; }
+      .atol-legal-bottom {
+        position:absolute; top: 894px; left: 56px; right: 56px;
+        font-size: 10.5px; line-height: 1.2;
+      }
+      .atol-footer-grid {
+        position:absolute; top: 1004px; left: 56px; right: 56px;
+        display:grid; grid-template-columns: 1.15fr 1fr 1fr 0.8fr 1fr;
+        align-items:stretch; text-align:center;
+      }
+      .atol-footer-grid > div { padding-top: 8px; font-size: 12px; font-weight: 700; }
+      .atol-footer-grid .label { display:block; font-size: 11px; font-weight: 700; line-height: 1.1; margin-bottom: 8px; }
+      .atol-footer-grid .value { display:block; font-size: 12px; font-weight: 700; }
+      .atol-footer-grid .issuer-note { font-size: 10px; font-style: italic; font-weight: 600; line-height: 1.15; }
+      .atol-copyright {
+        position:absolute; bottom: 18px; left:0; right:0;
+        text-align:center; font-size: 9px;
+      }
+      .terms-block { margin-bottom:18px; }
+      .terms-block h3 { font-size:12px; text-transform:uppercase; letter-spacing:0.08em; color:#64748b; margin-bottom:8px; }
+      .terms-block ul { padding-left:18px; }
+      .terms-block li { margin-bottom:6px; }
       @media print { body { padding: 20px; } .no-print { display: none; } }
     </style>`
 
@@ -2214,17 +2838,43 @@ function DocumentsTab({ booking, client, passengers, outbound, returnFlts, accom
       ${subtitle ? `<div class="subtitle">${subtitle}</div>` : ''}`
   }
 
+  function documentTaskKeys(docId: string) {
+    if (docId === 'invoice_confirmation') return ['booking_confirmation']
+    if (docId === 'atol') return ['atol_certificate']
+    if (docId === 'itinerary') return ['etickets_sent', 'travel_docs']
+    if (docId.startsWith('accom_') && docId.endsWith('_customer')) return ['travel_docs']
+    if (docId.startsWith('transfer_')) return ['travel_docs']
+    return []
+  }
+
+  async function markDocumentIssued(docId: string) {
+    const taskKeys = documentTaskKeys(docId)
+    if (taskKeys.length === 0) return
+    const pendingTasks = (tasks as BookingTask[]).filter(task => taskKeys.includes(task.task_key) && !task.is_done)
+    if (pendingTasks.length === 0) return
+    await Promise.all(
+      pendingTasks.map(task =>
+        supabase
+          .from('booking_tasks')
+          .update({ is_done: true, completed_at: new Date().toISOString() })
+          .eq('id', task.id)
+      )
+    )
+    showToast('Document task updated ✓')
+    onUpdate()
+  }
+
   function generateDoc(docId: string): string {
-    if (docId === 'confirmation') {
+    if (docId === 'invoice_confirmation') {
       const flightRows = [...outbound, ...returnFlts].map((f: Flight) =>
         `<tr><td style="width:auto"><strong>${f.flight_number}</strong></td><td>${f.airline || '—'}</td><td>${f.origin} → ${f.destination}</td><td>${fmtDate(f.departure_date)}${f.departure_time ? ' ' + f.departure_time : ''}</td><td>${f.cabin_class}</td></tr>`
       ).join('')
       const accomRows = accommodations.map((a: Accommodation) =>
         `<tr><td style="width:auto"><strong>${a.hotel_name}</strong></td><td>${fmtDate(a.checkin_date)} – ${fmtDate(a.checkout_date)}</td><td>${a.nights || calcNights(a.checkin_date, a.checkout_date)} nts</td><td>${a.room_type || '—'} ×${a.room_quantity}</td><td>${a.board_basis || '—'}</td></tr>`
       ).join('')
-      return `<!DOCTYPE html><html><head><title>Booking Confirmation — ${ref}</title>${docStyles}</head><body>
-        ${brandHeader('Booking Confirmation', `Dear ${clientName},`)}
-        <p style="line-height:1.8;margin-bottom:18px;">Thank you for booking with Mauritius Holidays Direct. We are delighted to confirm your holiday arrangements as detailed below. Please review this confirmation carefully and contact us immediately if any details require amendment.</p>
+      return `<!DOCTYPE html><html><head><title>Invoice / Confirmation — ${ref}</title>${docStyles}</head><body>
+        ${brandHeader('Invoice / Confirmation', `Dear ${clientName},`)}
+        <p style="line-height:1.8;margin-bottom:18px;">Thank you for booking with Mauritius Holidays Direct. This document confirms your booking and shows the current financial position. Your booking terms and your ATOL Certificate are provided separately.</p>
         <div class="highlight">
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
             <div><span style="font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:0.06em">Lead Passenger</span><div style="font-weight:600;margin-top:2px">${clientName}</div></div>
@@ -2243,9 +2893,69 @@ function DocumentsTab({ booking, client, passengers, outbound, returnFlts, accom
           <tr style="background:#f8fafc"><td><strong>Balance Remaining</strong></td><td style="text-align:right"><strong style="color:${balance > 0 ? '#dc2626' : '#059669'};font-size:15px">${balance > 0 ? '£' + balance.toLocaleString('en-GB', { minimumFractionDigits: 2 }) : 'PAID IN FULL ✓'}</strong></td></tr>
           ${booking.balance_due_date && balance > 0 ? `<tr><td colspan="2" style="color:#dc2626;font-size:12px">⚠ Balance due by: <strong>${fmtDate(booking.balance_due_date)}</strong> (12 weeks before departure)</td></tr>` : ''}
         </tbody></table>
-        <p style="font-size:12px;color:#64748b;line-height:1.7;margin-bottom:14px;">This booking is protected by our ATOL licence (No. 11423). Your ATOL Certificate will be issued separately. Please ensure all passenger names match exactly as they appear on passports.</p>
+        <p style="font-size:12px;color:#64748b;line-height:1.7;margin-bottom:14px;">Please check all names, dates and travel details immediately and tell us straight away if anything needs correcting. Where applicable, your ATOL Certificate is issued separately and should be kept with this confirmation.</p>
         <div class="sign">Kind regards,<br><strong>Samir Abattouy</strong><br>Mauritius Expert<br><em>Mauritius</em> Holidays Direct</div>
         <div class="footer">Mauritius Holidays Direct · MHD Travel Ltd · ATOL Protected 11423 · ${today}</div>
+      </body></html>`
+    }
+
+    if (docId === 'booking_terms') {
+      return `<!DOCTYPE html><html><head><title>Booking Terms & Conditions — ${ref}</title>${docStyles}</head><body>
+        ${brandHeader('Booking Terms & Conditions', `Booking reference: ${ref}`)}
+        <p style="line-height:1.8;margin-bottom:18px;">These booking conditions apply to the holiday arrangements confirmed under booking reference <strong>${ref}</strong>. They are supplied separately from the commercial confirmation and ATOL Certificate for easier client review.</p>
+
+        <div class="terms-block">
+          <h3>1. Your Booking</h3>
+          <ul>
+            <li>Your booking is confirmed once we accept your booking and receive payment or authority to take payment.</li>
+            <li>Please check all names, dates and booked arrangements immediately on receipt of your confirmation documents.</li>
+            <li>Passenger names must match passports exactly. Any correction costs charged by airlines or suppliers will be payable by the client.</li>
+          </ul>
+        </div>
+
+        <div class="terms-block">
+          <h3>2. Payments</h3>
+          <ul>
+            <li>The total booking value currently recorded is <strong>£${sell.toLocaleString('en-GB', { minimumFractionDigits: 2 })}</strong>.</li>
+            <li>Payments received to date total <strong>£${totalPaid.toLocaleString('en-GB', { minimumFractionDigits: 2 })}</strong>.</li>
+            <li>${balance > 0 ? `The outstanding balance is <strong>£${balance.toLocaleString('en-GB', { minimumFractionDigits: 2 })}</strong>${booking.balance_due_date ? ` and is due by <strong>${fmtDate(booking.balance_due_date)}</strong>` : ''}.` : 'This booking is currently shown as paid in full.'}</li>
+            <li>If balance is not paid by the due date, suppliers may cancel arrangements and cancellation charges may apply.</li>
+          </ul>
+        </div>
+
+        <div class="terms-block">
+          <h3>3. Changes And Cancellations</h3>
+          <ul>
+            <li>If you ask to change your booking after confirmation, we will do our best to assist but changes are subject to supplier availability and any charges imposed by airlines, hotels or other providers.</li>
+            <li>Cancellations after confirmation may incur charges up to the full booking cost, depending on the timing and supplier terms.</li>
+            <li>Requests such as room upgrades, extra nights, special services or date changes should be requested as early as possible and are not confirmed until we confirm them back to you in writing.</li>
+          </ul>
+        </div>
+
+        <div class="terms-block">
+          <h3>4. Travel Requirements</h3>
+          <ul>
+            <li>You are responsible for ensuring all travellers have valid passports, visas, health documentation and travel insurance suitable for the trip.</li>
+            <li>Airlines and local authorities may refuse travel if documentation is incomplete or incorrect.</li>
+            <li>Special requests are passed to suppliers but cannot be guaranteed unless expressly confirmed in writing.</li>
+          </ul>
+        </div>
+
+        <div class="terms-block">
+          <h3>5. ATOL Protection</h3>
+          <ul>
+            <li>Flight-inclusive packages protected by ATOL are covered by MHD Travel Ltd, ATOL 11423.</li>
+            <li>Your ATOL Certificate is issued separately and is the formal evidence of the protection that applies to your booking.</li>
+            <li>Only the protected components shown on the ATOL Certificate are covered by that certificate.</li>
+          </ul>
+        </div>
+
+        <div class="terms-block">
+          <h3>6. Operational Notes For This Booking</h3>
+          <p style="font-size:13px;line-height:1.7;color:#374151;">Destination: ${booking.destination || 'TBC'}<br>Travel period: ${fmtDate(booking.departure_date)} to ${fmtDate(booking.return_date)}<br>Passengers: ${paxList || clientName}</p>
+        </div>
+
+        <div class="footer">Separate booking conditions supplied with ${ref} · ${today}</div>
       </body></html>`
     }
 
@@ -2370,29 +3080,130 @@ function DocumentsTab({ booking, client, passengers, outbound, returnFlts, accom
     }
 
     if (docId === 'atol') {
-      const firstFlight = outbound[0]
       return `<!DOCTYPE html><html><head><title>ATOL Certificate — ${ref}</title>${docStyles}</head><body>
-        <div style="border:2px solid #1a1a2e;padding:36px;border-radius:8px;">
-          ${brandHeader('ATOL Certificate', 'Air Travel Organiser\'s Licence — No. 11423')}
-          <div style="background:#fef9c3;border:1px solid #fbbf24;border-radius:6px;padding:14px 16px;margin-bottom:20px;">
-            <div style="font-size:13px;font-weight:700;color:#92400e;margin-bottom:4px">ATOL Protected</div>
-            <p style="font-size:12px;color:#92400e;line-height:1.7">In the unlikely event of our insolvency, the Civil Aviation Authority (the UK's aviation regulator) will ensure that you are not stranded abroad and will arrange to refund any money you have paid to us for an advance booking. For further information visit the ATOL website at www.caa.co.uk/atol-protection</p>
+        <div class="atol-wrap">
+          <div class="atol-canvas">
+            <div class="atol-corner"></div>
+            <div class="atol-watermark">
+              <div class="atol-watermark-box"></div>
+              <div class="atol-watermark-text">ATOL</div>
+            </div>
+            <div class="atol-text atol-banner">This is an important document. Make sure that you take it with you when you travel.</div>
+            <div class="atol-text atol-main-title">ATOL Certificate</div>
+            <div class="atol-text atol-lead">This confirms that your money is protected by the ATOL scheme and that you can get home if your travel company collapses.</div>
+            <div class="atol-text atol-sublead">This certificate sets out how the ATOL scheme will protect the people named on it for the parts of their trip listed below.</div>
+
+            <div class="atol-field atol-protected-left">
+              <strong>Who is protected?</strong>
+              <p>${paxList || clientName}</p>
+            </div>
+
+            <div class="atol-field atol-protected-right">
+              <strong>Number of passengers: ${passengerCountExInfants}</strong>
+            </div>
+
+            <div class="atol-field atol-what">
+              <strong>What is protected and who is providing the protection?</strong>
+              <p>${productDescription}. Further details about your booking and protection can be found in the table overleaf.</p>
+            </div>
+
+            <div class="atol-field atol-who">
+              <strong>Who is protecting your trip?</strong>
+              <p>MHD Travel Ltd, 11423</p>
+            </div>
+
+            <div class="atol-protection-title">Your protection</div>
+            <div class="atol-body">
+              <p>You are protected from when you were given this certificate to the end of your trip. If the provider of one of the parts of your trip listed above stops trading, in most circumstances, <strong>MHD Travel Ltd</strong> must provide you with an alternative at no extra cost or offer you a full refund of the total ATOL-protected cost. See guidance on your rights at www.atol.org.uk. Please contact <strong>MHD Travel Ltd</strong> on 020 8951 6922.</p>
+              <p>If <strong>MHD Travel Ltd</strong> stops trading and you are overseas, your flight arrangements should not be affected. However, you should check the instructions at www.atol.org.uk. Or, you can call (+44) 20 7453 6350. The ATOL website will also provide advice on what you must do if you have not yet left for your holiday.</p>
+              <p>If <strong>MHD Travel Ltd</strong> stops trading, depending on the terms of the ATOL scheme available at www.atol.org.uk, the passengers named above will either:</p>
+              <p>1. be able to take and complete their trip, and return to the UK; or, if that is not possible,<br>2. receive a refund for the total amount paid to <strong>MHD Travel Ltd</strong>.</p>
+            </div>
+
+            <div class="atol-legal-bottom">
+              By issuing this ATOL Certificate, under Regulation 17 of the Civil Aviation (Air Travel Organisers' Licensing) Regulations 2012, MHD Travel Ltd confirms that the parts of the trip listed above are sold in line with the ATOL held by MHD Travel Ltd.<br><br>
+              The ATOL scheme is run by the Civil Aviation Authority and paid for by the Air Travel Trust. To see what that is and what you can expect, together with full information on its terms and conditions, go to www.atol.org.uk.
+            </div>
+
+            <div class="atol-footer-grid">
+              <div>
+                <span class="label">Unique reference<br>number:</span>
+                <span class="value">${ref}</span>
+              </div>
+              <div>
+                <span class="label">Date of issue:</span>
+                <span class="value">${new Date().toLocaleDateString('en-GB')}</span>
+              </div>
+              <div>
+                <span class="label">ATOL Certificate<br>Issuer:</span>
+                <span class="issuer-note">Mauritius Holidays Direct</span>
+              </div>
+              <div>
+                <span class="label">ATOL<br>number:</span>
+                <span class="value">11423</span>
+              </div>
+              <div>
+                <span class="value" style="padding-top:20px">Flight-plus<br>sale</span>
+              </div>
+            </div>
+
+            <div class="atol-copyright">Copyright UK Civil Aviation Authority. The ATOL Logo is a registered trade mark.</div>
           </div>
-          <table><tbody>
-            <tr><td>Lead Passenger</td><td><strong>${clientName}</strong></td></tr>
-            <tr><td>All Passengers</td><td>${paxList}</td></tr>
-            <tr><td>Booking Reference</td><td><strong style="color:#3b82f6;font-family:monospace;font-size:16px">${ref}</strong></td></tr>
-            <tr><td>Departure Date</td><td><strong>${fmtDate(booking.departure_date)}</strong></td></tr>
-            <tr><td>Return Date</td><td><strong>${fmtDate(booking.return_date)}</strong></td></tr>
-            ${firstFlight ? `<tr><td>Flight Details</td><td>${firstFlight.airline || ''} ${firstFlight.flight_number} · ${firstFlight.origin} → ${firstFlight.destination}</td></tr>` : ''}
-            ${accommodations.length > 0 ? `<tr><td>Accommodation</td><td>${accommodations.map((a: Accommodation) => `${a.hotel_name} (${fmtDate(a.checkin_date)} – ${fmtDate(a.checkout_date)})`).join('<br>')}</td></tr>` : ''}
-            <tr><td>Total Cost</td><td><strong style="font-size:18px">£${sell.toLocaleString('en-GB', { minimumFractionDigits: 2 })}</strong></td></tr>
-            <tr><td>Date Issued</td><td>${today}</td></tr>
-            <tr><td>ATOL Holder</td><td>MHD Travel Ltd, ATOL No. 11423</td></tr>
-          </tbody></table>
-          <p style="font-size:11px;color:#94a3b8;margin-top:16px;line-height:1.7">MHD Travel Ltd is a company registered in England and Wales. This certificate is issued under the Air Travel Organiser's Licensing Scheme (ATOL) managed by the Civil Aviation Authority.</p>
         </div>
-        <div class="footer">${today}</div>
+      </body></html>`
+    }
+
+    if (docId === 'cancellation_invoice') {
+      const cancDate = booking.cancellation_date ? fmtDate(booking.cancellation_date) : today
+      const isDepositOnly = booking.cancellation_type === 'deposit_only'
+      const cancAmount = isDepositOnly ? totalPaid : null
+      const cancTypeLabel =
+        booking.cancellation_type === 'deposit_only'  ? 'Deposit Retained — No Further Charges' :
+        booking.cancellation_type === 'post_payment'  ? 'Booking Cancelled Post Full Payment' :
+        booking.cancellation_type === 'tickets_issued'? 'Cancelled — Tickets Previously Issued' : 'Cancelled'
+      const settlementSummary =
+        booking.cancellation_type === 'deposit_only'
+          ? 'Client deposit retained as the cancellation charge.'
+          : booking.cancellation_type === 'tickets_issued'
+            ? 'Refund, if any, will be confirmed separately by Ticketing & Admin in line with airline fare rules.'
+            : 'Refund, if any, will be confirmed separately by Customer Service / Case Management in line with terms and conditions.'
+      const checklist = booking.cancellation_checklist || {}
+      const checklistItems = [
+        checklist['flights']       !== undefined ? `<li>Flights: ${checklist['flights'] ? '✓ Cancelled with supplier' : '⚠ Pending supplier cancellation'}</li>` : '',
+        checklist['accommodation'] !== undefined ? `<li>Accommodation: ${checklist['accommodation'] ? '✓ Cancelled with supplier' : '⚠ Pending supplier cancellation'}</li>` : '',
+        checklist['transfers']     !== undefined ? `<li>Transfers: ${checklist['transfers'] ? '✓ Cancelled with supplier' : '⚠ Pending supplier cancellation'}</li>` : '',
+        checklist['extras']        !== undefined ? `<li>Extras: ${checklist['extras'] ? '✓ Cancelled with supplier' : '⚠ Pending supplier cancellation'}</li>` : '',
+      ].filter(Boolean).join('')
+
+      return `<!DOCTYPE html><html><head><title>Cancellation Invoice — ${ref}</title>${docStyles}</head><body>
+        ${brandHeader('Cancellation Invoice', `Booking reference: ${ref} · Cancelled ${cancDate}`)}
+        <div class="highlight" style="border-left-color:#dc2626;background:#fef2f2;">
+          <div style="color:#dc2626;font-weight:700;font-size:15px;margin-bottom:4px;">CANCELLATION NOTICE</div>
+          <div style="font-size:12.5px;color:#7f1d1d;">${cancTypeLabel}</div>
+        </div>
+        <h2>Client Details</h2>
+        <table><tbody>
+          <tr><td>Client</td><td>${clientName}</td></tr>
+          <tr><td>Booking Reference</td><td style="font-family:monospace;font-weight:700;">${ref}</td></tr>
+          <tr><td>Cancellation Date</td><td>${cancDate}</td></tr>
+          ${booking.cancellation_actioned_by ? `<tr><td>Actioned By</td><td>${booking.cancellation_actioned_by}</td></tr>` : ''}
+          ${booking.cancellation_notes ? `<tr><td>Notes</td><td>${booking.cancellation_notes}</td></tr>` : ''}
+        </tbody></table>
+        <h2>Original Booking Summary</h2>
+        <table><tbody>
+          <tr><td>Product</td><td>${productDescription}</td></tr>
+          <tr><td>Departure</td><td>${fmtDate(booking.departure_date)}${booking.return_date ? ` → ${fmtDate(booking.return_date)}` : ''}</td></tr>
+          <tr><td>Passengers</td><td>${paxList || '—'}</td></tr>
+          <tr><td>Total Holiday Value</td><td><strong>£${sell.toLocaleString('en-GB', { minimumFractionDigits: 2 })}</strong></td></tr>
+          <tr><td>Total Paid</td><td>£${totalPaid.toLocaleString('en-GB', { minimumFractionDigits: 2 })}</td></tr>
+        </tbody></table>
+        ${checklistItems ? `<h2>Supplier Cancellation Status</h2><ul style="padding-left:18px;line-height:2;">${checklistItems}</ul>` : ''}
+        <h2>Cancellation Charge</h2>
+        <table><tbody>
+          <tr><td>Settlement</td><td>${settlementSummary}</td></tr>
+          ${cancAmount !== null ? `<tr><td>Amount Forfeited</td><td style="font-size:15px;font-weight:700;color:#dc2626;">£${cancAmount.toLocaleString('en-GB', { minimumFractionDigits: 2 })}</td></tr>` : ''}
+        </tbody></table>
+        <div class="footer">Mauritius Holidays Direct · MHD Travel Ltd · This document serves as your official cancellation invoice. Please retain for your records.</div>
       </body></html>`
     }
 
@@ -2404,7 +3215,7 @@ function DocumentsTab({ booking, client, passengers, outbound, returnFlts, accom
     setPreview(generateDoc(docId))
   }
 
-  function printDoc() {
+  async function printDoc() {
     if (!activeDoc) return
     const html = generateDoc(activeDoc)
     const win = window.open('', '_blank', 'width=900,height=750')
@@ -2412,6 +3223,7 @@ function DocumentsTab({ booking, client, passengers, outbound, returnFlts, accom
     win.document.write(html)
     win.document.close()
     win.focus()
+    await markDocumentIssued(activeDoc)
     setTimeout(() => win.print(), 500)
   }
 
@@ -2444,7 +3256,7 @@ function DocumentsTab({ booking, client, passengers, outbound, returnFlts, accom
           <div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginBottom: '10px' }}>
               <button className="btn btn-secondary" onClick={() => { setActiveDoc(null); setPreview(null) }}>✕ Close</button>
-              <button className="btn btn-cta" onClick={printDoc}>🖨 Print / Save as PDF</button>
+              <button className="btn btn-cta" onClick={printDoc}>🖨 Print / Save & Mark Issued</button>
             </div>
             <div style={{ border: '1px solid var(--border)', borderRadius: '10px', overflow: 'hidden', background: 'white', boxShadow: 'var(--shadow-md)' }}>
               <iframe srcDoc={preview} style={{ width: '100%', height: '700px', border: 'none' }} title="Document Preview" />
@@ -2464,7 +3276,14 @@ function DocumentsTab({ booking, client, passengers, outbound, returnFlts, accom
 
 // ── TASKS TAB ────────────────────────────────────────────────
 function TasksTab({ tasks, onUpdate, showToast }: any) {
-  const categories = Array.from(new Set(TASK_TEMPLATE.map(t => t.category)))
+  const categories = Array.from(new Set((tasks as BookingTask[]).map(t => t.category))).sort((a, b) => {
+    const aIndex = TASK_CATEGORY_ORDER.indexOf(a)
+    const bIndex = TASK_CATEGORY_ORDER.indexOf(b)
+    if (aIndex === -1 && bIndex === -1) return a.localeCompare(b)
+    if (aIndex === -1) return 1
+    if (bIndex === -1) return -1
+    return aIndex - bIndex
+  })
   const tasksDone  = tasks.filter((t: BookingTask) => t.is_done).length
   const taskPct    = tasks.length ? Math.round((tasksDone / tasks.length) * 100) : 0
 
@@ -2488,7 +3307,9 @@ function TasksTab({ tasks, onUpdate, showToast }: any) {
 
       <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(300px, 1fr))', gap:'12px' }}>
         {categories.map(cat => {
-          const catTasks = TASK_TEMPLATE.filter(t => t.category === cat).map(t => tasks.find((tk: BookingTask) => tk.task_key === t.key)).filter(Boolean)
+          const catTasks = tasks
+            .filter((task: BookingTask) => task.category === cat)
+            .sort((a: BookingTask, b: BookingTask) => (a.sort_order || 0) - (b.sort_order || 0))
           const doneCnt = catTasks.filter((t: BookingTask) => t.is_done).length
           const color   = CAT_COLORS[cat] || 'var(--accent)'
           return (
@@ -2506,7 +3327,25 @@ function TasksTab({ tasks, onUpdate, showToast }: any) {
                     onMouseEnter={e=>(e.currentTarget.style.background='var(--bg-secondary)')}
                     onMouseLeave={e=>(e.currentTarget.style.background='transparent')}>
                     <input type="checkbox" checked={task.is_done} onChange={() => toggle(task)} style={{ width:'15px', height:'15px', accentColor:color, cursor:'pointer', flexShrink:0 }}/>
-                    <span style={{ fontSize:'13px', color: task.is_done ? 'var(--text-muted)' : 'var(--text-primary)', textDecoration: task.is_done ? 'line-through' : 'none', flex:1 }}>{task.task_name}</span>
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <div style={{ fontSize:'13px', color: task.is_done ? 'var(--text-muted)' : 'var(--text-primary)', textDecoration: task.is_done ? 'line-through' : 'none' }}>
+                        {task.task_name}
+                      </div>
+                      {(task.due_date || task.notes) && (
+                        <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', marginTop:'3px', alignItems:'center' }}>
+                          {task.due_date && (
+                            <span style={{ fontSize:'10.5px', color:'var(--text-muted)', background:'var(--bg-secondary)', padding:'1px 7px', borderRadius:'999px' }}>
+                              Due {fmtDate(task.due_date)}
+                            </span>
+                          )}
+                          {task.notes && (
+                            <span style={{ fontSize:'11px', color:'var(--text-muted)', lineHeight:1.4 }}>
+                              {task.notes}
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </div>
                     {task.is_done && task.completed_at && <span style={{ fontSize:'10.5px', color:'var(--text-muted)', whiteSpace:'nowrap' }}>{fmtDate(task.completed_at)}</span>}
                   </label>
                 ))}
@@ -2514,6 +3353,137 @@ function TasksTab({ tasks, onUpdate, showToast }: any) {
             </div>
           )
         })}
+      </div>
+    </div>
+  )
+}
+
+// ── CANCELLATION MODAL ───────────────────────────────────────
+function CancellationModal({ booking, hasFlights, hasAccommodation, hasTransfers, hasExtras, totalPaid, defaultActionedBy, onClose, onConfirm }: {
+  booking: Booking
+  hasFlights: boolean
+  hasAccommodation: boolean
+  hasTransfers: boolean
+  hasExtras: boolean
+  totalPaid: number
+  defaultActionedBy: string
+  onClose: () => void
+  onConfirm: (type: string, checklist: Record<string, boolean>, notes: string, actionedBy: string) => Promise<void>
+}) {
+  const [cancType, setCancType]       = useState<string>('')
+  const [checklist, setChecklist]     = useState<Record<string, boolean>>({
+    flights:       false,
+    accommodation: false,
+    transfers:     false,
+    extras:        false,
+  })
+  const [notes, setNotes]             = useState('')
+  const [actionedBy, setActionedBy]   = useState(defaultActionedBy || '')
+  const [submitting, setSubmitting]   = useState(false)
+
+  const TYPES = [
+    { value: 'deposit_only',  label: 'Deposit only paid — client loses deposit, no further charges' },
+    { value: 'post_payment',  label: 'Full payment received — CS / Case Management to handle refund' },
+    { value: 'tickets_issued', label: 'Tickets already issued — Ticketing & Admin to handle' },
+  ]
+
+  const checkItems = [
+    { key: 'flights',       label: 'Flights cancelled with supplier',       show: hasFlights },
+    { key: 'accommodation', label: 'Accommodation cancelled with supplier', show: hasAccommodation },
+    { key: 'transfers',     label: 'Transfers cancelled with supplier',     show: hasTransfers },
+    { key: 'extras',        label: 'Extras / activities cancelled',         show: hasExtras },
+  ].filter(i => i.show)
+
+  async function handleSubmit() {
+    if (!cancType || !actionedBy) return
+    setSubmitting(true)
+    await onConfirm(cancType, checklist, notes, actionedBy)
+    setSubmitting(false)
+  }
+
+  return (
+    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.5)', zIndex:1000, display:'flex', alignItems:'center', justifyContent:'center', padding:'20px' }}>
+      <div style={{ background:'var(--bg-primary)', borderRadius:'14px', width:'100%', maxWidth:'520px', boxShadow:'0 20px 60px rgba(0,0,0,0.3)' }}>
+        {/* Header */}
+        <div style={{ padding:'20px 24px 16px', borderBottom:'1px solid var(--border)', display:'flex', alignItems:'center', gap:'10px' }}>
+          <span style={{ fontSize:'20px' }}>🚫</span>
+          <div style={{ flex:1 }}>
+            <div style={{ fontWeight:'600', fontSize:'15px', color:'#dc2626' }}>Cancel Booking</div>
+            <div style={{ fontSize:'12.5px', color:'var(--text-muted)', marginTop:'1px' }}>{booking.booking_reference} · {booking.deals?.clients ? `${booking.deals.clients.first_name} ${booking.deals.clients.last_name}` : ''}</div>
+          </div>
+          <button onClick={onClose} style={{ background:'none', border:'none', fontSize:'18px', cursor:'pointer', color:'var(--text-muted)', lineHeight:1 }}>×</button>
+        </div>
+
+        <div style={{ padding:'20px 24px', display:'flex', flexDirection:'column', gap:'16px' }}>
+          {/* Warning */}
+          <div style={{ background:'#fef3c7', border:'1px solid #fbbf24', borderRadius:'8px', padding:'10px 14px', fontSize:'12.5px', color:'#92400e' }}>
+            This action cannot be undone. The booking will be marked as cancelled immediately.
+          </div>
+
+          {/* Cancellation type */}
+          <div>
+            <label style={{ fontSize:'12px', fontWeight:'600', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.05em', display:'block', marginBottom:'6px' }}>Cancellation Type *</label>
+            <select value={cancType} onChange={e => setCancType(e.target.value)}
+              style={{ width:'100%', padding:'9px 12px', border:'1px solid var(--border)', borderRadius:'8px', fontSize:'13.5px', background:'var(--bg-primary)', color:'var(--text-primary)' }}>
+              <option value=''>— Select type —</option>
+              {TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+            </select>
+          </div>
+
+          {/* Payment summary for context */}
+          {cancType === 'deposit_only' && totalPaid > 0 && (
+            <div style={{ background:'#f0fdf4', border:'1px solid #86efac', borderRadius:'8px', padding:'10px 14px', fontSize:'12.5px', color:'#15803d' }}>
+              Deposit retained: <strong>£{totalPaid.toLocaleString('en-GB', { minimumFractionDigits: 2 })}</strong> — this becomes the commissionable amount
+            </div>
+          )}
+
+          {/* Supplier cancellation checklist */}
+          {checkItems.length > 0 && (
+            <div>
+              <label style={{ fontSize:'12px', fontWeight:'600', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.05em', display:'block', marginBottom:'8px' }}>Supplier Cancellation Checklist</label>
+              <div style={{ fontSize:'12px', color:'var(--text-muted)', marginBottom:'8px' }}>
+                Any item you leave unticked will be pushed into Today as an operations follow-up so it does not get buried.
+              </div>
+              <div style={{ display:'flex', flexDirection:'column', gap:'6px' }}>
+                {checkItems.map(item => (
+                  <label key={item.key} style={{ display:'flex', alignItems:'center', gap:'10px', cursor:'pointer', padding:'8px 12px', borderRadius:'6px', background:'var(--bg-secondary)', fontSize:'13px' }}>
+                    <input type='checkbox' checked={checklist[item.key] || false}
+                      onChange={e => setChecklist(prev => ({ ...prev, [item.key]: e.target.checked }))}
+                      style={{ width:'15px', height:'15px', accentColor:'#dc2626', cursor:'pointer', flexShrink:0 }} />
+                    <span style={{ color: checklist[item.key] ? 'var(--text-muted)' : 'var(--text-primary)', textDecoration: checklist[item.key] ? 'line-through' : 'none' }}>
+                      {item.label}
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Notes */}
+          <div>
+            <label style={{ fontSize:'12px', fontWeight:'600', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.05em', display:'block', marginBottom:'6px' }}>Notes</label>
+            <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={2}
+              placeholder='Reason for cancellation, client reference, etc.'
+              style={{ width:'100%', padding:'9px 12px', border:'1px solid var(--border)', borderRadius:'8px', fontSize:'13px', resize:'vertical', background:'var(--bg-primary)', color:'var(--text-primary)' }} />
+          </div>
+
+          {/* Actioned by */}
+          <div>
+            <label style={{ fontSize:'12px', fontWeight:'600', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.05em', display:'block', marginBottom:'6px' }}>Actioned By (Manager) *</label>
+            <input type='text' value={actionedBy} onChange={e => setActionedBy(e.target.value)}
+              placeholder='Manager name'
+              style={{ width:'100%', padding:'9px 12px', border:'1px solid var(--border)', borderRadius:'8px', fontSize:'13px', background:'var(--bg-primary)', color:'var(--text-primary)' }} />
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div style={{ padding:'14px 24px 20px', borderTop:'1px solid var(--border)', display:'flex', gap:'10px', justifyContent:'flex-end' }}>
+          <button className='btn btn-secondary' onClick={onClose} disabled={submitting}>Cancel</button>
+          <button onClick={handleSubmit} disabled={!cancType || !actionedBy || submitting}
+            style={{ padding:'9px 20px', borderRadius:'8px', border:'none', background: (!cancType || !actionedBy) ? '#fca5a5' : '#dc2626', color:'white', fontWeight:'600', fontSize:'13.5px', cursor: (!cancType || !actionedBy) ? 'not-allowed' : 'pointer' }}>
+            {submitting ? 'Cancelling…' : 'Confirm Cancellation'}
+          </button>
+        </div>
       </div>
     </div>
   )

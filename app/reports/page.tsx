@@ -20,11 +20,184 @@ type MonthData = {
 }
 
 type LostReason = { reason: string; count: number }
+type StaffUser = { id: number; name: string; role: string | null; is_active: boolean | null }
+type CommissionRow = {
+  bookingId: number
+  bookingReference: string
+  surname: string
+  clearedDate: string
+  paymentReceived: number
+  commissionableAmount: number
+}
+type QuoteRow = {
+  staffId: number
+  name: string
+  role: string | null
+  quotesBuilt: number
+  quotesSent: number
+  quotedDeals: number
+  sentDeals: number
+  bookedDeals: number
+  quotedValue: number
+  quotedProfit: number
+  avgQuoteValue: number
+  avgVersionsPerDeal: number
+  avgTurnaroundHours: number
+  conversionPct: number
+}
+type QuoteRecentRow = {
+  quoteId: number
+  quoteRef: string
+  version: number | null
+  staffId: number | null
+  staffName: string
+  clientSurname: string
+  title: string
+  hotel: string
+  createdAt: string
+  sentToClient: boolean
+  booked: boolean
+  quotedValue: number
+  quotedProfit: number
+}
+type QuoteUnassigned = {
+  quotesBuilt: number
+  quotesSent: number
+  quotedDeals: number
+}
+type SalesRow = {
+  staffId: number
+  name: string
+  role: string | null
+  leads: number
+  quotesSent: number
+  bookings: number
+  bookedValue: number
+  bookedProfit: number
+  avgBookingValue: number
+  leadToBookingPct: number
+  quoteToBookingPct: number
+}
+type SalesBookingRow = {
+  bookingId: number
+  bookingReference: string
+  staffId: number | null
+  staffName: string
+  clientSurname: string
+  title: string
+  bookedAt: string
+  bookedValue: number
+  bookedProfit: number
+}
+type SalesUnassigned = {
+  leads: number
+  quotesSent: number
+  bookings: number
+  bookedValue: number
+}
+type AssignmentHealth = {
+  clientsWithoutOwner: number
+  dealsWithoutOwner: number
+  bookingsWithoutOwner: number
+}
+
+type ReportView = 'commission' | 'overview' | 'sales' | 'quotes' | 'suppliers'
+
+function startOfMonth(value: string) {
+  return `${value}-01`
+}
+
+function endOfMonth(value: string) {
+  const [year, month] = value.split('-').map(Number)
+  return new Date(year, month, 0).toISOString().split('T')[0]
+}
+
+function previousMonthValue() {
+  const d = new Date()
+  d.setMonth(d.getMonth() - 1)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+}
+
+function previousMonthRange() {
+  const monthValue = previousMonthValue()
+  return {
+    from: startOfMonth(monthValue),
+    to: endOfMonth(monthValue),
+  }
+}
+
+function currentMonthRange() {
+  const now = new Date()
+  const monthValue = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+  return {
+    from: startOfMonth(monthValue),
+    to: now.toISOString().split('T')[0],
+  }
+}
+
+function dateTimeRange(from: string, to: string) {
+  return {
+    fromIso: `${from}T00:00:00.000Z`,
+    toIso: `${to}T23:59:59.999Z`,
+  }
+}
+
+function bestQuoteProfit(quotes: { profit: number | null; sent_to_client?: boolean | null; created_at?: string | null }[] | null | undefined) {
+  if (!quotes || quotes.length === 0) return 0
+  const sentQuotes = quotes
+    .filter(quote => !!quote.sent_to_client)
+    .sort((a, b) => new Date(b.created_at || '').getTime() - new Date(a.created_at || '').getTime())
+  const latest = sentQuotes[0] || [...quotes].sort((a, b) => new Date(b.created_at || '').getTime() - new Date(a.created_at || '').getTime())[0]
+  return Number(latest?.profit || 0)
+}
+
+function calcCommission(total: number) {
+  const firstBand = Math.min(total, 10000)
+  const secondBand = Math.max(total - 10000, 0)
+  return firstBand * 0.1 + secondBand * 0.15
+}
+
+function fmtDuration(hours: number) {
+  if (!hours || hours <= 0) return '—'
+  if (hours < 24) return `${hours.toFixed(1)}h`
+  return `${(hours / 24).toFixed(1)}d`
+}
 
 export default function ReportsPage() {
+  const previousRange = previousMonthRange()
+  const salesRange = currentMonthRange()
   const [monthlyData, setMonthlyData]   = useState<MonthData[]>([])
   const [lostReasons, setLostReasons]   = useState<LostReason[]>([])
   const [stageBreakdown, setStage]      = useState<{stage:string;count:number;value:number}[]>([])
+  const [staffUsers, setStaffUsers]     = useState<StaffUser[]>([])
+  const [selectedStaffId, setSelectedStaffId] = useState<number | null>(null)
+  const [commissionFrom, setCommissionFrom] = useState(previousRange.from)
+  const [commissionTo, setCommissionTo] = useState(previousRange.to)
+  const [commissionRows, setCommissionRows] = useState<CommissionRow[]>([])
+  const [commissionLoading, setCommissionLoading] = useState(false)
+  const [manualBonus, setManualBonus] = useState(0)
+  const [salesFrom, setSalesFrom] = useState(salesRange.from)
+  const [salesTo, setSalesTo] = useState(salesRange.to)
+  const [salesStaffFilter, setSalesStaffFilter] = useState<string>('ALL')
+  const [salesRows, setSalesRows] = useState<SalesRow[]>([])
+  const [salesBookings, setSalesBookings] = useState<SalesBookingRow[]>([])
+  const [salesUnassigned, setSalesUnassigned] = useState<SalesUnassigned>({ leads: 0, quotesSent: 0, bookings: 0, bookedValue: 0 })
+  const [salesLoading, setSalesLoading] = useState(false)
+  const [quoteFrom, setQuoteFrom] = useState(salesRange.from)
+  const [quoteTo, setQuoteTo] = useState(salesRange.to)
+  const [quoteStaffFilter, setQuoteStaffFilter] = useState<string>('ALL')
+  const [quoteRows, setQuoteRows] = useState<QuoteRow[]>([])
+  const [quoteRecentRows, setQuoteRecentRows] = useState<QuoteRecentRow[]>([])
+  const [quoteUnassigned, setQuoteUnassigned] = useState<QuoteUnassigned>({ quotesBuilt: 0, quotesSent: 0, quotedDeals: 0 })
+  const [quoteLoading, setQuoteLoading] = useState(false)
+  const [reportView, setReportView] = useState<ReportView>('commission')
+  const [staffForm, setStaffForm] = useState({ name: '', role: 'sales' })
+  const [staffSaving, setStaffSaving] = useState(false)
+  const [assignmentHealth, setAssignmentHealth] = useState<AssignmentHealth>({
+    clientsWithoutOwner: 0,
+    dealsWithoutOwner: 0,
+    bookingsWithoutOwner: 0,
+  })
   const [loading, setLoading]           = useState(true)
   const [editingTargets, setEditTargets] = useState(false)
   const [targets, setTargets]           = useState<any>(null)
@@ -32,11 +205,7 @@ export default function ReportsPage() {
   const [toast, setToast]               = useState<string|null>(null)
   const [selectedYear, setYear]         = useState(new Date().getFullYear())
 
-  useEffect(() => { load() }, [selectedYear])
-
-  async function load() {
-    setLoading(true)
-
+  async function fetchReportData() {
     // Monthly data for selected year
     const yearStart = new Date(selectedYear, 0, 1).toISOString()
     const yearEnd   = new Date(selectedYear, 11, 31, 23, 59, 59).toISOString()
@@ -76,13 +245,11 @@ export default function ReportsPage() {
     ;(quotes||[]).forEach((q: any) => { monthly[new Date(q.created_at).getMonth()+1].quotes++ })
     ;(leads||[]).forEach((l: any)  => { monthly[new Date(l.created_at).getMonth()+1].leads++   })
 
-    setMonthlyData(Object.values(monthly))
-
     // Lost reasons
     const { data: lostDeals } = await supabase.from('deals').select('lost_reason').eq('stage', 'LOST').not('lost_reason', 'is', null)
     const reasonMap: Record<string,number> = {}
     ;(lostDeals||[]).forEach((d:any) => { const r=d.lost_reason?.trim(); if(r) reasonMap[r]=(reasonMap[r]||0)+1 })
-    setLostReasons(Object.entries(reasonMap).sort((a,b)=>b[1]-a[1]).map(([reason,count])=>({reason,count})))
+    const lostReasonsData = Object.entries(reasonMap).sort((a,b)=>b[1]-a[1]).map(([reason,count])=>({reason,count}))
 
     // Stage breakdown
     const { data: allDeals } = await supabase.from('deals').select('stage, deal_value')
@@ -94,14 +261,440 @@ export default function ReportsPage() {
     })
     const stageOrder = ['NEW_LEAD','QUOTE_SENT','ENGAGED','FOLLOW_UP','DECISION_PENDING','BOOKED','LOST']
     const stageLabels: Record<string,string> = { NEW_LEAD:'New Lead', QUOTE_SENT:'Quote Sent', ENGAGED:'Engaged', FOLLOW_UP:'Follow Up', DECISION_PENDING:'Decision Pending', BOOKED:'Booked', LOST:'Lost' }
-    setStage(stageOrder.filter(s=>stageMap[s]).map(s=>({ stage:stageLabels[s]||s, count:stageMap[s].count, value:stageMap[s].value })))
+    const stageData = stageOrder.filter(s=>stageMap[s]).map(s=>({ stage:stageLabels[s]||s, count:stageMap[s].count, value:stageMap[s].value }))
 
     // Targets
     const now = new Date()
     const { data: tData } = await supabase.from('targets').select('*').eq('month', now.getMonth()+1).eq('year', now.getFullYear()).single()
-    setTargets(tData)
 
-    setLoading(false)
+    const { data: staffData } = await supabase.from('staff_users')
+      .select('id,name,role,is_active')
+      .eq('is_active', true)
+      .order('name')
+    const activeStaff = (staffData || []) as StaffUser[]
+
+    const [{ data: clientOwners }, { data: dealOwners }, { data: bookingOwners }] = await Promise.all([
+      supabase.from('clients').select('id, owner_staff_id'),
+      supabase.from('deals').select('id, staff_id, stage'),
+      supabase.from('bookings').select('id, staff_id, booking_status'),
+    ])
+
+    return {
+      monthlyData: Object.values(monthly),
+      lostReasons: lostReasonsData,
+      stageBreakdown: stageData,
+      targets: tData,
+      staffUsers: activeStaff,
+      assignmentHealth: {
+        clientsWithoutOwner: (clientOwners || []).filter((client: any) => !client.owner_staff_id).length,
+        dealsWithoutOwner: (dealOwners || []).filter((deal: any) => !deal.staff_id && deal.stage !== 'LOST').length,
+        bookingsWithoutOwner: (bookingOwners || []).filter((booking: any) => !booking.staff_id && booking.booking_status !== 'cancelled').length,
+      },
+    }
+  }
+
+  async function fetchCommissionRows() {
+    if (!selectedStaffId) {
+      return []
+    }
+    const from = commissionFrom
+    const to = commissionTo
+
+    const { data: bookings } = await supabase.from('bookings')
+      .select('id, booking_reference, total_sell, final_profit, staff_id, deals(clients(last_name))')
+      .eq('staff_id', selectedStaffId)
+      .not('total_sell', 'is', null)
+      .not('final_profit', 'is', null)
+
+    const bookingIds = (bookings || []).map((b: any) => b.id)
+    if (bookingIds.length === 0) {
+      return []
+    }
+
+    const { data: payments } = await supabase.from('booking_payments')
+      .select('id, booking_id, amount, payment_date')
+      .in('booking_id', bookingIds)
+      .order('payment_date', { ascending: true })
+      .order('id', { ascending: true })
+
+    const paymentsByBooking = new Map<number, any[]>()
+    ;(payments || []).forEach((payment: any) => {
+      const rows = paymentsByBooking.get(payment.booking_id) || []
+      rows.push(payment)
+      paymentsByBooking.set(payment.booking_id, rows)
+    })
+
+    const rows: CommissionRow[] = []
+    ;(bookings || []).forEach((booking: any) => {
+      const sell = Number(booking.total_sell || 0)
+      const commissionable = Number(booking.final_profit || 0)
+      if (sell <= 0 || commissionable <= 0) return
+
+      let running = 0
+      let clearedDate: string | null = null
+      let paymentReceived = 0
+
+      for (const payment of paymentsByBooking.get(booking.id) || []) {
+        const amount = Number(payment.amount || 0)
+        const before = running
+        running += amount
+
+        if (before < sell && running >= sell) {
+          clearedDate = payment.payment_date
+          paymentReceived = Math.max(Math.min(sell - before, amount), 0)
+          break
+        }
+      }
+
+      if (!clearedDate || clearedDate < from || clearedDate > to) return
+
+      rows.push({
+        bookingId: booking.id,
+        bookingReference: booking.booking_reference,
+        surname: booking.deals?.clients?.last_name || '—',
+        clearedDate,
+        paymentReceived,
+        commissionableAmount: commissionable,
+      })
+    })
+
+    rows.sort((a, b) => a.clearedDate.localeCompare(b.clearedDate) || a.bookingReference.localeCompare(b.bookingReference))
+    return rows
+  }
+
+  async function fetchSalesData() {
+    const { fromIso, toIso } = dateTimeRange(salesFrom, salesTo)
+
+    const [
+      { data: leadDeals },
+      { data: dealLookupRows },
+      { data: quoteRows },
+      { data: bookingRows },
+    ] = await Promise.all([
+      supabase
+        .from('deals')
+        .select('id, staff_id, deal_value, created_at, stage')
+        .gte('created_at', fromIso)
+        .lte('created_at', toIso),
+      supabase
+        .from('deals')
+        .select('id, staff_id'),
+      supabase
+        .from('quotes')
+        .select('id, deal_id, created_at')
+        .eq('sent_to_client', true)
+        .gte('created_at', fromIso)
+        .lte('created_at', toIso),
+      supabase
+        .from('bookings')
+        .select('id, booking_reference, created_at, staff_id, total_sell, final_profit, booking_status, deals(title, deal_value, clients(last_name), quotes(profit, sent_to_client, created_at))')
+        .gte('created_at', fromIso)
+        .lte('created_at', toIso),
+    ])
+
+    const rowsMap = new Map<number, SalesRow>()
+    staffUsers.forEach(staff => {
+      rowsMap.set(staff.id, {
+        staffId: staff.id,
+        name: staff.name,
+        role: staff.role,
+        leads: 0,
+        quotesSent: 0,
+        bookings: 0,
+        bookedValue: 0,
+        bookedProfit: 0,
+        avgBookingValue: 0,
+        leadToBookingPct: 0,
+        quoteToBookingPct: 0,
+      })
+    })
+
+    const unassigned: SalesUnassigned = { leads: 0, quotesSent: 0, bookings: 0, bookedValue: 0 }
+    const dealLookup = new Map<number, number | null>()
+    ;((dealLookupRows || []) as { id: number; staff_id: number | null }[]).forEach(deal => {
+      dealLookup.set(deal.id, deal.staff_id ?? null)
+    })
+
+    ;((leadDeals || []) as { id: number; staff_id: number | null; deal_value: number | null; created_at: string; stage: string }[]).forEach(deal => {
+      if (!deal.staff_id) {
+        unassigned.leads += 1
+        return
+      }
+      const row = rowsMap.get(deal.staff_id)
+      if (!row) return
+      row.leads += 1
+    })
+
+    ;((quoteRows || []) as { id: number; deal_id: number; created_at: string }[]).forEach(quote => {
+      const staffId = dealLookup.get(quote.deal_id) ?? null
+      if (!staffId) {
+        unassigned.quotesSent += 1
+        return
+      }
+      const row = rowsMap.get(staffId)
+      if (!row) return
+      row.quotesSent += 1
+    })
+
+    const bookingDetailRows: SalesBookingRow[] = []
+    ;((bookingRows || []) as {
+      id: number
+      booking_reference: string
+      created_at: string
+      staff_id: number | null
+      total_sell: number | null
+      final_profit: number | null
+      booking_status: string | null
+      deals?: {
+        title?: string | null
+        deal_value?: number | null
+        clients?: { last_name?: string | null } | null
+        quotes?: { profit: number | null; sent_to_client?: boolean | null; created_at?: string | null }[] | null
+      } | null
+    }[]).forEach(booking => {
+      if (booking.booking_status === 'cancelled') return
+      const bookedValue = Number(booking.total_sell || booking.deals?.deal_value || 0)
+      const bookedProfit = booking.final_profit != null
+        ? Number(booking.final_profit || 0)
+        : bestQuoteProfit(booking.deals?.quotes)
+      const staffId = booking.staff_id ?? null
+
+      if (!staffId) {
+        unassigned.bookings += 1
+        unassigned.bookedValue += bookedValue
+        return
+      }
+
+      const row = rowsMap.get(staffId)
+      if (!row) return
+
+      row.bookings += 1
+      row.bookedValue += bookedValue
+      row.bookedProfit += bookedProfit
+      bookingDetailRows.push({
+        bookingId: booking.id,
+        bookingReference: booking.booking_reference,
+        staffId,
+        staffName: row.name,
+        clientSurname: booking.deals?.clients?.last_name || '—',
+        title: booking.deals?.title || '—',
+        bookedAt: booking.created_at,
+        bookedValue,
+        bookedProfit,
+      })
+    })
+
+    const rows = [...rowsMap.values()]
+      .map(row => ({
+        ...row,
+        avgBookingValue: row.bookings > 0 ? row.bookedValue / row.bookings : 0,
+        leadToBookingPct: row.leads > 0 ? (row.bookings / row.leads) * 100 : 0,
+        quoteToBookingPct: row.quotesSent > 0 ? (row.bookings / row.quotesSent) * 100 : 0,
+      }))
+      .filter(row => row.leads > 0 || row.quotesSent > 0 || row.bookings > 0)
+      .sort((a, b) => b.bookedProfit - a.bookedProfit || b.bookings - a.bookings || a.name.localeCompare(b.name))
+
+    bookingDetailRows.sort((a, b) => new Date(b.bookedAt).getTime() - new Date(a.bookedAt).getTime())
+
+    return { rows, bookings: bookingDetailRows, unassigned }
+  }
+
+  async function fetchQuoteData() {
+    const { fromIso, toIso } = dateTimeRange(quoteFrom, quoteTo)
+    const { data: quotesData } = await supabase
+      .from('quotes')
+      .select('id, deal_id, quote_ref, version, hotel, price, profit, sent_to_client, created_at, deals(id, staff_id, title, stage, created_at, clients(last_name), bookings(id, booking_reference, created_at))')
+      .gte('created_at', fromIso)
+      .lte('created_at', toIso)
+
+    const quoteRowsRaw = ((quotesData || []) as {
+      id: number
+      deal_id: number
+      quote_ref: string
+      version: number | null
+      hotel: string | null
+      price: number | null
+      profit: number | null
+      sent_to_client: boolean | null
+      created_at: string
+      deals?: {
+        id: number
+        staff_id: number | null
+        title: string | null
+        stage: string | null
+        created_at: string | null
+        clients?: { last_name?: string | null } | null
+        bookings?: { id: number; booking_reference: string; created_at: string }[] | null
+      } | null
+    }[])
+
+    const dealIds = [...new Set(quoteRowsRaw.map(quote => quote.deal_id))]
+    const { data: allDealQuotes } = dealIds.length === 0
+      ? { data: [] as { deal_id: number; created_at: string }[] }
+      : await supabase
+          .from('quotes')
+          .select('deal_id, created_at')
+          .in('deal_id', dealIds)
+
+    const firstQuoteByDeal = new Map<number, string>()
+    ;((allDealQuotes || []) as { deal_id: number; created_at: string }[]).forEach(quote => {
+      const current = firstQuoteByDeal.get(quote.deal_id)
+      if (!current || new Date(quote.created_at).getTime() < new Date(current).getTime()) {
+        firstQuoteByDeal.set(quote.deal_id, quote.created_at)
+      }
+    })
+
+    const rowsMap = new Map<number, QuoteRow>()
+    staffUsers.forEach(staff => {
+      rowsMap.set(staff.id, {
+        staffId: staff.id,
+        name: staff.name,
+        role: staff.role,
+        quotesBuilt: 0,
+        quotesSent: 0,
+        quotedDeals: 0,
+        sentDeals: 0,
+        bookedDeals: 0,
+        quotedValue: 0,
+        quotedProfit: 0,
+        avgQuoteValue: 0,
+        avgVersionsPerDeal: 0,
+        avgTurnaroundHours: 0,
+        conversionPct: 0,
+      })
+    })
+
+    const dealSetByStaff = new Map<number, Set<number>>()
+    const sentDealSetByStaff = new Map<number, Set<number>>()
+    const bookedDealSetByStaff = new Map<number, Set<number>>()
+    const turnaroundHoursByStaff = new Map<number, number[]>()
+    const unassignedDealSet = new Set<number>()
+    const unassigned: QuoteUnassigned = { quotesBuilt: 0, quotesSent: 0, quotedDeals: 0 }
+    const recentRows: QuoteRecentRow[] = []
+
+    quoteRowsRaw.forEach(quote => {
+      const staffId = quote.deals?.staff_id ?? null
+      const booked = quote.deals?.stage === 'BOOKED' || (quote.deals?.bookings?.length || 0) > 0
+      const firstQuoteAt = firstQuoteByDeal.get(quote.deal_id) || null
+
+      recentRows.push({
+        quoteId: quote.id,
+        quoteRef: quote.quote_ref,
+        version: quote.version ?? null,
+        staffId,
+        staffName: staffUsers.find(staff => staff.id === staffId)?.name || 'Unassigned',
+        clientSurname: quote.deals?.clients?.last_name || '—',
+        title: quote.deals?.title || '—',
+        hotel: quote.hotel || '—',
+        createdAt: quote.created_at,
+        sentToClient: !!quote.sent_to_client,
+        booked,
+        quotedValue: Number(quote.price || 0),
+        quotedProfit: Number(quote.profit || 0),
+      })
+
+      if (!staffId) {
+        unassigned.quotesBuilt += 1
+        if (quote.sent_to_client) unassigned.quotesSent += 1
+        unassignedDealSet.add(quote.deal_id)
+        return
+      }
+
+      const row = rowsMap.get(staffId)
+      if (!row) return
+
+      row.quotesBuilt += 1
+      row.quotedValue += Number(quote.price || 0)
+      row.quotedProfit += Number(quote.profit || 0)
+      if (quote.sent_to_client) row.quotesSent += 1
+
+      if (!dealSetByStaff.has(staffId)) dealSetByStaff.set(staffId, new Set())
+      dealSetByStaff.get(staffId)!.add(quote.deal_id)
+
+      if (quote.sent_to_client) {
+        if (!sentDealSetByStaff.has(staffId)) sentDealSetByStaff.set(staffId, new Set())
+        sentDealSetByStaff.get(staffId)!.add(quote.deal_id)
+      }
+
+      if (booked) {
+        if (!bookedDealSetByStaff.has(staffId)) bookedDealSetByStaff.set(staffId, new Set())
+        bookedDealSetByStaff.get(staffId)!.add(quote.deal_id)
+      }
+
+      if (
+        quote.deals?.created_at &&
+        firstQuoteAt &&
+        firstQuoteAt === quote.created_at &&
+        firstQuoteAt >= fromIso &&
+        firstQuoteAt <= toIso
+      ) {
+        const turnaroundHours = (new Date(firstQuoteAt).getTime() - new Date(quote.deals.created_at).getTime()) / 3600000
+        if (turnaroundHours >= 0) {
+          const values = turnaroundHoursByStaff.get(staffId) || []
+          values.push(turnaroundHours)
+          turnaroundHoursByStaff.set(staffId, values)
+        }
+      }
+    })
+
+    unassigned.quotedDeals = unassignedDealSet.size
+
+    const rows = [...rowsMap.values()]
+      .map(row => {
+        const quotedDeals = dealSetByStaff.get(row.staffId)?.size || 0
+        const sentDeals = sentDealSetByStaff.get(row.staffId)?.size || 0
+        const bookedDeals = bookedDealSetByStaff.get(row.staffId)?.size || 0
+        const turnaroundHours = turnaroundHoursByStaff.get(row.staffId) || []
+        const avgTurnaroundHours = turnaroundHours.length > 0
+          ? turnaroundHours.reduce((sum, value) => sum + value, 0) / turnaroundHours.length
+          : 0
+        return {
+          ...row,
+          quotedDeals,
+          sentDeals,
+          bookedDeals,
+          avgQuoteValue: row.quotesBuilt > 0 ? row.quotedValue / row.quotesBuilt : 0,
+          avgVersionsPerDeal: quotedDeals > 0 ? row.quotesBuilt / quotedDeals : 0,
+          avgTurnaroundHours,
+          conversionPct: sentDeals > 0 ? (bookedDeals / sentDeals) * 100 : 0,
+        }
+      })
+      .filter(row => row.quotesBuilt > 0 || row.sentDeals > 0 || row.bookedDeals > 0)
+      .sort((a, b) => b.conversionPct - a.conversionPct || b.quotesSent - a.quotesSent || a.name.localeCompare(b.name))
+
+    recentRows.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+
+    return { rows, recentRows, unassigned }
+  }
+
+  async function createStaffUser() {
+    if (!staffForm.name.trim()) return
+    setStaffSaving(true)
+    const { error } = await supabase.from('staff_users').insert({
+      name: staffForm.name.trim(),
+      role: staffForm.role,
+      is_active: true,
+    })
+
+    if (error) {
+      setToast(error.message || 'Failed to add staff user')
+      setTimeout(() => setToast(null), 3000)
+      setStaffSaving(false)
+      return
+    }
+
+    const { data: staffData } = await supabase.from('staff_users')
+      .select('id,name,role,is_active')
+      .eq('is_active', true)
+      .order('name')
+    const activeStaff = (staffData || []) as StaffUser[]
+    setStaffUsers(activeStaff)
+    const newStaff = activeStaff.find(user => user.name === staffForm.name.trim())
+    if (newStaff) setSelectedStaffId(newStaff.id)
+    setStaffForm({ name: '', role: 'sales' })
+    setStaffSaving(false)
+    setToast('Staff user added ✓')
+    setTimeout(() => setToast(null), 3000)
   }
 
   async function saveTargets() {
@@ -115,10 +708,141 @@ export default function ReportsPage() {
     setTimeout(() => setToast(null), 3000)
   }
 
+  useEffect(() => {
+    let cancelled = false
+
+    async function run() {
+      setLoading(true)
+      const data = await fetchReportData()
+      if (cancelled) return
+
+      setMonthlyData(data.monthlyData)
+      setLostReasons(data.lostReasons)
+      setStage(data.stageBreakdown)
+      setTargets(data.targets)
+      setStaffUsers(data.staffUsers)
+      setAssignmentHealth(data.assignmentHealth)
+      if (data.staffUsers.length > 0 && !data.staffUsers.find(s => s.id === selectedStaffId)) {
+        const preferredStaff = data.staffUsers.find((staff: StaffUser) => staff.name === 'Samir Abattouy') || data.staffUsers[0]
+        setSelectedStaffId(preferredStaff.id)
+      }
+      setLoading(false)
+    }
+
+    void run()
+    return () => { cancelled = true }
+  }, [selectedYear])
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function run() {
+      if (!selectedStaffId) {
+        setCommissionRows([])
+        return
+      }
+
+      setCommissionLoading(true)
+      const rows = await fetchCommissionRows()
+      if (cancelled) return
+      setCommissionRows(rows)
+      setCommissionLoading(false)
+    }
+
+    void run()
+    return () => { cancelled = true }
+  }, [selectedStaffId, commissionFrom, commissionTo])
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function run() {
+      setSalesLoading(true)
+      const data = await fetchSalesData()
+      if (cancelled) return
+      setSalesRows(data.rows)
+      setSalesBookings(data.bookings)
+      setSalesUnassigned(data.unassigned)
+      setSalesLoading(false)
+    }
+
+    void run()
+    return () => { cancelled = true }
+  }, [salesFrom, salesTo, staffUsers])
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function run() {
+      setQuoteLoading(true)
+      const data = await fetchQuoteData()
+      if (cancelled) return
+      setQuoteRows(data.rows)
+      setQuoteRecentRows(data.recentRows)
+      setQuoteUnassigned(data.unassigned)
+      setQuoteLoading(false)
+    }
+
+    void run()
+    return () => { cancelled = true }
+  }, [quoteFrom, quoteTo, staffUsers])
+
   const totalRevenue = monthlyData.reduce((a,m)=>a+m.revenue, 0)
   const totalProfit  = monthlyData.reduce((a,m)=>a+m.profit, 0)
   const totalBookings = monthlyData.reduce((a,m)=>a+m.bookings, 0)
   const maxRevenue   = Math.max(...monthlyData.map(m=>m.revenue), 1)
+  const commissionableTotal = commissionRows.reduce((sum, row) => sum + row.commissionableAmount, 0)
+  const paymentReceivedTotal = commissionRows.reduce((sum, row) => sum + row.paymentReceived, 0)
+  const commissionTotal = calcCommission(commissionableTotal)
+  const staffPayoutTotal = commissionTotal + manualBonus
+  const selectedStaff = staffUsers.find(staff => staff.id === selectedStaffId) || null
+  const filteredSalesRows = salesStaffFilter === 'ALL'
+    ? salesRows
+    : salesRows.filter(row => row.staffId === Number(salesStaffFilter))
+  const filteredSalesBookings = salesStaffFilter === 'ALL'
+    ? salesBookings
+    : salesBookings.filter(row => row.staffId === Number(salesStaffFilter))
+  const salesSummary = filteredSalesRows.reduce((sum, row) => ({
+    leads: sum.leads + row.leads,
+    quotesSent: sum.quotesSent + row.quotesSent,
+    bookings: sum.bookings + row.bookings,
+    bookedValue: sum.bookedValue + row.bookedValue,
+    bookedProfit: sum.bookedProfit + row.bookedProfit,
+  }), { leads: 0, quotesSent: 0, bookings: 0, bookedValue: 0, bookedProfit: 0 })
+  const salesAvgBookingValue = salesSummary.bookings > 0 ? salesSummary.bookedValue / salesSummary.bookings : 0
+  const salesLeadToBooking = salesSummary.leads > 0 ? (salesSummary.bookings / salesSummary.leads) * 100 : 0
+  const salesQuoteToBooking = salesSummary.quotesSent > 0 ? (salesSummary.bookings / salesSummary.quotesSent) * 100 : 0
+  const salesTopPerformer = filteredSalesRows[0] || null
+  const filteredQuoteRows = quoteStaffFilter === 'ALL'
+    ? quoteRows
+    : quoteRows.filter(row => row.staffId === Number(quoteStaffFilter))
+  const filteredQuoteRecentRows = quoteStaffFilter === 'ALL'
+    ? quoteRecentRows
+    : quoteRecentRows.filter(row => row.staffId === Number(quoteStaffFilter))
+  const quoteSummary = filteredQuoteRows.reduce((sum, row) => ({
+    quotesBuilt: sum.quotesBuilt + row.quotesBuilt,
+    quotesSent: sum.quotesSent + row.quotesSent,
+    quotedDeals: sum.quotedDeals + row.quotedDeals,
+    sentDeals: sum.sentDeals + row.sentDeals,
+    bookedDeals: sum.bookedDeals + row.bookedDeals,
+    quotedValue: sum.quotedValue + row.quotedValue,
+    quotedProfit: sum.quotedProfit + row.quotedProfit,
+  }), { quotesBuilt: 0, quotesSent: 0, quotedDeals: 0, sentDeals: 0, bookedDeals: 0, quotedValue: 0, quotedProfit: 0 })
+  const quoteAvgValue = quoteSummary.quotesBuilt > 0 ? quoteSummary.quotedValue / quoteSummary.quotesBuilt : 0
+  const quoteAvgVersions = quoteSummary.quotedDeals > 0 ? quoteSummary.quotesBuilt / quoteSummary.quotedDeals : 0
+  const quoteTurnaroundValues = filteredQuoteRows.map(row => row.avgTurnaroundHours).filter(value => value > 0)
+  const quoteAvgTurnaround = quoteTurnaroundValues.length > 0
+    ? quoteTurnaroundValues.reduce((sum, value) => sum + value, 0) / quoteTurnaroundValues.length
+    : 0
+  const quoteConversion = quoteSummary.sentDeals > 0 ? (quoteSummary.bookedDeals / quoteSummary.sentDeals) * 100 : 0
+  const quoteTopPerformer = filteredQuoteRows[0] || null
+  const REPORT_VIEWS: { key: ReportView; label: string; desc: string; icon: string }[] = [
+    { key: 'commission', label: 'Commission', desc: 'Payroll-facing commission reports', icon: '💷' },
+    { key: 'overview', label: 'Business Overview', desc: 'Revenue, profit and pipeline view', icon: '📊' },
+    { key: 'sales', label: 'Sales', desc: 'Sales productivity and conversion', icon: '📈' },
+    { key: 'quotes', label: 'Quotes', desc: 'Quote output and quote conversion', icon: '🧾' },
+    { key: 'suppliers', label: 'Suppliers', desc: 'Supplier spend and booking mix', icon: '🏨' },
+  ]
 
   const STAGE_COLORS: Record<string,string> = {
     'New Lead':'#8b5cf6', 'Quote Sent':'#f59e0b', 'Engaged':'#3b82f6',
@@ -129,9 +853,9 @@ export default function ReportsPage() {
     <div>
       <div className="page-header">
         <div>
-          <div className="page-title">Reports</div>
+          <div className="page-title">Admin Reports</div>
           <div style={{ fontSize:'12.5px', color:'var(--text-muted)', marginTop:'2px' }}>
-            {selectedYear} · {totalBookings} bookings · {fmt(totalRevenue)} revenue · {fmt(totalProfit)} profit
+            Structured reporting hub for commission, finance, sales, quotes and supplier reporting
           </div>
         </div>
         <div style={{ display:'flex', gap:'8px', alignItems:'center' }}>
@@ -149,6 +873,488 @@ export default function ReportsPage() {
         ) : (
           <div style={{ display:'flex', flexDirection:'column', gap:'20px' }}>
 
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(5,1fr)', gap:'10px' }}>
+              {REPORT_VIEWS.map(view => (
+                <button
+                  key={view.key}
+                  onClick={() => setReportView(view.key)}
+                  className="card"
+                  style={{
+                    padding:'14px 16px',
+                    textAlign:'left',
+                    cursor:'pointer',
+                    border: reportView === view.key ? '2px solid var(--accent)' : '1px solid var(--border)',
+                    background: reportView === view.key ? 'var(--bg-secondary)' : 'var(--bg-primary)',
+                  }}
+                >
+                  <div style={{ fontSize:'18px', marginBottom:'8px' }}>{view.icon}</div>
+                  <div style={{ fontSize:'13px', fontWeight:'600', color:'var(--text-primary)' }}>{view.label}</div>
+                  <div style={{ fontSize:'11.5px', color:'var(--text-muted)', marginTop:'3px', lineHeight:1.4 }}>{view.desc}</div>
+                </button>
+              ))}
+            </div>
+
+            {reportView === 'commission' && (
+            <div style={{ display:'grid', gridTemplateColumns:'320px 1fr', gap:'16px', alignItems:'start' }}>
+              <div className="card" style={{ padding:'20px 24px' }}>
+                <div style={{ fontFamily:'Fraunces,serif', fontSize:'17px', fontWeight:'300', marginBottom:'14px' }}>Staff Setup</div>
+                <div style={{ fontSize:'12.5px', color:'var(--text-muted)', marginBottom:'14px', lineHeight:1.5 }}>
+                  Staff are added here for reporting first. We can expand this later into full users, permissions and role restrictions.
+                </div>
+
+                <div style={{ display:'grid', gap:'8px', marginBottom:'16px' }}>
+                  {[
+                    { label: 'Clients without owner', value: assignmentHealth.clientsWithoutOwner },
+                    { label: 'Deals without owner', value: assignmentHealth.dealsWithoutOwner },
+                    { label: 'Bookings without owner', value: assignmentHealth.bookingsWithoutOwner },
+                  ].map(item => (
+                    <div key={item.label} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'10px 12px', border:'1px solid var(--border)', borderRadius:'10px', background:'var(--bg-secondary)' }}>
+                      <span style={{ fontSize:'12px', color:'var(--text-muted)' }}>{item.label}</span>
+                      <span style={{ fontSize:'13px', fontWeight:'700', color:item.value > 0 ? 'var(--red)' : 'var(--green)' }}>{item.value}</span>
+                    </div>
+                  ))}
+                </div>
+
+                <div style={{ display:'flex', flexDirection:'column', gap:'10px', marginBottom:'16px' }}>
+                  <input className="input" placeholder="Staff name" value={staffForm.name} onChange={e => setStaffForm(prev => ({ ...prev, name: e.target.value }))} />
+                  <select className="input" value={staffForm.role} onChange={e => setStaffForm(prev => ({ ...prev, role: e.target.value }))}>
+                    <option value="sales">Sales</option>
+                    <option value="manager">Manager</option>
+                    <option value="operations">Operations</option>
+                  </select>
+                  <button className="btn btn-cta" onClick={createStaffUser} disabled={!staffForm.name.trim() || staffSaving}>
+                    {staffSaving ? 'Saving…' : 'Add Staff'}
+                  </button>
+                </div>
+
+                <div style={{ borderTop:'1px solid var(--border)', paddingTop:'14px' }}>
+                  <div style={{ fontSize:'11px', fontWeight:'700', textTransform:'uppercase', letterSpacing:'0.07em', color:'var(--text-muted)', marginBottom:'10px' }}>Current Staff</div>
+                  <div style={{ display:'flex', flexDirection:'column', gap:'8px' }}>
+                    {staffUsers.length === 0 ? (
+                      <div style={{ fontSize:'12.5px', color:'var(--text-muted)' }}>No staff users yet.</div>
+                    ) : (
+                      staffUsers.map(staff => (
+                        <div key={staff.id} style={{ padding:'10px 12px', border:'1px solid var(--border)', borderRadius:'10px', background:selectedStaffId === staff.id ? 'var(--bg-secondary)' : 'transparent' }}>
+                          <div style={{ fontSize:'13px', fontWeight:'600', color:'var(--text-primary)' }}>{staff.name}</div>
+                          <div style={{ fontSize:'11.5px', color:'var(--text-muted)', marginTop:'2px' }}>{staff.role || 'staff'}</div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                  <div style={{ marginTop:'12px', fontSize:'12px' }}>
+                    <Link href="/bookings" style={{ color:'var(--accent)', textDecoration:'none' }}>Open bookings to clean ownership →</Link>
+                  </div>
+                </div>
+              </div>
+
+              <div className="card" style={{ padding:'20px 24px' }}>
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'16px', marginBottom:'16px', flexWrap:'wrap' }}>
+                <div>
+                  <div style={{ fontFamily:'Fraunces,serif', fontSize:'17px', fontWeight:'300' }}>Staff Commission Report</div>
+                  <div style={{ fontSize:'12.5px', color:'var(--text-muted)', marginTop:'3px' }}>
+                    Triggered only when the booking balance reaches zero. Later amendments do not change the pulled commissionable profit.
+                  </div>
+                </div>
+                <div style={{ display:'flex', gap:'8px', alignItems:'center', flexWrap:'wrap' }}>
+                  <select className="input" style={{ minWidth:'180px' }} value={selectedStaffId || ''} onChange={e => setSelectedStaffId(e.target.value ? Number(e.target.value) : null)}>
+                    {staffUsers.length === 0 && <option value="">No staff set up</option>}
+                    {staffUsers.map(staff => <option key={staff.id} value={staff.id}>{staff.name}</option>)}
+                  </select>
+                  <input className="input" type="date" value={commissionFrom} onChange={e => setCommissionFrom(e.target.value)} />
+                  <input className="input" type="date" value={commissionTo} onChange={e => setCommissionTo(e.target.value)} />
+                  <input className="input" type="number" min="0" value={manualBonus} onChange={e => setManualBonus(Number(e.target.value) || 0)} placeholder="Manual bonus" style={{ width:'150px' }} />
+                </div>
+              </div>
+
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:'12px', marginBottom:'18px' }}>
+                {[
+                  { label:'Payment Received', val:fmt(paymentReceivedTotal), color:'var(--green)' },
+                  { label:'Commissionable Amount', val:fmt(commissionableTotal), color:'var(--gold)' },
+                  { label:'Commission', val:fmt(commissionTotal), color:'var(--accent-mid)' },
+                  { label:'Commission + Bonus', val:fmt(staffPayoutTotal), color:'var(--text-primary)' },
+                ].map(card => (
+                  <div key={card.label} style={{ border:'1px solid var(--border)', borderRadius:'12px', padding:'14px 16px', background:'var(--bg-secondary)' }}>
+                    <div style={{ fontSize:'11px', fontWeight:'700', textTransform:'uppercase', letterSpacing:'0.07em', color:'var(--text-muted)' }}>{card.label}</div>
+                    <div style={{ marginTop:'6px', fontFamily:'Fraunces,serif', fontSize:'26px', fontWeight:'300', color:card.color }}>{card.val}</div>
+                  </div>
+                ))}
+              </div>
+
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', marginBottom:'12px', flexWrap:'wrap', fontSize:'12px', color:'var(--text-muted)' }}>
+                <div>
+                  {selectedStaff ? `${selectedStaff.name}` : 'No staff selected'} · From {fmtDate(commissionFrom)} to {fmtDate(commissionTo)}
+                </div>
+                <div>
+                  First £10,000 at 10%, remaining amount at 15%
+                </div>
+              </div>
+
+              {commissionLoading ? (
+                <div style={{ fontSize:'13px', color:'var(--text-muted)' }}>Loading commission report…</div>
+              ) : commissionRows.length === 0 ? (
+                <div style={{ border:'1px dashed var(--border)', borderRadius:'12px', padding:'20px', color:'var(--text-muted)', fontSize:'13px' }}>
+                  {staffUsers.length === 0
+                    ? 'No staff users are set up yet. Add staff records first, then assign bookings to staff_id.'
+                    : 'No bookings cleared to zero for this staff member in the selected calendar month.'}
+                </div>
+              ) : (
+                <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'13px' }}>
+                  <thead>
+                    <tr style={{ borderBottom:'2px solid var(--border)' }}>
+                      {['Sr#','Booking ID','Booking Ref','Customer Surname','Payment Received','Commissionable Amount','Cleared On'].map(h => (
+                        <th key={h} style={{ padding:'8px 10px', textAlign:h === 'Customer Surname' || h === 'Booking Ref' ? 'left' : 'right', fontSize:'11px', fontWeight:'700', textTransform:'uppercase', letterSpacing:'0.07em', color:'var(--text-muted)' }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {commissionRows.map((row, index) => (
+                      <tr key={`${row.bookingId}-${row.clearedDate}`} style={{ borderBottom:'1px solid var(--border)' }}>
+                        <td style={{ padding:'10px 10px', textAlign:'right', color:'var(--text-muted)' }}>{index + 1}</td>
+                        <td style={{ padding:'10px 10px', textAlign:'right' }}>
+                          <Link href={`/bookings/${row.bookingId}`} style={{ color:'var(--accent)', textDecoration:'none', fontWeight:'600' }}>
+                            {row.bookingId}
+                          </Link>
+                        </td>
+                        <td style={{ padding:'10px 10px', fontFamily:'monospace' }}>{row.bookingReference}</td>
+                        <td style={{ padding:'10px 10px' }}>{row.surname}</td>
+                        <td style={{ padding:'10px 10px', textAlign:'right', color:'var(--green)', fontWeight:'600' }}>{fmt(row.paymentReceived)}</td>
+                        <td style={{ padding:'10px 10px', textAlign:'right', color:'var(--gold)', fontWeight:'600' }}>{fmt(row.commissionableAmount)}</td>
+                        <td style={{ padding:'10px 10px', textAlign:'right', color:'var(--text-muted)' }}>{fmtDate(row.clearedDate)}</td>
+                      </tr>
+                    ))}
+                    <tr style={{ borderTop:'2px solid var(--border)', background:'var(--bg-tertiary)' }}>
+                      <td colSpan={4} style={{ padding:'10px 10px', fontSize:'12px', fontWeight:'700', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.06em' }}>Total</td>
+                      <td style={{ padding:'10px 10px', textAlign:'right', fontWeight:'700', color:'var(--green)' }}>{fmt(paymentReceivedTotal)}</td>
+                      <td style={{ padding:'10px 10px', textAlign:'right', fontWeight:'700', color:'var(--gold)' }}>{fmt(commissionableTotal)}</td>
+                      <td style={{ padding:'10px 10px', textAlign:'right', color:'var(--text-muted)' }}>{commissionRows.length} booking{commissionRows.length === 1 ? '' : 's'}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              )}
+            </div>
+            </div>
+            )}
+
+            {reportView === 'sales' && (
+              <div style={{ display:'flex', flexDirection:'column', gap:'16px' }}>
+                <div className="card" style={{ padding:'20px 24px' }}>
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'16px', flexWrap:'wrap', marginBottom:'16px' }}>
+                    <div>
+                      <div style={{ fontFamily:'Fraunces,serif', fontSize:'17px', fontWeight:'300' }}>Sales Report</div>
+                      <div style={{ fontSize:'12.5px', color:'var(--text-muted)', marginTop:'3px' }}>
+                        Consultant performance by leads, quotes, bookings, booked value and booked profit.
+                      </div>
+                    </div>
+                    <div style={{ display:'flex', gap:'8px', alignItems:'center', flexWrap:'wrap' }}>
+                      <select className="input" style={{ minWidth:'180px' }} value={salesStaffFilter} onChange={e => setSalesStaffFilter(e.target.value)}>
+                        <option value="ALL">Whole team</option>
+                        {staffUsers.map(staff => <option key={staff.id} value={String(staff.id)}>{staff.name}</option>)}
+                      </select>
+                      <input className="input" type="date" value={salesFrom} onChange={e => setSalesFrom(e.target.value)} />
+                      <input className="input" type="date" value={salesTo} onChange={e => setSalesTo(e.target.value)} />
+                    </div>
+                  </div>
+
+                  {(salesUnassigned.leads > 0 || salesUnassigned.quotesSent > 0 || salesUnassigned.bookings > 0) && (
+                    <div style={{ marginBottom:'16px', background:'#fff7ed', border:'1px solid #fdba74', borderRadius:'10px', padding:'12px 14px', fontSize:'12.5px', color:'#9a3412', lineHeight:1.6 }}>
+                      {salesUnassigned.leads} unassigned lead{salesUnassigned.leads === 1 ? '' : 's'}, {salesUnassigned.quotesSent} unassigned quote{salesUnassigned.quotesSent === 1 ? '' : 's'}, and {salesUnassigned.bookings} unassigned booking{salesUnassigned.bookings === 1 ? '' : 's'} in this period are excluded from consultant scoring.
+                      {' '}<Link href="/bookings" style={{ color:'#9a3412', textDecoration:'underline' }}>Clean ownership</Link>.
+                    </div>
+                  )}
+
+                  <div style={{ display:'grid', gridTemplateColumns:'repeat(6,1fr)', gap:'12px', marginBottom:'18px' }}>
+                    {[
+                      { label:'Leads', val:String(salesSummary.leads), color:'var(--accent-mid)' },
+                      { label:'Quotes Sent', val:String(salesSummary.quotesSent), color:'var(--amber)' },
+                      { label:'Bookings', val:String(salesSummary.bookings), color:'var(--green)' },
+                      { label:'Booked Value', val:fmt(salesSummary.bookedValue), color:'var(--text-primary)' },
+                      { label:'Booked Profit', val:fmt(salesSummary.bookedProfit), color:'var(--gold)' },
+                      { label:'Avg Booking', val:fmt(salesAvgBookingValue), color:'var(--blue)' },
+                    ].map(card => (
+                      <div key={card.label} style={{ border:'1px solid var(--border)', borderRadius:'12px', padding:'14px 16px', background:'var(--bg-secondary)' }}>
+                        <div style={{ fontSize:'11px', fontWeight:'700', textTransform:'uppercase', letterSpacing:'0.07em', color:'var(--text-muted)' }}>{card.label}</div>
+                        <div style={{ marginTop:'6px', fontFamily:'Fraunces,serif', fontSize:'26px', fontWeight:'300', color:card.color }}>{card.val}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div style={{ display:'grid', gridTemplateColumns:'1.2fr 1fr 1fr', gap:'12px' }}>
+                    <div style={{ border:'1px solid var(--border)', borderRadius:'12px', padding:'14px 16px', background:'var(--bg-secondary)' }}>
+                      <div style={{ fontSize:'11px', fontWeight:'700', textTransform:'uppercase', letterSpacing:'0.07em', color:'var(--text-muted)', marginBottom:'8px' }}>Top Performer</div>
+                      {salesTopPerformer ? (
+                        <>
+                          <div style={{ fontSize:'15px', fontWeight:'600', color:'var(--text-primary)' }}>{salesTopPerformer.name}</div>
+                          <div style={{ fontSize:'12px', color:'var(--text-muted)', marginTop:'3px' }}>
+                            {salesTopPerformer.bookings} bookings · {fmt(salesTopPerformer.bookedProfit)} profit
+                          </div>
+                        </>
+                      ) : (
+                        <div style={{ fontSize:'12.5px', color:'var(--text-muted)' }}>No consultant activity in this date range.</div>
+                      )}
+                    </div>
+                    <div style={{ border:'1px solid var(--border)', borderRadius:'12px', padding:'14px 16px', background:'var(--bg-secondary)' }}>
+                      <div style={{ fontSize:'11px', fontWeight:'700', textTransform:'uppercase', letterSpacing:'0.07em', color:'var(--text-muted)', marginBottom:'8px' }}>Lead to Booking</div>
+                      <div style={{ fontFamily:'Fraunces,serif', fontSize:'28px', fontWeight:'300', color:'var(--green)' }}>{salesLeadToBooking.toFixed(1)}%</div>
+                    </div>
+                    <div style={{ border:'1px solid var(--border)', borderRadius:'12px', padding:'14px 16px', background:'var(--bg-secondary)' }}>
+                      <div style={{ fontSize:'11px', fontWeight:'700', textTransform:'uppercase', letterSpacing:'0.07em', color:'var(--text-muted)', marginBottom:'8px' }}>Quote to Booking</div>
+                      <div style={{ fontFamily:'Fraunces,serif', fontSize:'28px', fontWeight:'300', color:'var(--accent-mid)' }}>{salesQuoteToBooking.toFixed(1)}%</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="card" style={{ padding:'20px 24px' }}>
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', marginBottom:'14px', flexWrap:'wrap' }}>
+                    <div style={{ fontFamily:'Fraunces,serif', fontSize:'17px', fontWeight:'300' }}>Consultant Scoreboard</div>
+                    <div style={{ fontSize:'12px', color:'var(--text-muted)' }}>
+                      Profit uses final booking profit when available, otherwise latest sent quote profit.
+                    </div>
+                  </div>
+
+                  {salesLoading ? (
+                    <div style={{ fontSize:'13px', color:'var(--text-muted)' }}>Loading sales report…</div>
+                  ) : filteredSalesRows.length === 0 ? (
+                    <div style={{ border:'1px dashed var(--border)', borderRadius:'12px', padding:'20px', color:'var(--text-muted)', fontSize:'13px' }}>
+                      No sales activity found in the selected date range.
+                    </div>
+                  ) : (
+                    <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'13px' }}>
+                      <thead>
+                        <tr style={{ borderBottom:'2px solid var(--border)' }}>
+                          {['Consultant','Leads','Quotes','Bookings','Booked Value','Booked Profit','Avg Booking','Lead→Book','Quote→Book'].map(h => (
+                            <th key={h} style={{ padding:'8px 10px', textAlign:h === 'Consultant' ? 'left' : 'right', fontSize:'11px', fontWeight:'700', textTransform:'uppercase', letterSpacing:'0.07em', color:'var(--text-muted)' }}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredSalesRows.map(row => (
+                          <tr key={row.staffId} style={{ borderBottom:'1px solid var(--border)' }}>
+                            <td style={{ padding:'10px 10px' }}>
+                              <div style={{ fontWeight:'600', color:'var(--text-primary)' }}>{row.name}</div>
+                              <div style={{ fontSize:'11px', color:'var(--text-muted)' }}>{row.role || 'staff'}</div>
+                            </td>
+                            <td style={{ padding:'10px 10px', textAlign:'right' }}>{row.leads}</td>
+                            <td style={{ padding:'10px 10px', textAlign:'right' }}>{row.quotesSent}</td>
+                            <td style={{ padding:'10px 10px', textAlign:'right', color:'var(--green)', fontWeight:'600' }}>{row.bookings}</td>
+                            <td style={{ padding:'10px 10px', textAlign:'right' }}>{fmt(row.bookedValue)}</td>
+                            <td style={{ padding:'10px 10px', textAlign:'right', color:'var(--gold)', fontWeight:'600' }}>{fmt(row.bookedProfit)}</td>
+                            <td style={{ padding:'10px 10px', textAlign:'right' }}>{fmt(row.avgBookingValue)}</td>
+                            <td style={{ padding:'10px 10px', textAlign:'right', color:row.leadToBookingPct >= 20 ? 'var(--green)' : row.leadToBookingPct >= 10 ? 'var(--amber)' : 'var(--text-muted)' }}>{row.leadToBookingPct.toFixed(1)}%</td>
+                            <td style={{ padding:'10px 10px', textAlign:'right', color:row.quoteToBookingPct >= 35 ? 'var(--green)' : row.quoteToBookingPct >= 20 ? 'var(--amber)' : 'var(--text-muted)' }}>{row.quoteToBookingPct.toFixed(1)}%</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+
+                <div className="card" style={{ padding:'20px 24px' }}>
+                  <div style={{ fontFamily:'Fraunces,serif', fontSize:'17px', fontWeight:'300', marginBottom:'14px' }}>Recent Bookings In Range</div>
+                  {salesLoading ? (
+                    <div style={{ fontSize:'13px', color:'var(--text-muted)' }}>Loading booked deals…</div>
+                  ) : filteredSalesBookings.length === 0 ? (
+                    <div style={{ fontSize:'13px', color:'var(--text-muted)' }}>No bookings landed in this date window.</div>
+                  ) : (
+                    <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'13px' }}>
+                      <thead>
+                        <tr style={{ borderBottom:'2px solid var(--border)' }}>
+                          {['Booked On','Consultant','Booking','Client','Title','Value','Profit'].map(h => (
+                            <th key={h} style={{ padding:'8px 10px', textAlign:h === 'Value' || h === 'Profit' ? 'right' : 'left', fontSize:'11px', fontWeight:'700', textTransform:'uppercase', letterSpacing:'0.07em', color:'var(--text-muted)' }}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredSalesBookings.slice(0, 12).map(row => (
+                          <tr key={row.bookingId} style={{ borderBottom:'1px solid var(--border)' }}>
+                            <td style={{ padding:'10px 10px', color:'var(--text-muted)' }}>{fmtDate(row.bookedAt)}</td>
+                            <td style={{ padding:'10px 10px' }}>{row.staffName}</td>
+                            <td style={{ padding:'10px 10px', fontFamily:'monospace' }}>
+                              <Link href={`/bookings/${row.bookingId}`} style={{ color:'var(--accent)', textDecoration:'none', fontWeight:'600' }}>
+                                {row.bookingReference}
+                              </Link>
+                            </td>
+                            <td style={{ padding:'10px 10px' }}>{row.clientSurname}</td>
+                            <td style={{ padding:'10px 10px', color:'var(--text-muted)' }}>{row.title}</td>
+                            <td style={{ padding:'10px 10px', textAlign:'right' }}>{fmt(row.bookedValue)}</td>
+                            <td style={{ padding:'10px 10px', textAlign:'right', color:'var(--gold)', fontWeight:'600' }}>{fmt(row.bookedProfit)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {reportView === 'quotes' && (
+              <div style={{ display:'flex', flexDirection:'column', gap:'16px' }}>
+                <div className="card" style={{ padding:'20px 24px' }}>
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'16px', flexWrap:'wrap', marginBottom:'16px' }}>
+                    <div>
+                      <div style={{ fontFamily:'Fraunces,serif', fontSize:'17px', fontWeight:'300' }}>Quote Report</div>
+                      <div style={{ fontSize:'12.5px', color:'var(--text-muted)', marginTop:'3px' }}>
+                        Quote output, revision volume, turnaround speed and quoted-deal conversion.
+                      </div>
+                    </div>
+                    <div style={{ display:'flex', gap:'8px', alignItems:'center', flexWrap:'wrap' }}>
+                      <select className="input" style={{ minWidth:'180px' }} value={quoteStaffFilter} onChange={e => setQuoteStaffFilter(e.target.value)}>
+                        <option value="ALL">Whole team</option>
+                        {staffUsers.map(staff => <option key={staff.id} value={String(staff.id)}>{staff.name}</option>)}
+                      </select>
+                      <input className="input" type="date" value={quoteFrom} onChange={e => setQuoteFrom(e.target.value)} />
+                      <input className="input" type="date" value={quoteTo} onChange={e => setQuoteTo(e.target.value)} />
+                    </div>
+                  </div>
+
+                  {(quoteUnassigned.quotesBuilt > 0 || quoteUnassigned.quotesSent > 0) && (
+                    <div style={{ marginBottom:'16px', background:'#fff7ed', border:'1px solid #fdba74', borderRadius:'10px', padding:'12px 14px', fontSize:'12.5px', color:'#9a3412', lineHeight:1.6 }}>
+                      {quoteUnassigned.quotesBuilt} unassigned quote version{quoteUnassigned.quotesBuilt === 1 ? '' : 's'}, with {quoteUnassigned.quotesSent} sent to client, across {quoteUnassigned.quotedDeals} deal{quoteUnassigned.quotedDeals === 1 ? '' : 's'} are excluded from consultant scoring.
+                      {' '}<Link href="/pipeline" style={{ color:'#9a3412', textDecoration:'underline' }}>Clean ownership</Link>.
+                    </div>
+                  )}
+
+                  <div style={{ display:'grid', gridTemplateColumns:'repeat(6,1fr)', gap:'12px', marginBottom:'18px' }}>
+                    {[
+                      { label:'Quote Versions', val:String(quoteSummary.quotesBuilt), color:'var(--accent-mid)' },
+                      { label:'Quotes Sent', val:String(quoteSummary.quotesSent), color:'var(--amber)' },
+                      { label:'Quoted Deals', val:String(quoteSummary.quotedDeals), color:'var(--text-primary)' },
+                      { label:'Quoted Value', val:fmt(quoteSummary.quotedValue), color:'var(--green)' },
+                      { label:'Quoted Profit', val:fmt(quoteSummary.quotedProfit), color:'var(--gold)' },
+                      { label:'Avg Quote Value', val:fmt(quoteAvgValue), color:'var(--blue)' },
+                    ].map(card => (
+                      <div key={card.label} style={{ border:'1px solid var(--border)', borderRadius:'12px', padding:'14px 16px', background:'var(--bg-secondary)' }}>
+                        <div style={{ fontSize:'11px', fontWeight:'700', textTransform:'uppercase', letterSpacing:'0.07em', color:'var(--text-muted)' }}>{card.label}</div>
+                        <div style={{ marginTop:'6px', fontFamily:'Fraunces,serif', fontSize:'26px', fontWeight:'300', color:card.color }}>{card.val}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div style={{ display:'grid', gridTemplateColumns:'1.2fr 1fr 1fr 1fr', gap:'12px' }}>
+                    <div style={{ border:'1px solid var(--border)', borderRadius:'12px', padding:'14px 16px', background:'var(--bg-secondary)' }}>
+                      <div style={{ fontSize:'11px', fontWeight:'700', textTransform:'uppercase', letterSpacing:'0.07em', color:'var(--text-muted)', marginBottom:'8px' }}>Top Converter</div>
+                      {quoteTopPerformer ? (
+                        <>
+                          <div style={{ fontSize:'15px', fontWeight:'600', color:'var(--text-primary)' }}>{quoteTopPerformer.name}</div>
+                          <div style={{ fontSize:'12px', color:'var(--text-muted)', marginTop:'3px' }}>
+                            {quoteTopPerformer.conversionPct.toFixed(1)}% quote-to-booking from sent deals
+                          </div>
+                        </>
+                      ) : (
+                        <div style={{ fontSize:'12.5px', color:'var(--text-muted)' }}>No quote activity in this date range.</div>
+                      )}
+                    </div>
+                    <div style={{ border:'1px solid var(--border)', borderRadius:'12px', padding:'14px 16px', background:'var(--bg-secondary)' }}>
+                      <div style={{ fontSize:'11px', fontWeight:'700', textTransform:'uppercase', letterSpacing:'0.07em', color:'var(--text-muted)', marginBottom:'8px' }}>Overall Conversion</div>
+                      <div style={{ fontFamily:'Fraunces,serif', fontSize:'28px', fontWeight:'300', color:'var(--green)' }}>{quoteConversion.toFixed(1)}%</div>
+                    </div>
+                    <div style={{ border:'1px solid var(--border)', borderRadius:'12px', padding:'14px 16px', background:'var(--bg-secondary)' }}>
+                      <div style={{ fontSize:'11px', fontWeight:'700', textTransform:'uppercase', letterSpacing:'0.07em', color:'var(--text-muted)', marginBottom:'8px' }}>Avg Versions / Deal</div>
+                      <div style={{ fontFamily:'Fraunces,serif', fontSize:'28px', fontWeight:'300', color:'var(--accent-mid)' }}>{quoteAvgVersions.toFixed(1)}</div>
+                    </div>
+                    <div style={{ border:'1px solid var(--border)', borderRadius:'12px', padding:'14px 16px', background:'var(--bg-secondary)' }}>
+                      <div style={{ fontSize:'11px', fontWeight:'700', textTransform:'uppercase', letterSpacing:'0.07em', color:'var(--text-muted)', marginBottom:'8px' }}>Avg First Quote Turnaround</div>
+                      <div style={{ fontFamily:'Fraunces,serif', fontSize:'28px', fontWeight:'300', color:'var(--green)' }}>{fmtDuration(quoteAvgTurnaround)}</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="card" style={{ padding:'20px 24px' }}>
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', marginBottom:'14px', flexWrap:'wrap' }}>
+                    <div style={{ fontFamily:'Fraunces,serif', fontSize:'17px', fontWeight:'300' }}>Consultant Quote Scoreboard</div>
+                    <div style={{ fontSize:'12px', color:'var(--text-muted)' }}>
+                      Conversion = booked deals / sent quoted deals
+                    </div>
+                  </div>
+
+                  {quoteLoading ? (
+                    <div style={{ fontSize:'13px', color:'var(--text-muted)' }}>Loading quote report…</div>
+                  ) : filteredQuoteRows.length === 0 ? (
+                    <div style={{ border:'1px dashed var(--border)', borderRadius:'12px', padding:'20px', color:'var(--text-muted)', fontSize:'13px' }}>
+                      No quote activity found in the selected date range.
+                    </div>
+                  ) : (
+                    <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'13px' }}>
+                      <thead>
+                        <tr style={{ borderBottom:'2px solid var(--border)' }}>
+                          {['Consultant','Quote Versions','Sent','Quoted Deals','Booked Deals','Quoted Value','Quoted Profit','Avg Version / Deal','Turnaround','Conversion'].map(h => (
+                            <th key={h} style={{ padding:'8px 10px', textAlign:h === 'Consultant' ? 'left' : 'right', fontSize:'11px', fontWeight:'700', textTransform:'uppercase', letterSpacing:'0.07em', color:'var(--text-muted)' }}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredQuoteRows.map(row => (
+                          <tr key={row.staffId} style={{ borderBottom:'1px solid var(--border)' }}>
+                            <td style={{ padding:'10px 10px' }}>
+                              <div style={{ fontWeight:'600', color:'var(--text-primary)' }}>{row.name}</div>
+                              <div style={{ fontSize:'11px', color:'var(--text-muted)' }}>{row.role || 'staff'}</div>
+                            </td>
+                            <td style={{ padding:'10px 10px', textAlign:'right' }}>{row.quotesBuilt}</td>
+                            <td style={{ padding:'10px 10px', textAlign:'right', color:'var(--amber)', fontWeight:'600' }}>{row.quotesSent}</td>
+                            <td style={{ padding:'10px 10px', textAlign:'right' }}>{row.quotedDeals}</td>
+                            <td style={{ padding:'10px 10px', textAlign:'right', color:'var(--green)', fontWeight:'600' }}>{row.bookedDeals}</td>
+                            <td style={{ padding:'10px 10px', textAlign:'right' }}>{fmt(row.quotedValue)}</td>
+                            <td style={{ padding:'10px 10px', textAlign:'right', color:'var(--gold)', fontWeight:'600' }}>{fmt(row.quotedProfit)}</td>
+                            <td style={{ padding:'10px 10px', textAlign:'right' }}>{row.avgVersionsPerDeal.toFixed(1)}</td>
+                            <td style={{ padding:'10px 10px', textAlign:'right' }}>{fmtDuration(row.avgTurnaroundHours)}</td>
+                            <td style={{ padding:'10px 10px', textAlign:'right', color:row.conversionPct >= 35 ? 'var(--green)' : row.conversionPct >= 20 ? 'var(--amber)' : 'var(--text-muted)' }}>{row.conversionPct.toFixed(1)}%</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+
+                <div className="card" style={{ padding:'20px 24px' }}>
+                  <div style={{ fontFamily:'Fraunces,serif', fontSize:'17px', fontWeight:'300', marginBottom:'14px' }}>Recent Quote Activity</div>
+                  {quoteLoading ? (
+                    <div style={{ fontSize:'13px', color:'var(--text-muted)' }}>Loading recent quotes…</div>
+                  ) : filteredQuoteRecentRows.length === 0 ? (
+                    <div style={{ fontSize:'13px', color:'var(--text-muted)' }}>No quotes created in this date window.</div>
+                  ) : (
+                    <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'13px' }}>
+                      <thead>
+                        <tr style={{ borderBottom:'2px solid var(--border)' }}>
+                          {['Created','Consultant','Quote Ref','Version','Client','Deal / Hotel','Sent','Booked','Sell','Profit'].map(h => (
+                            <th key={h} style={{ padding:'8px 10px', textAlign:h === 'Sell' || h === 'Profit' ? 'right' : 'left', fontSize:'11px', fontWeight:'700', textTransform:'uppercase', letterSpacing:'0.07em', color:'var(--text-muted)' }}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredQuoteRecentRows.slice(0, 14).map(row => (
+                          <tr key={row.quoteId} style={{ borderBottom:'1px solid var(--border)' }}>
+                            <td style={{ padding:'10px 10px', color:'var(--text-muted)' }}>{fmtDate(row.createdAt)}</td>
+                            <td style={{ padding:'10px 10px' }}>{row.staffName}</td>
+                            <td style={{ padding:'10px 10px', fontFamily:'monospace', color:'var(--accent)' }}>{row.quoteRef}</td>
+                            <td style={{ padding:'10px 10px' }}>{row.version ?? '—'}</td>
+                            <td style={{ padding:'10px 10px' }}>{row.clientSurname}</td>
+                            <td style={{ padding:'10px 10px' }}>
+                              <div style={{ color:'var(--text-primary)' }}>{row.title}</div>
+                              <div style={{ fontSize:'11px', color:'var(--text-muted)' }}>{row.hotel}</div>
+                            </td>
+                            <td style={{ padding:'10px 10px', color:row.sentToClient ? 'var(--green)' : 'var(--text-muted)', fontWeight:'600' }}>{row.sentToClient ? 'Yes' : 'No'}</td>
+                            <td style={{ padding:'10px 10px', color:row.booked ? 'var(--green)' : 'var(--text-muted)', fontWeight:'600' }}>{row.booked ? 'Yes' : 'No'}</td>
+                            <td style={{ padding:'10px 10px', textAlign:'right' }}>{fmt(row.quotedValue)}</td>
+                            <td style={{ padding:'10px 10px', textAlign:'right', color:'var(--gold)', fontWeight:'600' }}>{fmt(row.quotedProfit)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {reportView === 'suppliers' && (
+              <div className="card" style={{ padding:'28px 24px' }}>
+                <div style={{ fontFamily:'Fraunces,serif', fontSize:'17px', fontWeight:'300', marginBottom:'8px' }}>Supplier Report</div>
+                <div style={{ fontSize:'13px', color:'var(--text-muted)' }}>
+                  Reserved for supplier volume, spend, booking mix and operational dependency tracking.
+                </div>
+              </div>
+            )}
+
+            {reportView === 'overview' && (
+            <>
             {/* Year summary */}
             <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:'12px' }}>
               {[
@@ -286,6 +1492,8 @@ export default function ReportsPage() {
                 )}
               </div>
             </div>
+            </>
+            )}
           </div>
         )}
       </div>

@@ -2,6 +2,8 @@
 
 import { useEffect, useState, useRef } from 'react'
 import { supabase } from '@/lib/supabase'
+import { getAccessContext, isManager, type StaffUser } from '@/lib/access'
+import { buildFieldAuditEntries, logAuditEntries } from '@/lib/audit'
 import Link from 'next/link'
 
 // ── TYPES ─────────────────────────────────────────────────
@@ -23,6 +25,7 @@ type Client = {
   billing_city: string | null
   billing_postcode: string | null
   billing_country: string | null
+  owner_staff_id: number | null
   created_at: string
   deals?: DealSnap[]
 }
@@ -123,6 +126,7 @@ function blankForm() {
     advisor_notes: '',
     billing_address_line1: '', billing_address_line2: '',
     billing_city: '', billing_postcode: '', billing_country: 'United Kingdom',
+    owner_staff_id: '',
   }
 }
 
@@ -135,20 +139,21 @@ export default function ClientsPage() {
   const [showModal, setShowModal]     = useState(false)
   const [selectedClient, setSelectedClient] = useState<ClientWithStats | null>(null)
   const [editClient, setEditClient]   = useState<Client | null>(null)
+  const [staffUsers, setStaffUsers]   = useState<StaffUser[]>([])
+  const [currentStaff, setCurrentStaff] = useState<StaffUser | null>(null)
   const [toast, setToast]             = useState<string | null>(null)
   const [view, setView]               = useState<'grid' | 'list'>('grid')
-  const toastTimer                    = useRef<any>(null)
-
-  useEffect(() => { loadClients() }, [])
+  const toastTimer                    = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Auto-open client panel if ?id= param is in URL
   useEffect(() => {
     if (typeof window === 'undefined') return
     const id = Number(new URLSearchParams(window.location.search).get('id'))
-    if (id && clients.length > 0) {
-      const found = clients.find(c => c.id === id)
-      if (found) setSelectedClient(found)
-    }
+    if (!id || clients.length === 0) return
+    const found = clients.find(c => c.id === id)
+    if (!found) return
+    const frame = window.requestAnimationFrame(() => setSelectedClient(found))
+    return () => window.cancelAnimationFrame(frame)
   }, [clients])
 
   async function loadClients() {
@@ -158,20 +163,34 @@ export default function ClientsPage() {
       .select('*, deals(id, title, stage, deal_value, departure_date, created_at)')
       .order('created_at', { ascending: false })
 
-    const enriched: ClientWithStats[] = (data || []).map((c: any) => {
+    const enriched: ClientWithStats[] = ((data || []) as Client[]).map(c => {
       const deals = c.deals || []
       return {
         ...c,
         behaviour_tags: c.behaviour_tags || [],
         dealCount:     deals.length,
-        bookedCount:   deals.filter((d: any) => d.stage === 'BOOKED').length,
-        lifetimeValue: deals.filter((d: any) => d.stage === 'BOOKED').reduce((a: number, d: any) => a + (d.deal_value || 0), 0),
-        lastDealDate:  deals.length > 0 ? deals.sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0].created_at : null,
+        bookedCount:   deals.filter(d => d.stage === 'BOOKED').length,
+        lifetimeValue: deals.filter(d => d.stage === 'BOOKED').reduce((a, d) => a + (d.deal_value || 0), 0),
+        lastDealDate:  deals.length > 0 ? [...deals].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0].created_at : null,
       }
     })
     setClients(enriched)
     setLoading(false)
   }
+
+  async function loadAccess() {
+    const { staffUsers, currentStaff } = await getAccessContext()
+    setStaffUsers(staffUsers)
+    setCurrentStaff(currentStaff)
+  }
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void loadClients()
+      void loadAccess()
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [])
 
   function showToast(msg: string) {
     setToast(msg)
@@ -274,7 +293,9 @@ export default function ClientsPage() {
         {/* ── CARD VIEW ── */}
         {view === 'grid' && (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '16px' }}>
-            {filtered.map(client => (
+            {filtered.map(client => {
+              const ownerName = client.owner_staff_id ? staffUsers.find(staff => staff.id === client.owner_staff_id)?.name : null
+              return (
               <div key={client.id} className="card"
                 style={{ padding: '20px', cursor: 'pointer', transition: 'all 0.15s' }}
                 onClick={() => setSelectedClient(client)}
@@ -297,6 +318,11 @@ export default function ClientsPage() {
                       {client.phone && client.email && <span> · </span>}
                       {client.email && <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-block', maxWidth: '160px', verticalAlign: 'bottom' }}>{client.email}</span>}
                     </div>
+                    {ownerName && (
+                      <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '3px' }}>
+                        Owner: {ownerName}
+                      </div>
+                    )}
                   </div>
                   {client.behaviour_tags?.includes('vip') && (
                     <span style={{ fontSize: '18px' }}>⭐</span>
@@ -349,7 +375,7 @@ export default function ClientsPage() {
                   ))}
                 </div>
               </div>
-            ))}
+            )})}
           </div>
         )}
 
@@ -368,7 +394,9 @@ export default function ClientsPage() {
               ))}
             </div>
 
-            {filtered.map(client => (
+            {filtered.map(client => {
+              const ownerName = client.owner_staff_id ? staffUsers.find(staff => staff.id === client.owner_staff_id)?.name : null
+              return (
               <div key={client.id}
                 onClick={() => setSelectedClient(client)}
                 style={{
@@ -409,6 +437,11 @@ export default function ClientsPage() {
                     {client.lastDealDate && (
                       <div style={{ fontSize: '10.5px', color: 'var(--text-muted)' }}>
                         Last enquiry {new Date(client.lastDealDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+                      </div>
+                    )}
+                    {ownerName && (
+                      <div style={{ fontSize: '10.5px', color: 'var(--text-muted)' }}>
+                        Owner: {ownerName}
                       </div>
                     )}
                   </div>
@@ -463,7 +496,7 @@ export default function ClientsPage() {
                   {client.source ?? '—'}
                 </div>
               </div>
-            ))}
+            )})}
           </div>
         )}
       </div>
@@ -472,6 +505,7 @@ export default function ClientsPage() {
       {selectedClient && (
         <ClientDetailPanel
           client={selectedClient}
+          staffUsers={staffUsers}
           onClose={() => setSelectedClient(null)}
           onEdit={() => { setEditClient(selectedClient); setShowModal(true); setSelectedClient(null) }}
           onRefresh={() => { loadClients(); setSelectedClient(null) }}
@@ -483,6 +517,8 @@ export default function ClientsPage() {
       {showModal && (
         <ClientModal
           client={editClient}
+          staffUsers={staffUsers}
+          currentStaff={currentStaff}
           onClose={() => setShowModal(false)}
           onSaved={() => { setShowModal(false); loadClients(); showToast(editClient ? 'Client updated ✓' : 'Client created ✓') }}
         />
@@ -494,8 +530,9 @@ export default function ClientsPage() {
 }
 
 // ── CLIENT DETAIL PANEL ────────────────────────────────────
-function ClientDetailPanel({ client, onClose, onEdit, onRefresh, showToast }: {
+function ClientDetailPanel({ client, staffUsers, onClose, onEdit, onRefresh, showToast }: {
   client: ClientWithStats
+  staffUsers: StaffUser[]
   onClose: () => void
   onEdit: () => void
   onRefresh: () => void
@@ -503,6 +540,7 @@ function ClientDetailPanel({ client, onClose, onEdit, onRefresh, showToast }: {
 }) {
   const deals  = (client.deals || []) as DealSnap[]
   const clientAge = calcAge(client.date_of_birth)
+  const ownerName = client.owner_staff_id ? staffUsers.find(staff => staff.id === client.owner_staff_id)?.name : null
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,14,13,0.5)', backdropFilter: 'blur(4px)', zIndex: 200, display: 'flex', justifyContent: 'flex-end' }}
@@ -522,6 +560,11 @@ function ClientDetailPanel({ client, onClose, onEdit, onRefresh, showToast }: {
             <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
               Client since {new Date(client.created_at).toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })}
             </div>
+            {ownerName && (
+              <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                Owner: {ownerName}
+              </div>
+            )}
           </div>
           <div style={{ display: 'flex', gap: '8px' }}>
             <button className="btn btn-secondary btn-sm" onClick={onEdit}>Edit</button>
@@ -659,12 +702,16 @@ function ClientDetailPanel({ client, onClose, onEdit, onRefresh, showToast }: {
 }
 
 // ── CLIENT MODAL (NEW / EDIT) ──────────────────────────────
-function ClientModal({ client, onClose, onSaved }: {
+function ClientModal({ client, staffUsers, currentStaff, onClose, onSaved }: {
   client: Client | null
+  staffUsers: StaffUser[]
+  currentStaff: StaffUser | null
   onClose: () => void
   onSaved: () => void
 }) {
-  const [form, setForm]     = useState(() => client ? {
+  type ClientForm = ReturnType<typeof blankForm>
+
+  const [form, setForm]     = useState<ClientForm>(() => client ? {
     first_name: client.first_name || '',
     last_name: client.last_name || '',
     phone: client.phone || '',
@@ -681,12 +728,15 @@ function ClientModal({ client, onClose, onSaved }: {
     billing_city: client.billing_city || '',
     billing_postcode: client.billing_postcode || '',
     billing_country: client.billing_country || 'United Kingdom',
+    owner_staff_id: String(client.owner_staff_id || ''),
   } : blankForm())
   const [saving, setSaving] = useState(false)
   const [error, setError]   = useState('')
   const [tab, setTab]       = useState<'details' | 'profile' | 'billing'>('details')
 
-  const up = (field: string, val: any) => setForm(p => ({ ...p, [field]: val }))
+  const up = <K extends keyof ClientForm>(field: K, val: ClientForm[K]) => {
+    setForm(prev => ({ ...prev, [field]: val }))
+  }
 
   function toggleTag(key: string) {
     setForm(p => ({
@@ -721,13 +771,40 @@ function ClientModal({ client, onClose, onSaved }: {
       billing_city:         form.billing_city || null,
       billing_postcode:     form.billing_postcode || null,
       billing_country:      form.billing_country || 'United Kingdom',
+      owner_staff_id: isManager(currentStaff)
+        ? (form.owner_staff_id ? Number(form.owner_staff_id) : null)
+        : (client?.owner_staff_id ?? currentStaff?.id ?? null),
     }
 
-    const { error: err } = client
-      ? await supabase.from('clients').update(payload).eq('id', client.id)
-      : await supabase.from('clients').insert(payload)
+    const { data, error: err } = client
+      ? await supabase.from('clients').update(payload).eq('id', client.id).select('id').single()
+      : await supabase.from('clients').insert(payload).select('id').single()
 
     if (err) { setError(err.message); setSaving(false); return }
+    const entityId = client?.id || data?.id
+    if (entityId) {
+      if (client) {
+        await logAuditEntries(buildFieldAuditEntries({
+          entityType: 'client',
+          entityId,
+          performedBy: currentStaff,
+          action: 'client_updated',
+          before: client,
+          after: payload,
+          fields: ['first_name', 'last_name', 'phone', 'email', 'date_of_birth', 'source', 'advisor_notes', 'billing_address_line1', 'billing_city', 'billing_postcode', 'billing_country', 'owner_staff_id'],
+        }))
+      } else {
+        await logAuditEntries([{
+          entity_type: 'client',
+          entity_id: entityId,
+          action: 'client_created',
+          new_value: payload,
+          performed_by_staff_id: currentStaff?.id ?? null,
+          performed_by_role: currentStaff?.role ?? null,
+          notes: 'Client created',
+        }])
+      }
+    }
     onSaved()
   }
 
@@ -793,6 +870,19 @@ function ClientModal({ client, onClose, onSaved }: {
             <div>
               <label className="label">Special Occasions</label>
               <input className="input" placeholder="e.g. Anniversary in June, Honeymoon, 50th Birthday" value={form.special_occasions} onChange={e => up('special_occasions', e.target.value)} />
+            </div>
+            <div>
+              <label className="label">Owner</label>
+              {isManager(currentStaff) ? (
+                <select className="input" value={form.owner_staff_id} onChange={e => up('owner_staff_id', e.target.value)}>
+                  <option value="">Unassigned</option>
+                  {staffUsers.map(staff => <option key={staff.id} value={staff.id}>{staff.name} · {staff.role || 'staff'}</option>)}
+                </select>
+              ) : (
+                <div className="input" style={{ display:'flex', alignItems:'center', background:'var(--bg-secondary)' }}>
+                  {staffUsers.find(staff => staff.id === Number(form.owner_staff_id || currentStaff?.id || 0))?.name || currentStaff?.name || 'Unassigned'}
+                </div>
+              )}
             </div>
             <div>
               <label className="label">Advisor Notes (internal only)</label>

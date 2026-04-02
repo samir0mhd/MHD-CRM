@@ -1,8 +1,10 @@
 'use client'
 
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useState, useRef, type CSSProperties } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
+import { buildFieldAuditEntries, logAuditEntries } from '@/lib/audit'
+import { getAccessContext, isManager, type StaffUser } from '@/lib/access'
 import Link from 'next/link'
 
 type Deal = {
@@ -17,10 +19,11 @@ type Deal = {
   lost_reason: string | null
   created_at: string
   client_id: number | null
-  clients?: { id: number; first_name: string; last_name: string; phone: string; email: string; date_of_birth: string | null }
+  staff_id: number | null
+  clients?: { id: number; first_name: string; last_name: string; phone: string; email: string; date_of_birth: string | null; owner_staff_id?: number | null }
   quotes?: Quote[]
   activities?: Activity[]
-  bookings?: { id: number; booking_reference: string }[]
+  bookings?: { id: number; booking_reference: string; staff_id: number | null }[]
 }
 
 type Quote = {
@@ -54,6 +57,30 @@ type Activity = {
   id: number; deal_id: number; activity_type: string; notes: string | null; created_at: string
 }
 
+type CelebrationMilestone = {
+  tier: 'bronze' | 'silver' | 'gold'
+  label: string
+  color: string
+  target: number
+  bonus: number
+  reachedTotal: number
+}
+
+type TargetTierRow = {
+  profit_target_bronze: number | null
+  profit_target_silver: number | null
+  profit_target_gold: number | null
+  bonus_bronze: number | null
+  bonus_silver: number | null
+  bonus_gold: number | null
+}
+
+type BookingTargetLookup = {
+  deals?: {
+    quotes?: Quote[]
+  } | null
+}
+
 const STAGES = ['NEW_LEAD','QUOTE_SENT','ENGAGED','FOLLOW_UP','DECISION_PENDING','BOOKED']
 
 const STAGE_LABELS: Record<string,string> = {
@@ -80,35 +107,99 @@ const ACT_ICONS: Record<string,string> = {
   CALL:'📞', EMAIL:'📧', WHATSAPP:'💬', NOTE:'📝', MEETING:'🤝', FOLLOW_UP:'🔔'
 }
 
+const FIREWORKS = [
+  { left: '16%', top: '18%', color: '#f59e0b', delay: '0s', size: 150 },
+  { left: '82%', top: '16%', color: '#38bdf8', delay: '0.35s', size: 170 },
+  { left: '11%', top: '70%', color: '#f472b6', delay: '0.75s', size: 140 },
+  { left: '88%', top: '72%', color: '#10b981', delay: '1.1s', size: 165 },
+  { left: '50%', top: '10%', color: '#facc15', delay: '1.45s', size: 190 },
+]
+
+const PROFIT_TIERS = [
+  { tier: 'gold', label: 'Gold Target Hit', color: '#f59e0b', targetKey: 'profit_target_gold', bonusKey: 'bonus_gold' },
+  { tier: 'silver', label: 'Silver Target Hit', color: '#cbd5e1', targetKey: 'profit_target_silver', bonusKey: 'bonus_silver' },
+  { tier: 'bronze', label: 'Bronze Target Hit', color: '#cd7f32', targetKey: 'profit_target_bronze', bonusKey: 'bonus_bronze' },
+] as const
+
 const BOOKING_TASKS = [
   { key:'deposit_received',      name:'Deposit received',               category:'Financial',     sort:1  },
   { key:'balance_due_set',       name:'Balance due date set',           category:'Financial',     sort:2  },
-  { key:'balance_chased',        name:'Balance payment chased',         category:'Financial',     sort:3  },
-  { key:'balance_received',      name:'Balance payment received',       category:'Financial',     sort:4  },
-  { key:'final_costing',         name:'Final costing confirmed',        category:'Financial',     sort:5  },
-  { key:'flights_ticketed',      name:'Flights ticketed',               category:'Flights',       sort:6  },
-  { key:'ticket_numbers',        name:'Ticket numbers recorded',        category:'Flights',       sort:7  },
-  { key:'etickets_sent',         name:'E-tickets sent to client',       category:'Flights',       sort:8  },
-  { key:'hotel_confirmation',    name:'Hotel confirmation received',    category:'Accommodation', sort:9  },
-  { key:'rooming_list',          name:'Hotel rooming list sent',        category:'Accommodation', sort:10 },
-  { key:'special_requests',      name:'Special requests confirmed',     category:'Accommodation', sort:11 },
-  { key:'transfers_booked',      name:'Transfers booked with DMC',      category:'Transfers',     sort:12 },
-  { key:'transfer_confirmation', name:'Transfer confirmation received', category:'Transfers',     sort:13 },
-  { key:'arrival_details_sent',  name:'Arrival details sent to DMC',   category:'Transfers',     sort:14 },
-  { key:'booking_confirmation',  name:'Booking confirmation sent',      category:'Documents',     sort:15 },
-  { key:'travel_docs',           name:'Travel documents issued',        category:'Documents',     sort:16 },
-  { key:'welcome_pack',          name:'Welcome pack sent',              category:'Documents',     sort:17 },
-  { key:'atol_certificate',      name:'ATOL certificate issued',        category:'Documents',     sort:18 },
-  { key:'predeparture_call',     name:'Pre-departure call made',        category:'Pre-Departure', sort:19 },
-  { key:'emergency_contact',     name:'Emergency contact confirmed',    category:'Pre-Departure', sort:20 },
-  { key:'welcome_back_call',     name:'Welcome back call made',         category:'Post-Trip',     sort:21 },
-  { key:'review_requested',      name:'Review requested (Trustpilot)',  category:'Post-Trip',     sort:22 },
-  { key:'rebook_conversation',   name:'Re-booking conversation started',category:'Post-Trip',     sort:23 },
+  { key:'balance_received',      name:'Balance received',               category:'Financial',     sort:3  },
+  { key:'final_costing',         name:'Final costing confirmed',        category:'Financial',     sort:4  },
+  { key:'flights_ticketed',      name:'Flights ticketed',               category:'Flights',       sort:5  },
+  { key:'etickets_sent',         name:'E-tickets sent to client',       category:'Flights',       sort:6  },
+  { key:'hotel_confirmation',    name:'Hotel confirmation received',    category:'Accommodation', sort:7  },
+  { key:'special_requests',      name:'Special requests confirmed',     category:'Accommodation', sort:8  },
+  { key:'transfer_confirmation', name:'Transfers confirmed',            category:'Transfers',     sort:9  },
+  { key:'booking_confirmation',  name:'Booking confirmation sent',      category:'Documents',     sort:10 },
+  { key:'travel_docs',           name:'Travel documents issued',        category:'Documents',     sort:11 },
+  { key:'atol_certificate',      name:'ATOL certificate issued',        category:'Documents',     sort:12 },
+  { key:'predeparture_call',     name:'Pre-departure contact made',     category:'Pre-Departure', sort:13 },
+  { key:'review_requested',      name:'Post-trip review requested',     category:'Post-Trip',     sort:14 },
+  { key:'rebook_conversation',   name:'Re-book conversation started',   category:'Post-Trip',     sort:15 },
 ]
 
 const fmt     = (n:number) => '£'+(n||0).toLocaleString('en-GB',{maximumFractionDigits:0})
 const fmtDate = (d:string|null) => !d ? '—' : new Date(d).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})
 const fmtFull = (d:string|null) => !d ? '—' : new Date(d+'T12:00').toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})
+
+function bestQuoteProfit(quotes: Quote[] | undefined) {
+  if (!quotes || quotes.length === 0) return 0
+  const sentQuotes = quotes
+    .filter(quote => quote.sent_to_client)
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+  const bestQuote = sentQuotes[0] || [...quotes].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0]
+  return Number(bestQuote?.profit || 0)
+}
+
+async function resolveCelebrationMilestone(staffId: number | null, addedProfit: number) {
+  if (!staffId || addedProfit <= 0) return null
+
+  const now = new Date()
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1)
+  const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999)
+
+  const [{ data: targetRowData }, { data: monthlyBookings }] = await Promise.all([
+    supabase
+      .from('targets')
+      .select('profit_target_bronze,profit_target_silver,profit_target_gold,bonus_bronze,bonus_silver,bonus_gold')
+      .eq('month', now.getMonth() + 1)
+      .eq('year', now.getFullYear())
+      .maybeSingle(),
+    supabase
+      .from('bookings')
+      .select('deals(quotes(profit, sent_to_client, created_at))')
+      .eq('staff_id', staffId)
+      .eq('status', 'CONFIRMED')
+      .gte('created_at', monthStart.toISOString())
+      .lte('created_at', monthEnd.toISOString()),
+  ])
+
+  const targetRow = targetRowData as TargetTierRow | null
+  if (!targetRow) return null
+
+  const currentProfit = ((monthlyBookings || []) as BookingTargetLookup[]).reduce((sum, booking) => {
+    return sum + bestQuoteProfit(booking.deals?.quotes)
+  }, 0)
+  const reachedTotal = currentProfit + addedProfit
+
+  for (const tier of PROFIT_TIERS) {
+    const target = Number(targetRow[tier.targetKey] || 0)
+    if (!target) continue
+    if (currentProfit < target && reachedTotal >= target) {
+      return {
+        tier: tier.tier,
+        label: tier.label,
+        color: tier.color,
+        target,
+        bonus: Number(targetRow[tier.bonusKey] || 0),
+        reachedTotal,
+      } satisfies CelebrationMilestone
+    }
+  }
+
+  return null
+}
 
 export default function DealDetailPage() {
   const { id }    = useParams()
@@ -128,22 +219,44 @@ export default function DealDetailPage() {
   const [savingNext, setSavingNext]   = useState(false)
   const [nextSaved, setNextSaved]     = useState(false)
   const [expandedQuote, setExpandedQuote] = useState<number|null>(null)
-  const [celebration, setCelebration] = useState<{ ref: string; value: number; profit: number; clientName: string; hotel: string } | null>(null)
+  const [celebration, setCelebration] = useState<{
+    ref: string
+    value: number
+    profit: number
+    clientName: string
+    hotel: string
+    consultantName: string | null
+    milestone: CelebrationMilestone | null
+  } | null>(null)
+  const [staffUsers, setStaffUsers]   = useState<StaffUser[]>([])
+  const [currentStaff, setCurrentStaff] = useState<StaffUser | null>(null)
+  const [ownerDraft, setOwnerDraft]   = useState('')
+  const [savingOwner, setSavingOwner] = useState(false)
   const toastTimer = useRef<any>(null)
 
-  useEffect(() => { loadDeal() }, [id])
+  useEffect(() => {
+    void loadDeal()
+    void loadAccess()
+  }, [id])
 
   async function loadDeal() {
     setLoading(true)
     const { data } = await supabase.from('deals')
-      .select('*, clients(*), quotes(*), activities(*), bookings(id, booking_reference)')
+      .select('*, clients(*), quotes(*), activities(*), bookings(id, booking_reference, staff_id)')
       .eq('id', id).single()
     if (data) {
       setDeal(data)
       setNextActType(data.next_activity_type || '')
       setNextActDate(data.next_activity_at ? data.next_activity_at.split('T')[0] : '')
+      setOwnerDraft(String(data.staff_id || data.clients?.owner_staff_id || ''))
     }
     setLoading(false)
+  }
+
+  async function loadAccess() {
+    const { staffUsers, currentStaff } = await getAccessContext()
+    setStaffUsers(staffUsers)
+    setCurrentStaff(currentStaff)
   }
 
   function showToast(msg:string, type:'success'|'error'='success') {
@@ -225,9 +338,13 @@ export default function DealDetailPage() {
         const dep = new Date(deal.departure_date)
         balanceDueDate = new Date(dep.getTime()-84*86400000).toISOString().split('T')[0]
       }
+      const topQuote = (deal.quotes||[]).sort((a,b)=>(b.profit||0)-(a.profit||0))[0]
+      const consultantId = deal.staff_id || deal.clients?.owner_staff_id || null
+      const milestone = await resolveCelebrationMilestone(consultantId, Number(topQuote?.profit || 0))
+
       const { data: booking, error } = await supabase.from('bookings').insert({
         deal_id:deal.id, booking_reference:bookingRef, departure_date:deal.departure_date,
-        status:'CONFIRMED', balance_due_date:balanceDueDate, deposit_received:false,
+        status:'CONFIRMED', balance_due_date:balanceDueDate, deposit_received:false, staff_id: deal.staff_id || deal.clients?.owner_staff_id || null,
       }).select().single()
       if (error) throw error
       await supabase.from('booking_tasks').insert(BOOKING_TASKS.map(t=>({ booking_id:booking.id, task_name:t.name, task_key:t.key, category:t.category, sort_order:t.sort, is_done:false })))
@@ -237,10 +354,18 @@ export default function DealDetailPage() {
       }
       await supabase.from('deals').update({ stage:'BOOKED' }).eq('id', deal.id)
       await supabase.from('activities').insert({ deal_id:deal.id, activity_type:'BOOKING_CREATED', notes:`Booking confirmed — Ref: ${bookingRef}` })
-      const topQuote = (deal.quotes||[]).sort((a,b)=>(b.profit||0)-(a.profit||0))[0]
       const clientName = deal.clients ? `${deal.clients.first_name} ${deal.clients.last_name}` : deal.title
       const topHotel = topQuote?.hotel || ''
-      setCelebration({ ref: bookingRef, value: deal.deal_value||0, profit: topQuote?.profit||0, clientName, hotel: topHotel })
+      const consultantName = staffUsers.find(staff => staff.id === consultantId)?.name || null
+      setCelebration({
+        ref: bookingRef,
+        value: deal.deal_value||0,
+        profit: topQuote?.profit||0,
+        clientName,
+        hotel: topHotel,
+        consultantName,
+        milestone,
+      })
       setTimeout(() => { router.refresh(); router.push('/bookings') }, 5500)
     } catch (err:any) {
       showToast('Error creating booking — '+err.message, 'error')
@@ -255,6 +380,79 @@ export default function DealDetailPage() {
     setShowLost(false); showToast('Deal marked as lost'); loadDeal()
   }
 
+  async function saveOwnership() {
+    if (!deal || !isManager(currentStaff) || !ownerDraft) return
+    const nextStaffId = Number(ownerDraft)
+    const bookingTargets = (deal.bookings || []).filter(booking => booking.staff_id !== nextStaffId)
+    const auditEntries = [
+      ...(client
+        ? buildFieldAuditEntries({
+            entityType: 'client',
+            entityId: client.id,
+            performedBy: currentStaff,
+            action: 'ownership_reassigned',
+            before: { owner_staff_id: client.owner_staff_id ?? null },
+            after: { owner_staff_id: nextStaffId },
+            fields: ['owner_staff_id'],
+            notes: `Ownership reassigned from deal ${deal.id}`,
+          })
+        : []),
+      ...buildFieldAuditEntries({
+        entityType: 'deal',
+        entityId: deal.id,
+        performedBy: currentStaff,
+        action: 'ownership_reassigned',
+        before: { staff_id: deal.staff_id ?? null },
+        after: { staff_id: nextStaffId },
+        fields: ['staff_id'],
+        notes: 'Deal ownership realigned',
+      }),
+      ...bookingTargets.flatMap(booking =>
+        buildFieldAuditEntries({
+          entityType: 'booking',
+          entityId: booking.id,
+          performedBy: currentStaff,
+          action: 'ownership_reassigned',
+          before: { staff_id: booking.staff_id ?? null },
+          after: { staff_id: nextStaffId },
+          fields: ['staff_id'],
+          notes: `Inherited from deal ${deal.id}`,
+        })
+      ),
+    ]
+
+    if (auditEntries.length === 0) {
+      showToast('Ownership already aligned')
+      return
+    }
+
+    setSavingOwner(true)
+    try {
+      if (client && client.owner_staff_id !== nextStaffId) {
+        const { error } = await supabase.from('clients').update({ owner_staff_id: nextStaffId }).eq('id', client.id)
+        if (error) throw error
+      }
+
+      if (deal.staff_id !== nextStaffId) {
+        const { error } = await supabase.from('deals').update({ staff_id: nextStaffId }).eq('id', deal.id)
+        if (error) throw error
+      }
+
+      if (bookingTargets.length > 0) {
+        const { error } = await supabase.from('bookings').update({ staff_id: nextStaffId }).in('id', bookingTargets.map(booking => booking.id))
+        if (error) throw error
+      }
+
+      await logAuditEntries(auditEntries)
+      showToast('Ownership updated ✓')
+      await loadDeal()
+    } catch (err: any) {
+      showToast(err.message || 'Failed to update ownership', 'error')
+    } finally {
+      setSavingOwner(false)
+    }
+  }
+
   if (loading) return <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:'80vh' }}><div style={{ color:'var(--text-muted)', fontSize:'14px' }}>Loading deal…</div></div>
   if (!deal)   return <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:'80vh' }}><div style={{ color:'var(--text-muted)', fontSize:'14px' }}>Deal not found</div></div>
 
@@ -267,6 +465,10 @@ export default function DealDetailPage() {
   const stageIdx = STAGES.indexOf(deal.stage)
   const totalQ   = quotes.reduce((a,q)=>a+(q.price||0),0)
   const totalP   = quotes.reduce((a,q)=>a+(q.profit||0),0)
+  const assignedStaffId = deal.staff_id || client?.owner_staff_id || null
+  const assignedStaff = staffUsers.find(staff => staff.id === assignedStaffId) || null
+  const clientOwnerMismatch = (client?.owner_staff_id ?? null) !== (deal.staff_id ?? null)
+  const bookingOwnerMismatch = (deal.bookings || []).some(booking => booking.staff_id !== assignedStaffId)
 
   const TABS = [
     { key:'overview',  label:'Overview'                    },
@@ -275,133 +477,247 @@ export default function DealDetailPage() {
     { key:'booking',   label:'Booking'                     },
   ] as const
 
-  /* ── FIFA-style celebration overlay ──────────────────────── */
+  /* ── Booking Celebration ──────────────────────── */
   if (celebration) {
-    const MESSAGES = [
-      'PARADISE CONFIRMED', 'DEAL SEALED — PARADISE AWAITS', 'ISLAND ESCAPE BOOKED',
-      'LUXURY UNLOCKED', 'THEY\'RE GOING TO MAURITIUS', 'COMMISSION EARNED',
-    ]
-    const headline = MESSAGES[Math.floor(Math.random() * MESSAGES.length)]
+    const milestone = celebration.milestone
+    const headline = milestone ? milestone.label : 'Booking Confirmed'
+    const strapline = milestone
+      ? `${celebration.consultantName || 'Sales'} just pushed through a monthly target`
+      : 'Another Mauritius escape is officially on the books'
     return (
       <div onClick={() => setCelebration(null)} style={{
         position:'fixed', inset:0, zIndex:9999,
-        background:'radial-gradient(ellipse at 50% 40%, #0a1628 0%, #000 100%)',
+        background:'radial-gradient(circle at 50% 20%, rgba(16,185,129,0.18), transparent 28%), radial-gradient(circle at 10% 20%, rgba(59,130,246,0.18), transparent 22%), radial-gradient(circle at 88% 18%, rgba(245,158,11,0.22), transparent 24%), linear-gradient(180deg, #07111f 0%, #04070d 100%)',
         display:'flex', alignItems:'center', justifyContent:'center',
         flexDirection:'column', cursor:'pointer',
         animation:'celebFadeIn 0.4s ease',
       }}>
         <style>{`
           @keyframes celebFadeIn { from { opacity:0 } to { opacity:1 } }
-          @keyframes cardFlip { 0%{transform:perspective(900px) rotateY(90deg) scale(0.8);opacity:0} 60%{transform:perspective(900px) rotateY(-8deg) scale(1.04);opacity:1} 100%{transform:perspective(900px) rotateY(0deg) scale(1);opacity:1} }
-          @keyframes shimmer { 0%,100%{opacity:0.4} 50%{opacity:0.9} }
+          @keyframes cardLift { 0%{transform:translateY(30px) scale(0.92);opacity:0} 100%{transform:translateY(0) scale(1);opacity:1} }
           @keyframes riseUp { from{transform:translateY(24px);opacity:0} to{transform:translateY(0);opacity:1} }
-          @keyframes starBurst { 0%{transform:scale(0) rotate(0deg);opacity:1} 100%{transform:scale(1.8) rotate(180deg);opacity:0} }
-          @keyframes goldPulse { 0%,100%{text-shadow:0 0 30px #f59e0b88} 50%{text-shadow:0 0 60px #f59e0bcc,0 0 100px #f59e0b44} }
+          @keyframes pulseGlow { 0%,100%{box-shadow:0 0 0 rgba(245,158,11,0)} 50%{box-shadow:0 0 45px rgba(245,158,11,0.16)} }
+          @keyframes sparkFly {
+            0% { transform: rotate(var(--angle)) translateX(0) scale(0.3); opacity:1; }
+            100% { transform: rotate(var(--angle)) translateX(var(--distance)) scale(1); opacity:0; }
+          }
+          @keyframes emberFloat {
+            0% { transform: translateY(0) scale(0.8); opacity:0; }
+            20% { opacity:1; }
+            100% { transform: translateY(-120px) scale(1.15); opacity:0; }
+          }
+          @keyframes countdown {
+            from { transform: scaleX(1); }
+            to { transform: scaleX(0); }
+          }
         `}</style>
 
-        {/* Stars background */}
-        {[...Array(24)].map((_,i) => (
-          <div key={i} style={{
+        {FIREWORKS.map((burst, burstIndex) => (
+          <div key={`${burst.left}-${burst.top}`} style={{
             position:'absolute',
-            left:`${Math.random()*100}%`, top:`${Math.random()*100}%`,
-            width:`${2+Math.random()*3}px`, height:`${2+Math.random()*3}px`,
-            borderRadius:'50%', background:'#f59e0b',
-            animation:`shimmer ${1.5+Math.random()*2}s ease-in-out infinite`,
-            animationDelay:`${Math.random()*2}s`, opacity:0.5,
-          }}/>
+            left: burst.left,
+            top: burst.top,
+            width: 0,
+            height: 0,
+            pointerEvents: 'none',
+          }}>
+            {[...Array(18)].map((_, i) => (
+              <span key={i} style={{
+                '--angle': `${i * 20}deg`,
+                '--distance': `${burst.size}px`,
+                position: 'absolute',
+                width: '8px',
+                height: '8px',
+                borderRadius: '999px',
+                background: burst.color,
+                boxShadow: `0 0 18px ${burst.color}`,
+                animation: `sparkFly 1.45s ease-out infinite`,
+                animationDelay: `calc(${burst.delay} + ${i * 0.035}s)`,
+                opacity: 0,
+              } as CSSProperties} />
+            ))}
+            {[...Array(4)].map((_, i) => (
+              <span key={`ember-${i}`} style={{
+                position: 'absolute',
+                left: `${-30 + i * 18}px`,
+                top: `${10 + i * 8}px`,
+                width: '4px',
+                height: '4px',
+                borderRadius: '999px',
+                background: burstIndex % 2 === 0 ? '#fef08a' : '#ffffff',
+                boxShadow: '0 0 18px rgba(255,255,255,0.8)',
+                animation: `emberFloat 2.2s ease-out infinite`,
+                animationDelay: `calc(${burst.delay} + ${i * 0.18}s)`,
+                opacity: 0,
+              }} />
+            ))}
+          </div>
         ))}
 
-        {/* Card */}
         <div style={{
-          width:'min(460px,90vw)',
-          background:'linear-gradient(145deg,#1a1a2e 0%,#16213e 40%,#0f3460 100%)',
-          border:'1.5px solid #f59e0b55',
-          borderRadius:'24px', padding:'48px 40px 40px',
-          boxShadow:'0 0 80px #f59e0b22, 0 40px 80px rgba(0,0,0,0.6)',
-          animation:'cardFlip 0.7s cubic-bezier(0.23,1,0.32,1) both',
-          position:'relative', overflow:'hidden', textAlign:'center',
+          width:'min(560px, 92vw)',
+          background:'linear-gradient(180deg, rgba(10,17,31,0.9) 0%, rgba(11,20,37,0.82) 100%)',
+          border:'1px solid rgba(148,163,184,0.18)',
+          borderRadius:'30px',
+          padding:'34px 34px 28px',
+          boxShadow:'0 32px 90px rgba(0,0,0,0.48)',
+          animation:'cardLift 0.55s cubic-bezier(0.2,1,0.22,1) both, pulseGlow 2.4s ease-in-out infinite',
+          position:'relative',
+          overflow:'hidden',
+          textAlign:'center',
+          backdropFilter:'blur(14px)',
         }}>
-          {/* Gold shimmer line */}
-          <div style={{ position:'absolute', top:0, left:0, right:0, height:'2px', background:'linear-gradient(90deg,transparent,#f59e0b,transparent)', animation:'shimmer 2s ease-in-out infinite' }}/>
-
-          {/* Crown / star burst */}
-          <div style={{ fontSize:'48px', marginBottom:'12px', display:'block', animation:'riseUp 0.5s 0.3s both' }}>✦</div>
-
-          {/* Headline */}
           <div style={{
-            fontFamily:'Fraunces, serif', fontWeight:300, fontStyle:'italic',
-            fontSize:'13px', letterSpacing:'0.25em', color:'#f59e0b',
-            textTransform:'uppercase', marginBottom:'24px',
-            animation:'riseUp 0.5s 0.4s both', animationFillMode:'both',
+            position:'absolute',
+            inset:'0 auto auto 0',
+            width:'100%',
+            height:'1px',
+            background:'linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent)',
+          }} />
+
+          <div style={{
+            display:'inline-flex',
+            alignItems:'center',
+            gap:'8px',
+            borderRadius:'999px',
+            padding:'8px 14px',
+            background: milestone ? `${milestone.color}22` : 'rgba(255,255,255,0.06)',
+            border: `1px solid ${milestone ? `${milestone.color}66` : 'rgba(255,255,255,0.08)'}`,
+            color: milestone?.color || '#f8fafc',
+            fontSize:'11px',
+            fontWeight:'700',
+            letterSpacing:'0.14em',
+            textTransform:'uppercase',
+            marginBottom:'18px',
+            animation:'riseUp 0.45s 0.12s both',
           }}>
-            {headline}
+            <span>{milestone ? '✦' : '✈'}</span>
+            <span>{headline}</span>
           </div>
 
-          {/* Client name */}
           <div style={{
-            fontFamily:'Outfit, sans-serif', fontSize:'15px', color:'#94a3b8',
-            marginBottom:'6px', animation:'riseUp 0.5s 0.5s both',
+            fontFamily:'Fraunces, serif',
+            fontSize:'52px',
+            lineHeight:0.96,
+            letterSpacing:'-0.04em',
+            color:'#f8fafc',
+            marginBottom:'12px',
+            animation:'riseUp 0.5s 0.2s both',
           }}>
-            {celebration.clientName}
-            {celebration.hotel && <span style={{ color:'#64748b' }}> · {celebration.hotel}</span>}
+            Booking
+            <br />
+            locked in
           </div>
 
-          {/* Booking ref */}
           <div style={{
-            fontFamily:'Outfit, sans-serif', fontSize:'12px', letterSpacing:'0.15em',
-            color:'#f59e0b99', textTransform:'uppercase', marginBottom:'32px',
-            animation:'riseUp 0.5s 0.55s both',
+            fontFamily:'Outfit, sans-serif',
+            fontSize:'14px',
+            color:'#94a3b8',
+            marginBottom:'22px',
+            animation:'riseUp 0.5s 0.28s both',
           }}>
-            Ref: {celebration.ref}
+            {strapline}
           </div>
 
-          {/* Divider */}
-          <div style={{ height:'1px', background:'linear-gradient(90deg,transparent,#f59e0b44,transparent)', marginBottom:'32px' }}/>
-
-          {/* Value + Profit */}
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'16px', marginBottom:'40px' }}>
-            <div style={{ animation:'riseUp 0.5s 0.65s both' }}>
-              <div style={{ fontSize:'11px', color:'#64748b', fontFamily:'Outfit, sans-serif', textTransform:'uppercase', letterSpacing:'0.1em', marginBottom:'8px' }}>Booking Value</div>
-              <div style={{ fontFamily:'Fraunces, serif', fontWeight:300, fontSize:'34px', color:'#f59e0b', lineHeight:1, animation:'goldPulse 2s ease-in-out infinite' }}>
-                £{(celebration.value||0).toLocaleString('en-GB',{maximumFractionDigits:0})}
+          <div style={{
+            display:'grid',
+            gridTemplateColumns:'1.15fr 0.85fr',
+            gap:'14px',
+            marginBottom:'18px',
+            textAlign:'left',
+          }}>
+            <div style={{
+              background:'rgba(255,255,255,0.05)',
+              border:'1px solid rgba(255,255,255,0.08)',
+              borderRadius:'20px',
+              padding:'18px 18px 16px',
+              animation:'riseUp 0.5s 0.34s both',
+            }}>
+              <div style={{ fontSize:'11px', color:'#94a3b8', textTransform:'uppercase', letterSpacing:'0.12em', marginBottom:'8px' }}>
+                Client / Booking
+              </div>
+              <div style={{ fontSize:'20px', fontWeight:'700', color:'#f8fafc', marginBottom:'6px' }}>{celebration.clientName}</div>
+              <div style={{ fontSize:'13px', color:'#cbd5e1' }}>
+                {celebration.hotel || deal.title}
+              </div>
+              <div style={{ marginTop:'12px', fontFamily:'monospace', fontSize:'12px', color:'#fbbf24', letterSpacing:'0.1em' }}>
+                REF {celebration.ref}
               </div>
             </div>
-            {celebration.profit > 0 && (
-              <div style={{ animation:'riseUp 0.5s 0.75s both' }}>
-                <div style={{ fontSize:'11px', color:'#64748b', fontFamily:'Outfit, sans-serif', textTransform:'uppercase', letterSpacing:'0.1em', marginBottom:'8px' }}>Your Profit</div>
-                <div style={{ fontFamily:'Fraunces, serif', fontWeight:300, fontSize:'34px', color:'#10b981', lineHeight:1 }}>
-                  £{(celebration.profit||0).toLocaleString('en-GB',{maximumFractionDigits:0})}
+
+            <div style={{ display:'grid', gap:'14px' }}>
+              <div style={{
+                background:'rgba(255,255,255,0.05)',
+                border:'1px solid rgba(255,255,255,0.08)',
+                borderRadius:'20px',
+                padding:'16px 16px 14px',
+                animation:'riseUp 0.5s 0.42s both',
+              }}>
+                <div style={{ fontSize:'11px', color:'#94a3b8', textTransform:'uppercase', letterSpacing:'0.12em', marginBottom:'8px' }}>Booking Value</div>
+                <div style={{ fontFamily:'Fraunces, serif', fontSize:'32px', color:'#f8fafc', lineHeight:1 }}>
+                  £{(celebration.value||0).toLocaleString('en-GB',{maximumFractionDigits:0})}
                 </div>
               </div>
-            )}
+
+              {celebration.profit > 0 && (
+                <div style={{
+                  background:'rgba(16,185,129,0.09)',
+                  border:'1px solid rgba(16,185,129,0.22)',
+                  borderRadius:'20px',
+                  padding:'16px 16px 14px',
+                  animation:'riseUp 0.5s 0.5s both',
+                }}>
+                  <div style={{ fontSize:'11px', color:'#86efac', textTransform:'uppercase', letterSpacing:'0.12em', marginBottom:'8px' }}>Est. Profit</div>
+                  <div style={{ fontFamily:'Fraunces, serif', fontSize:'32px', color:'#bbf7d0', lineHeight:1 }}>
+                    £{(celebration.profit||0).toLocaleString('en-GB',{maximumFractionDigits:0})}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
 
-          {/* Dismiss hint */}
-          <div style={{ fontSize:'11px', color:'#334155', fontFamily:'Outfit, sans-serif', letterSpacing:'0.05em' }}>
+          {milestone && (
+            <div style={{
+              marginBottom:'18px',
+              background:`linear-gradient(135deg, ${milestone.color}22 0%, rgba(255,255,255,0.04) 100%)`,
+              border:`1px solid ${milestone.color}55`,
+              borderRadius:'20px',
+              padding:'16px 18px',
+              textAlign:'left',
+              animation:'riseUp 0.5s 0.58s both',
+            }}>
+              <div style={{ display:'flex', justifyContent:'space-between', gap:'12px', alignItems:'center', marginBottom:'8px' }}>
+                <div style={{ fontSize:'12px', fontWeight:'800', letterSpacing:'0.12em', textTransform:'uppercase', color:milestone.color }}>
+                  {milestone.label}
+                </div>
+                {milestone.bonus > 0 && (
+                  <div style={{ fontSize:'12px', fontWeight:'700', color:'#f8fafc' }}>
+                    Bonus £{milestone.bonus.toLocaleString('en-GB', { maximumFractionDigits: 0 })}
+                  </div>
+                )}
+              </div>
+              <div style={{ fontSize:'13px', color:'#cbd5e1', lineHeight:1.6 }}>
+                Monthly booked profit now at <strong style={{ color:'#f8fafc' }}>£{milestone.reachedTotal.toLocaleString('en-GB', { maximumFractionDigits: 0 })}</strong>
+                {' '}against the <strong style={{ color: milestone.color }}>£{milestone.target.toLocaleString('en-GB', { maximumFractionDigits: 0 })}</strong> target.
+              </div>
+            </div>
+          )}
+
+          <div style={{ fontSize:'11px', color:'#64748b', letterSpacing:'0.06em', textTransform:'uppercase', animation:'riseUp 0.5s 0.65s both' }}>
             tap anywhere to continue
           </div>
 
-          {/* Progress bar */}
-          <div style={{ position:'absolute', bottom:0, left:0, right:0, height:'3px', background:'#1e293b' }}>
-            <div style={{ height:'100%', background:'linear-gradient(90deg,#f59e0b,#10b981)', width:'100%', animation:'shimmer 1s linear 5s forwards', transformOrigin:'left', transition:'width 5.5s linear' }}/>
+          <div style={{ position:'absolute', bottom:0, left:0, right:0, height:'4px', background:'rgba(255,255,255,0.08)' }}>
+            <div style={{
+              height:'100%',
+              background: milestone
+                ? `linear-gradient(90deg, ${milestone.color}, #f8fafc)`
+                : 'linear-gradient(90deg, #38bdf8, #10b981, #f59e0b)',
+              transformOrigin:'left',
+              animation:'countdown 5.5s linear forwards',
+            }} />
           </div>
         </div>
-
-        {/* Confetti-style dots bursting out */}
-        {[...Array(12)].map((_,i) => {
-          const angle = (i/12)*360
-          return (
-            <div key={i} style={{
-              position:'absolute', top:'50%', left:'50%',
-              width:'8px', height:'8px', borderRadius:'50%',
-              background:['#f59e0b','#10b981','#3b82f6','#ec4899','#8b5cf6'][i%5],
-              transform:`rotate(${angle}deg) translateX(${160+Math.random()*80}px)`,
-              animation:`shimmer ${1+Math.random()}s ease-in-out infinite`,
-              animationDelay:`${0.3+i*0.06}s`,
-              opacity:0.7,
-            }}/>
-          )
-        })}
       </div>
     )
   }
@@ -414,7 +730,10 @@ export default function DealDetailPage() {
           <Link href="/pipeline" style={{ color:'var(--text-muted)', textDecoration:'none', fontSize:'13px' }}>← Pipeline</Link>
           <div>
             <div className="page-title" style={{ fontSize:'22px' }}>{deal.title}</div>
-            <div style={{ fontSize:'13px', color:'var(--text-muted)' }}>{client?.first_name} {client?.last_name} · {client?.email}</div>
+            <div style={{ fontSize:'13px', color:'var(--text-muted)' }}>
+              {client?.first_name} {client?.last_name} · {client?.email}
+              {assignedStaff ? ` · Owner: ${assignedStaff.name}` : ' · Owner: Unassigned'}
+            </div>
           </div>
         </div>
         <div style={{ display:'flex', gap:'10px', alignItems:'center' }}>
@@ -603,6 +922,42 @@ export default function DealDetailPage() {
 
         {/* SIDEBAR */}
         <div style={{ display:'flex', flexDirection:'column', gap:'16px' }}>
+          <div className="card" style={{ padding:'18px' }}>
+            <div style={{ fontFamily:'Instrument Serif, serif', fontSize:'16px', marginBottom:'14px' }}>Ownership</div>
+            <div style={{ display:'flex', flexDirection:'column', gap:'10px' }}>
+              <div>
+                <div style={{ fontSize:'11px', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:'4px' }}>Assigned Consultant</div>
+                <div style={{ fontSize:'14px', fontWeight:'500', color:'var(--text-primary)' }}>{assignedStaff?.name || 'Unassigned'}</div>
+                <div style={{ fontSize:'12px', color:'var(--text-muted)', marginTop:'2px' }}>{assignedStaff?.role || 'Needs assignment for reporting'}</div>
+              </div>
+
+              {(clientOwnerMismatch || bookingOwnerMismatch) && (
+                <div style={{ background:'#fff7ed', border:'1px solid #fdba74', borderRadius:'10px', padding:'10px 12px', fontSize:'12px', color:'#9a3412', lineHeight:1.55 }}>
+                  Ownership is out of sync across this client, deal or booking. Realigning here updates the full chain.
+                </div>
+              )}
+
+              {isManager(currentStaff) ? (
+                <>
+                  <div>
+                    <label className="label">Manager Reassign</label>
+                    <select className="input" value={ownerDraft} onChange={e => setOwnerDraft(e.target.value)}>
+                      <option value="">Select consultant…</option>
+                      {staffUsers.map(staff => <option key={staff.id} value={String(staff.id)}>{staff.name} · {staff.role || 'staff'}</option>)}
+                    </select>
+                  </div>
+                  <button className="btn btn-secondary" onClick={saveOwnership} disabled={savingOwner || !ownerDraft}>
+                    {savingOwner ? 'Saving…' : 'Update Ownership'}
+                  </button>
+                </>
+              ) : (
+                <div style={{ fontSize:'12px', color:'var(--text-muted)' }}>
+                  Ownership is manager-controlled and stays sticky to the client.
+                </div>
+              )}
+            </div>
+          </div>
+
           <div className="card" style={{ padding:'18px' }}>
             <div style={{ fontFamily:'Instrument Serif, serif', fontSize:'16px', marginBottom:'14px' }}>◎ Next Action</div>
             <div style={{ marginBottom:'10px' }}>

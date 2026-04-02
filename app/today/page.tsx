@@ -37,7 +37,7 @@ type TicketAlert = {
   ticketing_deadline: string
   departure_date: string | null
   days_until: number
-  bookings?: { booking_reference: string; deals?: { title: string; clients?: { first_name: string; last_name: string; phone?: string; email?: string } } }
+  bookings?: { status?: string | null; booking_reference: string; deals?: { title: string; clients?: { first_name: string; last_name: string; phone?: string; email?: string } } }
 }
 
 type DepartureAlert = {
@@ -45,9 +45,33 @@ type DepartureAlert = {
   booking_reference: string
   departure_date: string
   destination: string | null
+  status?: string | null
   days_until: number
   deals?: { title: string; clients?: { first_name: string; last_name: string } }
 }
+
+type BookingTaskAlert = {
+  id: number
+  booking_id: number
+  task_name: string
+  task_key: string
+  category: string
+  notes: string | null
+  due_date: string
+  days_until: number
+  bookings?: {
+    status?: string | null
+    booking_reference: string
+    departure_date: string | null
+    deals?: { title: string; clients?: { first_name: string; last_name: string; phone?: string; email?: string } }
+  }
+}
+
+type DealQuery = Omit<DealAction, 'days_overdue' | 'priority_score'>
+type BalanceAlertQuery = Omit<BalanceAlert, 'days_overdue'>
+type TicketAlertQuery = Omit<TicketAlert, 'days_until'>
+type DepartureAlertQuery = Omit<DepartureAlert, 'days_until'>
+type BookingTaskAlertQuery = Omit<BookingTaskAlert, 'days_until'>
 
 // ── CONSTANTS ────────────────────────────────────────────────
 const STAGE_LABELS: Record<string,string> = {
@@ -121,13 +145,14 @@ export default function TodayPage() {
   const [balanceAlerts, setBalanceAlerts]   = useState<BalanceAlert[]>([])
   const [ticketAlerts, setTicketAlerts]     = useState<TicketAlert[]>([])
   const [departureAlerts, setDepartureAlerts] = useState<DepartureAlert[]>([])
+  const [taskAlerts, setTaskAlerts]         = useState<BookingTaskAlert[]>([])
   const [loading, setLoading]         = useState(true)
   const [completing, setCompleting]   = useState<number | null>(null)
+  const [completingTask, setCompletingTask] = useState<number | null>(null)
   const [snoozing, setSnoozing]       = useState<number | null>(null)
   const [toast, setToast]             = useState<{ msg: string; type: 'success' | 'error' } | null>(null)
   const [copied, setCopied]           = useState<number | null>(null)
-
-  useEffect(() => { load() }, [])
+  const [showNextAdminWindow, setShowNextAdminWindow] = useState(false)
 
   async function load() {
     setLoading(true)
@@ -147,13 +172,13 @@ export default function TodayPage() {
 
     const overdueDue: DealAction[] = []
     const upcomingList: DealAction[] = []
-    ;(dealData || []).forEach((d: any) => {
+    for (const d of ((dealData || []) as DealQuery[])) {
       const daysOverdue = Math.floor((now.getTime() - new Date(d.next_activity_at).getTime()) / 86400000)
       const score = priorityScore(d.deal_value || 0, daysOverdue, d.stage)
-      const item = { ...d, days_overdue: daysOverdue, priority_score: score }
+      const item: DealAction = { ...d, days_overdue: daysOverdue, priority_score: score }
       if (new Date(d.next_activity_at) <= todayEnd) overdueDue.push(item)
       else if (new Date(d.next_activity_at) <= new Date(weekAhead)) upcomingList.push(item)
-    })
+    }
     overdueDue.sort((a, b) => b.priority_score - a.priority_score)
     upcomingList.sort((a, b) => new Date(a.next_activity_at).getTime() - new Date(b.next_activity_at).getTime())
     setActions(overdueDue)
@@ -166,7 +191,7 @@ export default function TodayPage() {
       .lte('balance_due_date', in7days)
       .not('status', 'eq', 'CANCELLED')
       .order('balance_due_date', { ascending: true })
-    const balAlerts: BalanceAlert[] = (balData || []).map((b: any) => ({
+    const balAlerts: BalanceAlert[] = ((balData || []) as BalanceAlertQuery[]).map(b => ({
       ...b,
       days_overdue: Math.floor((now.getTime() - new Date(b.balance_due_date + 'T12:00').getTime()) / 86400000),
     }))
@@ -174,32 +199,61 @@ export default function TodayPage() {
 
     // ── Ticketing deadline alerts (due within 14 days, first leg per segment) ──
     const { data: tickData } = await supabase.from('booking_flights')
-      .select('id,booking_id,flight_number,airline,origin,destination,ticketing_deadline,departure_date,bookings(booking_reference,deals(title,clients(first_name,last_name,phone,email)))')
+      .select('id,booking_id,flight_number,airline,origin,destination,ticketing_deadline,departure_date,bookings(status,booking_reference,deals(title,clients(first_name,last_name,phone,email)))')
       .not('ticketing_deadline', 'is', null)
       .lte('ticketing_deadline', in14days)
       .not('net_cost', 'is', null)   // first leg of segment only
       .order('ticketing_deadline', { ascending: true })
-    const tickAlerts: TicketAlert[] = (tickData || []).map((f: any) => ({
-      ...f,
-      days_until: Math.floor((new Date(f.ticketing_deadline + 'T12:00').getTime() - now.getTime()) / 86400000),
-    }))
+    const tickAlerts: TicketAlert[] = ((tickData || []) as TicketAlertQuery[])
+      .filter(f => f.bookings?.status !== 'CANCELLED')
+      .map(f => ({
+        ...f,
+        days_until: Math.floor((new Date(f.ticketing_deadline + 'T12:00').getTime() - now.getTime()) / 86400000),
+      }))
     setTicketAlerts(tickAlerts)
 
     // ── Departure alerts (departing within 14 days) ──
     const { data: depData } = await supabase.from('bookings')
-      .select('id,booking_reference,departure_date,destination,deals(title,clients(first_name,last_name))')
+      .select('id,booking_reference,departure_date,destination,status,deals(title,clients(first_name,last_name))')
       .not('departure_date', 'is', null)
       .gte('departure_date', today)
       .lte('departure_date', in14days)
       .order('departure_date', { ascending: true })
-    const depAlerts: DepartureAlert[] = (depData || []).map((b: any) => ({
-      ...b,
-      days_until: Math.floor((new Date(b.departure_date + 'T12:00').getTime() - now.getTime()) / 86400000),
-    }))
+    const depAlerts: DepartureAlert[] = ((depData || []) as DepartureAlertQuery[])
+      .filter(b => b.status !== 'CANCELLED')
+      .map(b => ({
+        ...b,
+        days_until: Math.floor((new Date(b.departure_date + 'T12:00').getTime() - now.getTime()) / 86400000),
+      }))
     setDepartureAlerts(depAlerts)
+
+    // ── Booking task alerts (dated ops reminders + cancellation follow-ups) ──
+    const { data: taskData } = await supabase.from('booking_tasks')
+      .select('id,booking_id,task_name,task_key,category,notes,due_date,bookings!inner(booking_reference,departure_date,status,deals(title,clients(first_name,last_name,phone,email)))')
+      .eq('is_done', false)
+      .not('due_date', 'is', null)
+      .lte('due_date', in14days)
+      .order('due_date', { ascending: true })
+    const datedTasks: BookingTaskAlert[] = ((taskData || []) as BookingTaskAlertQuery[])
+      .filter(task => {
+        const bookingStatus = task.bookings?.status
+        if (task.task_key?.startsWith('ops_request_')) return bookingStatus === 'CONFIRMED'
+        if (task.task_key?.startsWith('cancel_followup_')) return bookingStatus === 'CANCELLED'
+        return false
+      })
+      .map(task => ({
+        ...task,
+        days_until: Math.floor((new Date(task.due_date + 'T12:00').getTime() - now.getTime()) / 86400000),
+      }))
+    setTaskAlerts(datedTasks)
 
     setLoading(false)
   }
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => { void load() }, 0)
+    return () => window.clearTimeout(timer)
+  }, [])
 
   async function markComplete(deal: DealAction) {
     setCompleting(deal.id)
@@ -221,6 +275,22 @@ export default function TodayPage() {
     load()
   }
 
+  async function completeTask(task: BookingTaskAlert) {
+    setCompletingTask(task.id)
+    const { error } = await supabase
+      .from('booking_tasks')
+      .update({ is_done: true, completed_at: new Date().toISOString() })
+      .eq('id', task.id)
+    if (error) {
+      showToast(error.message || 'Could not complete task', 'error')
+      setCompletingTask(null)
+      return
+    }
+    showToast('Task completed ✓')
+    setCompletingTask(null)
+    load()
+  }
+
   function copyPhone(phone: string, id: number) {
     navigator.clipboard.writeText(phone)
     setCopied(id)
@@ -232,7 +302,25 @@ export default function TodayPage() {
     setTimeout(() => setToast(null), 2800)
   }
 
-  const totalAlerts = balanceAlerts.length + ticketAlerts.length + departureAlerts.length
+  const visibleTaskAlerts = taskAlerts.filter(task => showNextAdminWindow ? task.days_until <= 3 : task.days_until <= 0)
+  const laterTaskAlerts = taskAlerts.filter(task => showNextAdminWindow ? task.days_until > 3 : task.days_until > 0)
+  const visibleBalanceAlerts = balanceAlerts.filter(b => showNextAdminWindow ? b.days_overdue >= -3 : b.days_overdue >= 0)
+  const laterBalanceAlerts = balanceAlerts.filter(b => showNextAdminWindow ? b.days_overdue < -3 : b.days_overdue < 0)
+  const visibleTicketAlerts = ticketAlerts.filter(f => showNextAdminWindow ? f.days_until <= 3 : f.days_until <= 0)
+  const laterTicketAlerts = ticketAlerts.filter(f => showNextAdminWindow ? f.days_until > 3 : f.days_until > 0)
+  const visibleDepartureAlerts = departureAlerts.filter(b => showNextAdminWindow ? b.days_until <= 3 : b.days_until <= 1)
+  const laterDepartureAlerts = departureAlerts.filter(b => showNextAdminWindow ? b.days_until > 3 : b.days_until > 1)
+  const totalAlerts = balanceAlerts.length + ticketAlerts.length + departureAlerts.length + taskAlerts.length
+  const visibleAdminCount =
+    visibleBalanceAlerts.length +
+    visibleTicketAlerts.length +
+    visibleDepartureAlerts.length +
+    visibleTaskAlerts.length
+  const laterAdminCount =
+    laterBalanceAlerts.length +
+    laterTicketAlerts.length +
+    laterDepartureAlerts.length +
+    laterTaskAlerts.length
   const today = new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })
 
   return (
@@ -240,11 +328,11 @@ export default function TodayPage() {
       <div className="page-header">
         <div>
           <div style={{ fontSize:'11px', fontWeight:'700', textTransform:'uppercase', letterSpacing:'0.1em', color:'var(--text-muted)', marginBottom:'2px' }}>{today}</div>
-          <div className="page-title">Today's Actions</div>
+          <div className="page-title">Today&apos;s Actions</div>
         </div>
         <div style={{ display:'flex', gap:'8px', alignItems:'center' }}>
           {actions.length > 0 && <span style={{ fontSize:'13px', color:'var(--red)', fontWeight:'600' }}>{actions.length} follow-up{actions.length !== 1 ? 's' : ''} due</span>}
-          {totalAlerts > 0 && <span style={{ fontSize:'13px', color:'var(--amber)', fontWeight:'600' }}>{totalAlerts} booking alert{totalAlerts !== 1 ? 's' : ''}</span>}
+          {visibleAdminCount > 0 && <span style={{ fontSize:'13px', color:'var(--amber)', fontWeight:'600' }}>{visibleAdminCount} urgent admin item{visibleAdminCount !== 1 ? 's' : ''}</span>}
           <Link href="/pipeline"><button className="btn btn-secondary btn-sm">Pipeline →</button></Link>
         </div>
       </div>
@@ -256,7 +344,7 @@ export default function TodayPage() {
           <div className="card empty-state">
             <div className="empty-state-icon">✓</div>
             <div className="empty-state-title">All clear</div>
-            <div className="empty-state-desc">No actions or alerts today. Enjoy the quiet.</div>
+            <div className="empty-state-desc">No actions or alerts today.</div>
             <Link href="/pipeline"><button className="btn btn-cta" style={{ marginTop:'16px' }}>Open Pipeline →</button></Link>
           </div>
         ) : (
@@ -264,15 +352,95 @@ export default function TodayPage() {
 
             {/* ── BOOKING ALERTS ─────────────────────────────── */}
             {totalAlerts > 0 && (
-              <div>
+              <div style={{ order: 3 }}>
                 <div style={{ display:'flex', alignItems:'center', gap:'10px', marginBottom:'12px' }}>
-                  <div style={{ fontFamily:'Fraunces,serif', fontSize:'19px', fontWeight:'300' }}>Booking Alerts</div>
-                  <div style={{ background:'var(--amber)', color:'white', borderRadius:'20px', padding:'2px 10px', fontSize:'12px', fontWeight:'700' }}>{totalAlerts}</div>
+                  <div style={{ fontFamily:'Fraunces,serif', fontSize:'19px', fontWeight:'300' }}>Operations Radar</div>
+                  <div style={{ background:'var(--amber)', color:'white', borderRadius:'20px', padding:'2px 10px', fontSize:'12px', fontWeight:'700' }}>{visibleAdminCount}</div>
+                  {visibleAdminCount > 0 && (
+                    <div style={{ background:'#fef3c7', color:'#92400e', borderRadius:'20px', padding:'2px 10px', fontSize:'12px', fontWeight:'700' }}>
+                      {showNextAdminWindow ? 'Next 3 Days' : 'Due Now'}
+                    </div>
+                  )}
+                  {laterAdminCount > 0 && (
+                    <div style={{ background:'var(--bg-secondary)', color:'var(--text-muted)', borderRadius:'20px', padding:'2px 10px', fontSize:'12px', fontWeight:'700' }}>
+                      {laterAdminCount} Upcoming
+                    </div>
+                  )}
                 </div>
+                <div style={{ display:'flex', justifyContent:'flex-end', gap:'12px', flexWrap:'wrap', marginBottom:'10px' }}>
+                  <button className="btn btn-secondary btn-xs" onClick={() => setShowNextAdminWindow(prev => !prev)}>
+                    {showNextAdminWindow ? 'Due Now' : 'Next 3 Days'}
+                  </button>
+                </div>
+                {laterAdminCount > 0 && (
+                  <div className="card" style={{ padding:'12px 14px', marginBottom:'10px', background:'var(--bg-secondary)' }}>
+                    <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
+                      {laterTaskAlerts.length > 0 && <span style={{ fontSize:'11px', color:'#4c1d95', background:'#ede9fe', padding:'4px 8px', borderRadius:'999px', fontWeight:'600' }}>{laterTaskAlerts.length} Requests</span>}
+                      {laterBalanceAlerts.length > 0 && <span style={{ fontSize:'11px', color:'#92400e', background:'#fef3c7', padding:'4px 8px', borderRadius:'999px', fontWeight:'600' }}>{laterBalanceAlerts.length} Balances</span>}
+                      {laterTicketAlerts.length > 0 && <span style={{ fontSize:'11px', color:'#4c1d95', background:'#ede9fe', padding:'4px 8px', borderRadius:'999px', fontWeight:'600' }}>{laterTicketAlerts.length} Ticket Deadlines</span>}
+                      {laterDepartureAlerts.length > 0 && <span style={{ fontSize:'11px', color:'#065f46', background:'#d1fae5', padding:'4px 8px', borderRadius:'999px', fontWeight:'600' }}>{laterDepartureAlerts.length} Departures</span>}
+                    </div>
+                  </div>
+                )}
                 <div style={{ display:'flex', flexDirection:'column', gap:'8px' }}>
+                  {visibleAdminCount === 0 && (
+                    <div className="card" style={{ padding:'14px 18px', background:'var(--bg-secondary)', color:'var(--text-muted)', fontSize:'13px' }}>
+                      No urgent operations items right now.
+                    </div>
+                  )}
+
+                  {/* Dated booking tasks / client requests */}
+                  {visibleTaskAlerts.map(task => {
+                    const booking = task.bookings
+                    const client = booking?.deals?.clients
+                    const clientName = client ? `${client.first_name} ${client.last_name}` : '—'
+                    const isOverdue = task.days_until < 0
+                    const isUrgent = task.days_until >= 0 && task.days_until <= 3
+                    const isCancellationFollowUp = task.task_key?.startsWith('cancel_followup_')
+                    return (
+                      <div key={`task-${task.id}`} className="card" style={{ padding:'14px 18px', borderLeft:`3px solid ${isOverdue ? 'var(--red)' : isUrgent ? 'var(--amber)' : '#6366f1'}`, display:'flex', justifyContent:'space-between', alignItems:'center', gap:'12px' }}>
+                        <div style={{ flex:1 }}>
+                          <div style={{ display:'flex', alignItems:'center', gap:'8px', marginBottom:'3px', flexWrap:'wrap' }}>
+                            <span style={{ fontSize:'11px', fontWeight:'700', padding:'2px 8px', borderRadius:'4px',
+                              background: isOverdue ? 'var(--red-light)' : isUrgent ? '#fef3c7' : '#ede9fe',
+                              color: isOverdue ? 'var(--red)' : isUrgent ? '#92400e' : '#4c1d95',
+                            }}>
+                              🛎 {isOverdue ? `${Math.abs(task.days_until)}d overdue` : task.days_until === 0 ? 'Due today' : `Due in ${task.days_until}d`}
+                            </span>
+                            <span style={{ fontSize:'11px', color:isCancellationFollowUp ? '#9f1239' : '#4c1d95', background:isCancellationFollowUp ? '#ffe4e6' : '#ede9fe', padding:'2px 8px', borderRadius:'4px', fontWeight:'600' }}>
+                              {isCancellationFollowUp ? 'Cancellation' : task.category}
+                            </span>
+                            {booking && <span style={{ fontSize:'11px', color:'var(--text-muted)', fontFamily:'monospace' }}>{booking.booking_reference}</span>}
+                          </div>
+                          <div style={{ fontFamily:'Fraunces,serif', fontSize:'16px', fontWeight:'300', color:'var(--text-primary)', marginBottom:'1px' }}>
+                            {task.task_name}
+                          </div>
+                          <div style={{ fontSize:'12px', color:'var(--text-muted)' }}>
+                            {booking?.deals?.title || booking?.booking_reference || 'Confirmed booking'}{clientName !== '—' ? ` · ${clientName}` : ''}{booking?.departure_date ? ` · Departs ${fmtDate(booking.departure_date)}` : ''}
+                          </div>
+                          {task.notes && <div style={{ fontSize:'12px', color:'var(--text-secondary)', marginTop:'5px' }}>{task.notes}</div>}
+                        </div>
+                        <div style={{ display:'flex', gap:'6px', alignItems:'center', flexShrink:0 }}>
+                          <span style={{ fontSize:'13px', fontWeight:'600', color: isOverdue ? 'var(--red)' : isUrgent ? 'var(--amber)' : '#4c1d95' }}>{fmtDate(task.due_date)}</span>
+                          <button
+                            onClick={() => completeTask(task)}
+                            disabled={completingTask === task.id}
+                            style={{ padding:'5px 10px', borderRadius:'6px', border:'1.5px solid var(--green)', background:'transparent', color:'var(--green)', fontSize:'11.5px', cursor:'pointer', fontFamily:'Outfit,sans-serif', fontWeight:'600' }}
+                          >
+                            {completingTask === task.id ? '…' : 'Done'}
+                          </button>
+                          {task.booking_id && (
+                            <Link href={`/bookings/${task.booking_id}`}>
+                              <button style={{ padding:'5px 10px', borderRadius:'6px', border:'1.5px solid var(--border)', background:'transparent', color:'var(--text-secondary)', fontSize:'11.5px', cursor:'pointer', fontFamily:'Outfit,sans-serif' }}>Open →</button>
+                            </Link>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  })}
 
                   {/* Balance due */}
-                  {balanceAlerts.map(b => {
+                  {visibleBalanceAlerts.map(b => {
                     const client = b.deals?.clients
                     const clientName = client ? `${client.first_name} ${client.last_name}` : '—'
                     const isOverdue = b.days_overdue > 0
@@ -309,7 +477,7 @@ export default function TodayPage() {
                   })}
 
                   {/* Ticketing deadlines */}
-                  {ticketAlerts.map(f => {
+                  {visibleTicketAlerts.map(f => {
                     const booking = f.bookings
                     const client  = booking?.deals?.clients
                     const clientName = client ? `${client.first_name} ${client.last_name}` : '—'
@@ -347,7 +515,7 @@ export default function TodayPage() {
                   })}
 
                   {/* Upcoming departures */}
-                  {departureAlerts.map(b => {
+                  {visibleDepartureAlerts.map(b => {
                     const client = b.deals?.clients
                     const clientName = client ? `${client.first_name} ${client.last_name}` : '—'
                     const isToday = b.days_until === 0
@@ -384,7 +552,7 @@ export default function TodayPage() {
 
             {/* ── DEAL FOLLOW-UPS DUE NOW ─────────────────────── */}
             {actions.length > 0 && (
-              <div>
+              <div style={{ order: 1 }}>
                 <div style={{ display:'flex', alignItems:'center', gap:'10px', marginBottom:'12px' }}>
                   <div style={{ fontFamily:'Fraunces,serif', fontSize:'19px', fontWeight:'300' }}>Follow-ups Due</div>
                   <div style={{ background:'var(--red)', color:'white', borderRadius:'20px', padding:'2px 10px', fontSize:'12px', fontWeight:'700' }}>{actions.length}</div>
@@ -462,7 +630,7 @@ export default function TodayPage() {
 
             {/* ── UPCOMING THIS WEEK ──────────────────────────── */}
             {upcoming.length > 0 && (
-              <div>
+              <div style={{ order: 2 }}>
                 <div style={{ fontFamily:'Fraunces,serif', fontSize:'19px', fontWeight:'300', marginBottom:'12px' }}>This Week</div>
                 <div style={{ display:'flex', flexDirection:'column', gap:'8px' }}>
                   {upcoming.map(deal => {

@@ -1,6 +1,9 @@
 'use client'
 
 import { createContext, useContext, useEffect, useState } from 'react'
+import type { Session, User } from '@supabase/supabase-js'
+import { supabase } from '@/lib/supabase'
+import type { StaffUser } from '@/lib/access'
 
 type Theme = 'light' | 'dark'
 
@@ -12,18 +15,95 @@ const ThemeContext = createContext<{
   toggleTheme: () => {},
 })
 
+const AuthContext = createContext<{
+  session: Session | null
+  user: User | null
+  staffUser: StaffUser | null
+  loadingAuth: boolean
+  refreshStaff: () => Promise<void>
+}>({
+  session: null,
+  user: null,
+  staffUser: null,
+  loadingAuth: true,
+  refreshStaff: async () => {},
+})
+
 export function useTheme() {
   return useContext(ThemeContext)
 }
 
+export function useAuth() {
+  return useContext(AuthContext)
+}
+
 export function Providers({ children }: { children: React.ReactNode }) {
-  const [theme, setTheme] = useState<Theme>('light')
+  const [theme, setTheme] = useState<Theme>(() => {
+    if (typeof window === 'undefined') return 'light'
+    return (localStorage.getItem('mhd-theme') as Theme) || 'light'
+  })
+  const [session, setSession] = useState<Session | null>(null)
+  const [user, setUser] = useState<User | null>(null)
+  const [staffUser, setStaffUser] = useState<StaffUser | null>(null)
+  const [loadingAuth, setLoadingAuth] = useState(true)
 
   useEffect(() => {
-    const stored = localStorage.getItem('mhd-theme') as Theme
-    if (stored) {
-      setTheme(stored)
-      document.documentElement.setAttribute('data-theme', stored)
+    document.documentElement.setAttribute('data-theme', theme)
+  }, [theme])
+
+  async function refreshStaff(authUser?: User | null) {
+    const activeUser = authUser ?? user
+    if (!activeUser) {
+      setStaffUser(null)
+      return
+    }
+    const { data: sessionData } = await supabase.auth.getSession()
+    const token = sessionData.session?.access_token
+    if (!token) {
+      setStaffUser(null)
+      return
+    }
+
+    const res = await fetch('/api/auth/me', {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+
+    if (!res.ok) {
+      setStaffUser(null)
+      return
+    }
+
+    const json = await res.json()
+    setStaffUser((json.staffUser || null) as StaffUser | null)
+  }
+
+  useEffect(() => {
+    let active = true
+
+    async function init() {
+      const { data } = await supabase.auth.getSession()
+      if (!active) return
+      setSession(data.session)
+      setUser(data.session?.user ?? null)
+      if (data.session?.user) {
+        await refreshStaff(data.session.user)
+      }
+      if (active) setLoadingAuth(false)
+    }
+
+    void init()
+
+    const { data: listener } = supabase.auth.onAuthStateChange(async (_event, nextSession) => {
+      setSession(nextSession)
+      setUser(nextSession?.user ?? null)
+      if (nextSession?.user) await refreshStaff(nextSession.user)
+      else setStaffUser(null)
+      setLoadingAuth(false)
+    })
+
+    return () => {
+      active = false
+      listener.subscription.unsubscribe()
     }
   }, [])
 
@@ -36,7 +116,9 @@ export function Providers({ children }: { children: React.ReactNode }) {
 
   return (
     <ThemeContext.Provider value={{ theme, toggleTheme }}>
-      {children}
+      <AuthContext.Provider value={{ session, user, staffUser, loadingAuth, refreshStaff }}>
+        {children}
+      </AuthContext.Provider>
     </ThemeContext.Provider>
   )
 }

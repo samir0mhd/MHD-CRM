@@ -2,15 +2,18 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { useTheme } from '../providers'
+import { useSyncExternalStore } from 'react'
+import { supabase } from '@/lib/supabase'
+import { useAuth, useTheme } from '../providers'
 
 const NAV = [
   {
-    section: 'Overview',
+    section: 'Admin',
     items: [
-      { href: '/',        label: 'Dashboard',       icon: '◈' },
+      { href: '/',        label: 'Dashboard',        icon: '◈' },
       { href: '/today',   label: "Today's Actions",  icon: '◎' },
-      { href: '/reports', label: 'Reports',          icon: '📊' },
+      { href: '/reports', label: 'Admin Reports',    icon: '📊' },
+      { href: '/users',   label: 'User Access',      icon: '🔐' },
     ],
   },
   {
@@ -48,6 +51,16 @@ const NAV = [
 export default function Sidebar() {
   const pathname  = usePathname()
   const { theme, toggleTheme } = useTheme()
+  const { staffUser } = useAuth()
+  const hydratedTheme = useSyncExternalStore(
+    () => () => {},
+    () => theme,
+    () => 'light',
+  )
+
+  const themeLabel = hydratedTheme === 'dark' ? 'Dark mode' : 'Light mode'
+  const themeIcon = hydratedTheme === 'dark' ? '☾' : '○'
+  const themeToggleClass = hydratedTheme === 'dark' ? 'theme-toggle dark' : 'theme-toggle'
 
   function isActive(href: string) {
     if (href === '/quotes/new') return pathname.startsWith('/quotes')
@@ -129,14 +142,14 @@ export default function Sidebar() {
         <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between' }}>
           <div style={{ display:'flex', alignItems:'center', gap:'7px' }}>
             <span style={{ fontSize:'13px', opacity:0.6 }}>
-              {theme === 'dark' ? '☾' : '○'}
+              {themeIcon}
             </span>
             <span style={{ fontSize:'12px', color:'var(--text-muted)', fontFamily:'Outfit, sans-serif' }}>
-              {theme === 'dark' ? 'Dark mode' : 'Light mode'}
+              {themeLabel}
             </span>
           </div>
           <button
-            className={`theme-toggle ${theme === 'dark' ? 'dark' : ''}`}
+            className={themeToggleClass}
             onClick={toggleTheme}
             aria-label="Toggle theme"
           />
@@ -152,16 +165,17 @@ export default function Sidebar() {
             <span style={{
               fontFamily:'Fraunces, serif', fontSize:'12px',
               color:'var(--accent)', fontStyle:'italic',
-            }}>S</span>
+            }}>{(staffUser?.name || 'S').charAt(0)}</span>
           </div>
           <div style={{ flex:1, minWidth:0 }}>
             <div style={{ fontSize:'12.5px', fontWeight:'500', color:'var(--text-primary)', lineHeight:1.2, fontFamily:'Outfit, sans-serif' }}>
-              Samir Abattouy
+              {staffUser?.name || 'Signed in'}
             </div>
             <div style={{ fontSize:'10.5px', color:'var(--text-muted)', lineHeight:1.2, fontFamily:'Outfit, sans-serif' }}>
-              Mauritius Expert
+              {staffUser?.role || 'Secure access'}
             </div>
           </div>
+          <button className="btn btn-secondary btn-xs" onClick={() => void supabase.auth.signOut()}>Sign out</button>
         </div>
       </div>
     </aside>

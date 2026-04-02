@@ -3,6 +3,7 @@
 import { useEffect, useState, useRef } from 'react'
 import { supabase } from '@/lib/supabase'
 import type { Deal } from '@/lib/supabase'
+import { getAccessContext, type StaffUser } from '@/lib/access'
 import Link from 'next/link'
 
 const STAGES = [
@@ -84,6 +85,7 @@ type ClientResult = {
   last_name: string
   phone: string
   email: string
+  owner_staff_id: number | null
 }
 
 export default function PipelinePage() {
@@ -97,15 +99,8 @@ export default function PipelinePage() {
   const [search, setSearch]         = useState('')
   const [view, setView]             = useState<'kanban' | 'list'>('kanban')
   const [sort, setSort]             = useState<'created' | 'value' | 'departure'>('created')
-  const toastTimer = useRef<any>(null)
-
-  useEffect(() => {
-    loadDeals()
-    const onFocus = () => loadDeals()
-    window.addEventListener('focus', onFocus)
-    document.addEventListener('visibilitychange', () => { if (!document.hidden) loadDeals() })
-    return () => window.removeEventListener('focus', onFocus)
-  }, [])
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [renderNow] = useState(() => Date.now())
 
   async function loadDeals() {
     setLoading(true)
@@ -117,6 +112,21 @@ export default function PipelinePage() {
     setDeals(data || [])
     setLoading(false)
   }
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void loadDeals()
+    }, 0)
+    const onFocus = () => { void loadDeals() }
+    const onVisibility = () => { if (!document.hidden) void loadDeals() }
+    window.addEventListener('focus', onFocus)
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      window.clearTimeout(timer)
+      window.removeEventListener('focus', onFocus)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [])
 
   function showToast(msg: string) {
     setToast(msg)
@@ -174,7 +184,7 @@ export default function PipelinePage() {
 
   function isRotten(d: DealWithClient) {
     if (!d.next_activity_at) return false
-    return (Date.now() - new Date(d.next_activity_at).getTime()) / 86400000 >= 5
+    return (renderNow - new Date(d.next_activity_at).getTime()) / 86400000 >= 5
   }
 
   if (loading) {
@@ -668,7 +678,15 @@ function NewDealModal({ defaultStage, onClose, onSaved }: {
 
   const [saving, setSaving] = useState(false)
   const [error, setError]   = useState('')
-  const searchTimer         = useRef<any>(null)
+  const [currentStaff, setCurrentStaff] = useState<StaffUser | null>(null)
+  const searchTimer         = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    void (async () => {
+      const { currentStaff } = await getAccessContext()
+      setCurrentStaff(currentStaff)
+    })()
+  }, [])
 
   // Search clients as user types
   function handleClientSearch(val: string) {
@@ -681,7 +699,7 @@ function NewDealModal({ defaultStage, onClose, onSaved }: {
       setSearching(true)
       const { data } = await supabase
         .from('clients')
-        .select('id, first_name, last_name, phone, email')
+        .select('id, first_name, last_name, phone, email, owner_staff_id')
         .or(`first_name.ilike.%${val}%,last_name.ilike.%${val}%,phone.ilike.%${val}%,email.ilike.%${val}%`)
         .limit(6)
       setClientResults(data || [])
@@ -716,9 +734,11 @@ function NewDealModal({ defaultStage, onClose, onSaved }: {
     setSaving(true); setError('')
     try {
       let clientId: number
+      let ownerStaffId: number | null = currentStaff?.id ?? null
 
       if (selectedClient) {
         clientId = selectedClient.id
+        ownerStaffId = selectedClient.owner_staff_id || ownerStaffId
       } else {
         // Create new client
         const { data: newClient, error: cErr } = await supabase
@@ -728,16 +748,19 @@ function NewDealModal({ defaultStage, onClose, onSaved }: {
             last_name:  newLast.trim(),
             email:      newEmail.trim(),
             phone:      newPhone.trim(),
+            owner_staff_id: ownerStaffId,
           })
-          .select('id').single()
+          .select('id, owner_staff_id').single()
         if (cErr || !newClient) { setError('Failed to create client'); setSaving(false); return }
         clientId = newClient.id
+        ownerStaffId = newClient.owner_staff_id || ownerStaffId
       }
 
       // Create deal
       const { data: newDeal, error: dErr } = await supabase.from('deals').insert({
         title:          title.trim(),
         client_id:      clientId,
+        staff_id:       ownerStaffId,
         stage,
         deal_value:     dealValue ? parseFloat(dealValue) : null,
         departure_date: departureDate || null,
@@ -819,7 +842,7 @@ function NewDealModal({ defaultStage, onClose, onSaved }: {
                     style={{ padding: '10px 14px', cursor: 'pointer', color: 'var(--accent)', fontSize: '13px', fontWeight: '500' }}
                     onMouseEnter={e => (e.currentTarget.style.background = 'var(--accent-light)')}
                     onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
-                    + Create new client "{clientSearch}"
+                    + Create new client &quot;{clientSearch}&quot;
                   </div>
                 </div>
               )}
@@ -828,7 +851,7 @@ function NewDealModal({ defaultStage, onClose, onSaved }: {
               {clientSearch.length >= 2 && clientResults.length === 0 && !searching && (
                 <div style={{ marginTop: '6px' }}>
                   <button className="btn btn-secondary btn-sm" onClick={chooseNewClient}>
-                    + Create new client "{clientSearch}"
+                    + Create new client &quot;{clientSearch}&quot;
                   </button>
                 </div>
               )}

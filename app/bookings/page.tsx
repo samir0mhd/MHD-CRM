@@ -1,8 +1,10 @@
 'use client'
 
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useState, useRef, type MouseEvent } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
+import { getAccessContext, isManager, type StaffUser } from '@/lib/access'
+import { buildFieldAuditEntries, logAuditEntries } from '@/lib/audit'
 import Link from 'next/link'
 
 // ── TYPES ─────────────────────────────────────────────────
@@ -11,6 +13,7 @@ type Booking = {
   deal_id: number
   booking_reference: string
   status: string
+  staff_id: number | null
   departure_date: string | null
   return_date: string | null
   balance_due_date: string | null
@@ -23,12 +26,14 @@ type Booking = {
     id: number
     title: string
     deal_value: number
+    staff_id?: number | null
     clients?: {
       id: number
       first_name: string
       last_name: string
       phone: string
       email: string
+      owner_staff_id?: number | null
     }
   }
   booking_tasks?: BookingTask[]
@@ -66,33 +71,25 @@ const TASK_TEMPLATE = [
   // Financial
   { key: 'deposit_received',       name: 'Deposit received',              category: 'Financial',     sort: 1  },
   { key: 'balance_due_set',        name: 'Balance due date set',          category: 'Financial',     sort: 2  },
-  { key: 'balance_chased',         name: 'Balance payment chased',        category: 'Financial',     sort: 3  },
-  { key: 'balance_received',       name: 'Balance payment received',      category: 'Financial',     sort: 4  },
-  { key: 'final_costing',          name: 'Final costing confirmed',       category: 'Financial',     sort: 5  },
+  { key: 'balance_received',       name: 'Balance received',              category: 'Financial',     sort: 3  },
+  { key: 'final_costing',          name: 'Final costing confirmed',       category: 'Financial',     sort: 4  },
   // Flights
-  { key: 'flights_ticketed',       name: 'Flights ticketed',              category: 'Flights',       sort: 6  },
-  { key: 'ticket_numbers',         name: 'Ticket numbers recorded',       category: 'Flights',       sort: 7  },
-  { key: 'etickets_sent',          name: 'E-tickets sent to client',      category: 'Flights',       sort: 8  },
+  { key: 'flights_ticketed',       name: 'Flights ticketed',              category: 'Flights',       sort: 5  },
+  { key: 'etickets_sent',          name: 'E-tickets sent to client',      category: 'Flights',       sort: 6  },
   // Accommodation
-  { key: 'hotel_confirmation',     name: 'Hotel confirmation received',   category: 'Accommodation', sort: 9  },
-  { key: 'rooming_list',           name: 'Hotel rooming list sent',       category: 'Accommodation', sort: 10 },
-  { key: 'special_requests',       name: 'Special requests confirmed',    category: 'Accommodation', sort: 11 },
+  { key: 'hotel_confirmation',     name: 'Hotel confirmation received',   category: 'Accommodation', sort: 7  },
+  { key: 'special_requests',       name: 'Special requests confirmed',    category: 'Accommodation', sort: 8  },
   // Transfers
-  { key: 'transfers_booked',       name: 'Transfers booked with DMC',    category: 'Transfers',     sort: 12 },
-  { key: 'transfer_confirmation',  name: 'Transfer confirmation received',category: 'Transfers',     sort: 13 },
-  { key: 'arrival_details_sent',   name: 'Arrival details sent to DMC',  category: 'Transfers',     sort: 14 },
+  { key: 'transfer_confirmation',  name: 'Transfers confirmed',           category: 'Transfers',     sort: 9  },
   // Documents
-  { key: 'booking_confirmation',   name: 'Booking confirmation sent',    category: 'Documents',     sort: 15 },
-  { key: 'travel_docs',            name: 'Travel documents issued',      category: 'Documents',     sort: 16 },
-  { key: 'welcome_pack',           name: 'Welcome pack sent',            category: 'Documents',     sort: 17 },
-  { key: 'atol_certificate',       name: 'ATOL certificate issued',      category: 'Documents',     sort: 18 },
+  { key: 'booking_confirmation',   name: 'Booking confirmation sent',    category: 'Documents',     sort: 10 },
+  { key: 'travel_docs',            name: 'Travel documents issued',      category: 'Documents',     sort: 11 },
+  { key: 'atol_certificate',       name: 'ATOL certificate issued',      category: 'Documents',     sort: 12 },
   // Pre-departure
-  { key: 'predeparture_call',      name: 'Pre-departure call made',      category: 'Pre-Departure', sort: 19 },
-  { key: 'emergency_contact',      name: 'Emergency contact confirmed',  category: 'Pre-Departure', sort: 20 },
+  { key: 'predeparture_call',      name: 'Pre-departure contact made',   category: 'Pre-Departure', sort: 13 },
   // Post-trip
-  { key: 'welcome_back_call',      name: 'Welcome back call made',       category: 'Post-Trip',     sort: 21 },
-  { key: 'review_requested',       name: 'Review requested (Trustpilot)',category: 'Post-Trip',     sort: 22 },
-  { key: 'rebook_conversation',    name: 'Re-booking conversation started',category: 'Post-Trip',   sort: 23 },
+  { key: 'review_requested',       name: 'Post-trip review requested',   category: 'Post-Trip',     sort: 14 },
+  { key: 'rebook_conversation',    name: 'Re-book conversation started', category: 'Post-Trip',     sort: 15 },
 ]
 
 const CATEGORY_ICONS: Record<string, string> = {
@@ -132,17 +129,27 @@ function taskProgress(tasks: BookingTask[]) {
   return Math.round((tasks.filter(t => t.is_done).length / tasks.length) * 100)
 }
 
+function bookingNeedsOwnershipCleanup(booking: Booking) {
+  if (booking.status === 'CANCELLED') return false
+  const bookingStaffId = booking.staff_id ?? null
+  const dealStaffId = booking.deals?.staff_id ?? null
+  const clientOwnerId = booking.deals?.clients?.owner_staff_id ?? null
+  return !bookingStaffId || bookingStaffId !== dealStaffId || bookingStaffId !== clientOwnerId
+}
+
 // ── MAIN PAGE ─────────────────────────────────────────────
 export default function BookingsPage() {
   const [bookings, setBookings]         = useState<Booking[]>([])
+  const [staffUsers, setStaffUsers]     = useState<StaffUser[]>([])
+  const [currentStaff, setCurrentStaff] = useState<StaffUser | null>(null)
   const [loading, setLoading]           = useState(true)
   const [search, setSearch]             = useState('')
   const [statusFilter, setStatusFilter] = useState<string>('ALL')
+  const [staffFilter, setStaffFilter]   = useState<string>('ALL')
+  const [ownershipFilter, setOwnershipFilter] = useState<'ALL' | 'FIX_NEEDED'>('ALL')
   const router                           = useRouter()
   const [toast, setToast]               = useState<string | null>(null)
-  const toastTimer                      = useRef<any>(null)
-
-  useEffect(() => { loadBookings() }, [])
+  const toastTimer                      = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   async function loadBookings() {
     setLoading(true)
@@ -150,7 +157,7 @@ export default function BookingsPage() {
       .from('bookings')
       .select(`
         *,
-        deals(id, title, deal_value, clients(id, first_name, last_name, phone, email)),
+        deals(id, title, deal_value, staff_id, clients(id, first_name, last_name, phone, email, owner_staff_id)),
         booking_tasks(*),
         booking_passengers(*)
       `)
@@ -158,6 +165,20 @@ export default function BookingsPage() {
     setBookings(data || [])
     setLoading(false)
   }
+
+  async function loadAccess() {
+    const { staffUsers, currentStaff } = await getAccessContext()
+    setStaffUsers(staffUsers)
+    setCurrentStaff(currentStaff)
+  }
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void loadBookings()
+      void loadAccess()
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [])
 
   function showToast(msg: string) {
     setToast(msg)
@@ -174,13 +195,17 @@ export default function BookingsPage() {
       client?.first_name?.toLowerCase().includes(q) ||
       client?.last_name?.toLowerCase().includes(q)
     const matchStatus = statusFilter === 'ALL' || b.status === statusFilter
-    return matchSearch && matchStatus
+    const matchStaff =
+      staffFilter === 'ALL' ||
+      (staffFilter === 'UNASSIGNED' ? !b.staff_id : b.staff_id === Number(staffFilter))
+    const matchOwnership = ownershipFilter === 'ALL' || bookingNeedsOwnershipCleanup(b)
+    return matchSearch && matchStatus && matchStaff && matchOwnership
   })
 
   const totalValue    = bookings.reduce((a, b) => a + (b.deals?.deal_value || 0), 0)
-  const totalProfit   = bookings.reduce((a, b) => a + (b.final_profit || 0), 0)
   const departingSoon = bookings.filter(b => { const d = daysUntil(b.departure_date); return d !== null && d >= 0 && d <= 30 }).length
-  const balanceDue    = bookings.filter(b => { const d = daysUntil(b.balance_due_date); return d !== null && d >= 0 && d <= 14 && !b.deposit_received }).length
+  const unassignedCount = bookings.filter(b => !b.staff_id).length
+  const cleanupCount = bookings.filter(bookingNeedsOwnershipCleanup).length
 
   if (loading) {
     return (
@@ -201,6 +226,15 @@ export default function BookingsPage() {
           </div>
         </div>
         <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+          <select className="input" style={{ width: '180px' }} value={ownershipFilter} onChange={e => setOwnershipFilter(e.target.value as 'ALL' | 'FIX_NEEDED')}>
+            <option value="ALL">All ownership</option>
+            <option value="FIX_NEEDED">Needs cleanup</option>
+          </select>
+          <select className="input" style={{ width: '190px' }} value={staffFilter} onChange={e => setStaffFilter(e.target.value)}>
+            <option value="ALL">All consultants</option>
+            <option value="UNASSIGNED">Unassigned only</option>
+            {staffUsers.map(staff => <option key={staff.id} value={String(staff.id)}>{staff.name}</option>)}
+          </select>
           <input className="input" style={{ width: '260px' }}
             placeholder="Search ref, surname, deal…"
             value={search} onChange={e => setSearch(e.target.value)} />
@@ -208,14 +242,25 @@ export default function BookingsPage() {
       </div>
 
       <div className="page-body">
+        {cleanupCount > 0 && (
+          <div className="card" style={{ padding: '12px 16px', marginBottom: '16px', border: '1px solid #fdba74', background: '#fff7ed', display:'flex', justifyContent:'space-between', gap:'12px', flexWrap:'wrap', alignItems:'center' }}>
+            <div style={{ fontSize:'12.5px', color:'#9a3412', lineHeight:1.5 }}>
+              {cleanupCount} live booking{cleanupCount === 1 ? '' : 's'} need ownership cleanup. Use the inline manager control to realign client, deal, and booking together so commission and future reporting stay clean.
+            </div>
+            {ownershipFilter !== 'FIX_NEEDED' && (
+              <button className="btn btn-secondary btn-xs" onClick={() => setOwnershipFilter('FIX_NEEDED')}>Show Cleanup Only</button>
+            )}
+          </div>
+        )}
 
         {/* KPI Stats */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '14px', marginBottom: '24px' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '14px', marginBottom: '24px' }}>
           {[
             { label: 'Total Bookings',    val: bookings.length,              color: 'var(--accent-mid)',  sub: 'all time' },
             { label: 'Total Value',       val: fmt(totalValue),              color: 'var(--green)',       sub: 'confirmed bookings' },
             { label: 'Departing Soon',    val: departingSoon,                color: 'var(--amber)',       sub: 'within 30 days' },
-            { label: 'Balance Due',       val: balanceDue,                   color: 'var(--red)',         sub: 'within 14 days' },
+            { label: 'Unassigned',        val: unassignedCount,              color: unassignedCount > 0 ? 'var(--red)' : 'var(--green)', sub: 'missing consultant' },
+            { label: 'Needs Cleanup',     val: cleanupCount,                 color: cleanupCount > 0 ? 'var(--amber)' : 'var(--green)', sub: 'owner mismatch' },
           ].map(s => (
             <div key={s.label} className="stat-card">
               <div className="stat-label">{s.label}</div>
@@ -257,7 +302,7 @@ export default function BookingsPage() {
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
                 <tr style={{ background: 'var(--bg-tertiary)', borderBottom: '1px solid var(--border)' }}>
-                  {['Ref', 'Client', 'Deal / Hotel', 'Departure', 'Return', 'Balance Due', 'Value', 'Progress', 'Status', ''].map(h => (
+                  {['Ref', 'Client', 'Deal / Hotel', 'Consultant', 'Departure', 'Return', 'Balance Due', 'Value', 'Progress', 'Status', ''].map(h => (
                     <th key={h} style={{ padding: '10px 14px', textAlign: 'left', fontSize: '11px', fontWeight: '600',
                       textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
                       {h}
@@ -273,6 +318,8 @@ export default function BookingsPage() {
                   const depDays  = daysUntil(booking.departure_date)
                   const balDays  = daysUntil(booking.balance_due_date)
                   const cfg      = STATUS_CONFIG[booking.status] || STATUS_CONFIG.CONFIRMED
+                  const consultant = staffUsers.find(staff => staff.id === booking.staff_id)
+                  const needsCleanup = bookingNeedsOwnershipCleanup(booking)
 
                   return (
                     <tr key={booking.id}
@@ -305,6 +352,35 @@ export default function BookingsPage() {
                         <div style={{ fontSize: '13px', color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                           {booking.deals?.title || '—'}
                         </div>
+                      </td>
+
+                      {/* Consultant */}
+                      <td style={{ padding: '12px 14px', whiteSpace: 'nowrap' }}>
+                        {consultant ? (
+                          <div>
+                            <div style={{ fontSize: '13px', color: 'var(--text-primary)', fontWeight: '500' }}>{consultant.name}</div>
+                            <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{consultant.role || 'staff'}</div>
+                            {needsCleanup && (
+                              <div style={{ fontSize:'10.5px', color:'var(--amber)', fontWeight:'600', marginTop:'2px' }}>Needs realign</div>
+                            )}
+                          </div>
+                        ) : (
+                          <div>
+                            <span style={{ display:'inline-flex', alignItems:'center', gap:'6px', fontSize:'11.5px', fontWeight:'600', color:'var(--red)', background:'#fef2f2', border:'1px solid #fecaca', borderRadius:'999px', padding:'4px 10px' }}>
+                              Unassigned
+                            </span>
+                            {needsCleanup && <div style={{ fontSize:'10.5px', color:'var(--amber)', fontWeight:'600', marginTop:'6px' }}>Needs realign</div>}
+                          </div>
+                        )}
+                        {isManager(currentStaff) && needsCleanup && (
+                          <OwnershipQuickFix
+                            booking={booking}
+                            staffUsers={staffUsers}
+                            currentStaff={currentStaff}
+                            onSaved={loadBookings}
+                            showToast={showToast}
+                          />
+                        )}
                       </td>
 
                       {/* Departure */}
@@ -383,6 +459,107 @@ export default function BookingsPage() {
   )
 }
 
+function OwnershipQuickFix({ booking, staffUsers, currentStaff, onSaved, showToast }: {
+  booking: Booking
+  staffUsers: StaffUser[]
+  currentStaff: StaffUser | null
+  onSaved: () => Promise<void>
+  showToast: (msg: string) => void
+}) {
+  const [selectedStaffId, setSelectedStaffId] = useState(
+    String(booking.staff_id || booking.deals?.staff_id || booking.deals?.clients?.owner_staff_id || '')
+  )
+  const [saving, setSaving] = useState(false)
+
+  async function alignOwnership(e: MouseEvent<HTMLButtonElement>) {
+    e.stopPropagation()
+    if (!selectedStaffId || !isManager(currentStaff)) return
+    const nextStaffId = Number(selectedStaffId)
+    const client = booking.deals?.clients
+    const auditEntries = [
+      ...(client
+        ? buildFieldAuditEntries({
+            entityType: 'client',
+            entityId: client.id,
+            performedBy: currentStaff,
+            action: 'ownership_reassigned',
+            before: { owner_staff_id: client.owner_staff_id ?? null },
+            after: { owner_staff_id: nextStaffId },
+            fields: ['owner_staff_id'],
+            notes: `Realigned from booking list ${booking.id}`,
+          })
+        : []),
+      ...buildFieldAuditEntries({
+        entityType: 'deal',
+        entityId: booking.deal_id,
+        performedBy: currentStaff,
+        action: 'ownership_reassigned',
+        before: { staff_id: booking.deals?.staff_id ?? null },
+        after: { staff_id: nextStaffId },
+        fields: ['staff_id'],
+        notes: 'Deal ownership realigned from bookings list',
+      }),
+      ...buildFieldAuditEntries({
+        entityType: 'booking',
+        entityId: booking.id,
+        performedBy: currentStaff,
+        action: 'ownership_reassigned',
+        before: { staff_id: booking.staff_id ?? null },
+        after: { staff_id: nextStaffId },
+        fields: ['staff_id'],
+        notes: 'Booking consultant realigned from bookings list',
+      }),
+    ]
+
+    if (auditEntries.length === 0) {
+      showToast('Ownership already aligned')
+      return
+    }
+
+    setSaving(true)
+    try {
+      if (client && client.owner_staff_id !== nextStaffId) {
+        const { error } = await supabase.from('clients').update({ owner_staff_id: nextStaffId }).eq('id', client.id)
+        if (error) throw error
+      }
+      if (booking.deals?.staff_id !== nextStaffId) {
+        const { error } = await supabase.from('deals').update({ staff_id: nextStaffId }).eq('id', booking.deal_id)
+        if (error) throw error
+      }
+      if (booking.staff_id !== nextStaffId) {
+        const { error } = await supabase.from('bookings').update({ staff_id: nextStaffId }).eq('id', booking.id)
+        if (error) throw error
+      }
+      await logAuditEntries(auditEntries)
+      await onSaved()
+      showToast('Ownership realigned ✓')
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Failed to align ownership')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div onClick={e => e.stopPropagation()} style={{ display:'flex', gap:'6px', alignItems:'center', marginTop:'8px' }}>
+      <select
+        className="input"
+        value={selectedStaffId}
+        onChange={e => setSelectedStaffId(e.target.value)}
+        style={{ width:'170px', fontSize:'11.5px', padding:'4px 8px' }}
+      >
+        <option value="">Select consultant…</option>
+        {staffUsers.map(staff => (
+          <option key={staff.id} value={staff.id}>{staff.name}</option>
+        ))}
+      </select>
+      <button className="btn btn-secondary btn-xs" onClick={alignOwnership} disabled={saving || !selectedStaffId}>
+        {saving ? 'Saving…' : 'Align'}
+      </button>
+    </div>
+  )
+}
+
 // ── BOOKING DETAIL PANEL ───────────────────────────────────
 function BookingDetailPanel({ booking, onClose, onRefresh, showToast }: {
   booking: Booking
@@ -404,11 +581,6 @@ function BookingDetailPanel({ booking, onClose, onRefresh, showToast }: {
   const progress = taskProgress(tasks)
   const cfg      = STATUS_CONFIG[booking.status] || STATUS_CONFIG.CONFIRMED
 
-  // Initialize tasks if none exist
-  useEffect(() => {
-    if (tasks.length === 0) initializeTasks()
-  }, [])
-
   async function initializeTasks() {
     const inserts = TASK_TEMPLATE.map(t => ({
       booking_id: booking.id,
@@ -421,6 +593,13 @@ function BookingDetailPanel({ booking, onClose, onRefresh, showToast }: {
     const { data } = await supabase.from('booking_tasks').insert(inserts).select()
     if (data) setTasks(data)
   }
+
+  // Initialize tasks if none exist
+  useEffect(() => {
+    if (tasks.length > 0) return
+    const timer = window.setTimeout(() => { void initializeTasks() }, 0)
+    return () => window.clearTimeout(timer)
+  }, [tasks.length])
 
   async function toggleTask(task: BookingTask) {
     const newDone = !task.is_done
@@ -739,13 +918,26 @@ function AddPassengerForm({ bookingId, onSaved, onCancel }: {
   onSaved: () => void
   onCancel: () => void
 }) {
-  const [form, setForm] = useState({
+  type PassengerForm = {
+    title: string
+    first_name: string
+    last_name: string
+    date_of_birth: string
+    passenger_type: string
+    is_lead: boolean
+    passport_number: string
+    passport_expiry: string
+  }
+
+  const [form, setForm] = useState<PassengerForm>({
     title: 'Mr', first_name: '', last_name: '',
     date_of_birth: '', passenger_type: 'Adult',
     is_lead: false, passport_number: '', passport_expiry: '',
   })
   const [saving, setSaving] = useState(false)
-  const up = (f: string, v: any) => setForm(p => ({ ...p, [f]: v }))
+  const up = <K extends keyof PassengerForm>(field: K, value: PassengerForm[K]) => {
+    setForm(prev => ({ ...prev, [field]: value }))
+  }
 
   async function save() {
     if (!form.first_name.trim()) return
