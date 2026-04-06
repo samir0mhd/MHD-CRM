@@ -2,10 +2,8 @@
 
 import { useEffect, useState, useRef, type MouseEvent } from 'react'
 import { useRouter } from 'next/navigation'
-import { supabase } from '@/lib/supabase'
-import { getAccessContext, isManager, type StaffUser } from '@/lib/access'
-import { buildFieldAuditEntries, logAuditEntries } from '@/lib/audit'
-import Link from 'next/link'
+import { isManager, type StaffUser } from '@/lib/access'
+import { authedFetch } from '@/lib/api-client'
 
 // ── TYPES ─────────────────────────────────────────────────
 type Booking = {
@@ -66,42 +64,6 @@ type Passenger = {
   passport_expiry: string | null
 }
 
-// ── TASK TEMPLATE ──────────────────────────────────────────
-const TASK_TEMPLATE = [
-  // Financial
-  { key: 'deposit_received',       name: 'Deposit received',              category: 'Financial',     sort: 1  },
-  { key: 'balance_due_set',        name: 'Balance due date set',          category: 'Financial',     sort: 2  },
-  { key: 'balance_received',       name: 'Balance received',              category: 'Financial',     sort: 3  },
-  { key: 'final_costing',          name: 'Final costing confirmed',       category: 'Financial',     sort: 4  },
-  // Flights
-  { key: 'flights_ticketed',       name: 'Flights ticketed',              category: 'Flights',       sort: 5  },
-  { key: 'etickets_sent',          name: 'E-tickets sent to client',      category: 'Flights',       sort: 6  },
-  // Accommodation
-  { key: 'hotel_confirmation',     name: 'Hotel confirmation received',   category: 'Accommodation', sort: 7  },
-  { key: 'special_requests',       name: 'Special requests confirmed',    category: 'Accommodation', sort: 8  },
-  // Transfers
-  { key: 'transfer_confirmation',  name: 'Transfers confirmed',           category: 'Transfers',     sort: 9  },
-  // Documents
-  { key: 'booking_confirmation',   name: 'Booking confirmation sent',    category: 'Documents',     sort: 10 },
-  { key: 'travel_docs',            name: 'Travel documents issued',      category: 'Documents',     sort: 11 },
-  { key: 'atol_certificate',       name: 'ATOL certificate issued',      category: 'Documents',     sort: 12 },
-  // Pre-departure
-  { key: 'predeparture_call',      name: 'Pre-departure contact made',   category: 'Pre-Departure', sort: 13 },
-  // Post-trip
-  { key: 'review_requested',       name: 'Post-trip review requested',   category: 'Post-Trip',     sort: 14 },
-  { key: 'rebook_conversation',    name: 'Re-book conversation started', category: 'Post-Trip',     sort: 15 },
-]
-
-const CATEGORY_ICONS: Record<string, string> = {
-  Financial: '💷', Flights: '✈', Accommodation: '🏨',
-  Transfers: '🚗', Documents: '📄', 'Pre-Departure': '📞', 'Post-Trip': '🌟',
-}
-
-const CATEGORY_COLORS: Record<string, string> = {
-  Financial: '#10b981', Flights: '#3b82f6', Accommodation: '#8b5cf6',
-  Transfers: '#f97316', Documents: '#f59e0b', 'Pre-Departure': '#ec4899', 'Post-Trip': '#14b8a6',
-}
-
 const STATUS_CONFIG: Record<string, { label: string; color: string; bg: string }> = {
   CONFIRMED:   { label: 'Confirmed',   color: '#10b981', bg: '#e6f4ee' },
   PENDING:     { label: 'Pending',     color: '#f59e0b', bg: '#fdf0e0' },
@@ -153,23 +115,18 @@ export default function BookingsPage() {
 
   async function loadBookings() {
     setLoading(true)
-    const { data } = await supabase
-      .from('bookings')
-      .select(`
-        *,
-        deals(id, title, deal_value, staff_id, clients(id, first_name, last_name, phone, email, owner_staff_id)),
-        booking_tasks(*),
-        booking_passengers(*)
-      `)
-      .order('departure_date', { ascending: true })
+    const response = await authedFetch('/api/bookings')
+    const { data, error } = await response.json()
+    if (error) throw error
     setBookings(data || [])
     setLoading(false)
   }
 
   async function loadAccess() {
-    const { staffUsers, currentStaff } = await getAccessContext()
-    setStaffUsers(staffUsers)
-    setCurrentStaff(currentStaff)
+    const response = await authedFetch('/api/bookings/access')
+    const data = await response.json()
+    setStaffUsers(data.staffUsers || [])
+    setCurrentStaff(data.currentStaff || null)
   }
 
   useEffect(() => {
@@ -311,7 +268,7 @@ export default function BookingsPage() {
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((booking, i) => {
+                {filtered.map((booking) => {
                   const client   = booking.deals?.clients
                   const tasks    = booking.booking_tasks || []
                   const progress = taskProgress(tasks)
@@ -475,62 +432,20 @@ function OwnershipQuickFix({ booking, staffUsers, currentStaff, onSaved, showToa
     e.stopPropagation()
     if (!selectedStaffId || !isManager(currentStaff)) return
     const nextStaffId = Number(selectedStaffId)
-    const client = booking.deals?.clients
-    const auditEntries = [
-      ...(client
-        ? buildFieldAuditEntries({
-            entityType: 'client',
-            entityId: client.id,
-            performedBy: currentStaff,
-            action: 'ownership_reassigned',
-            before: { owner_staff_id: client.owner_staff_id ?? null },
-            after: { owner_staff_id: nextStaffId },
-            fields: ['owner_staff_id'],
-            notes: `Realigned from booking list ${booking.id}`,
-          })
-        : []),
-      ...buildFieldAuditEntries({
-        entityType: 'deal',
-        entityId: booking.deal_id,
-        performedBy: currentStaff,
-        action: 'ownership_reassigned',
-        before: { staff_id: booking.deals?.staff_id ?? null },
-        after: { staff_id: nextStaffId },
-        fields: ['staff_id'],
-        notes: 'Deal ownership realigned from bookings list',
-      }),
-      ...buildFieldAuditEntries({
-        entityType: 'booking',
-        entityId: booking.id,
-        performedBy: currentStaff,
-        action: 'ownership_reassigned',
-        before: { staff_id: booking.staff_id ?? null },
-        after: { staff_id: nextStaffId },
-        fields: ['staff_id'],
-        notes: 'Booking consultant realigned from bookings list',
-      }),
-    ]
-
-    if (auditEntries.length === 0) {
-      showToast('Ownership already aligned')
-      return
-    }
 
     setSaving(true)
     try {
-      if (client && client.owner_staff_id !== nextStaffId) {
-        const { error } = await supabase.from('clients').update({ owner_staff_id: nextStaffId }).eq('id', client.id)
-        if (error) throw error
-      }
-      if (booking.deals?.staff_id !== nextStaffId) {
-        const { error } = await supabase.from('deals').update({ staff_id: nextStaffId }).eq('id', booking.deal_id)
-        if (error) throw error
-      }
-      if (booking.staff_id !== nextStaffId) {
-        const { error } = await supabase.from('bookings').update({ staff_id: nextStaffId }).eq('id', booking.id)
-        if (error) throw error
-      }
-      await logAuditEntries(auditEntries)
+      const response = await authedFetch(`/api/bookings/${booking.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'save_ownership',
+          staffId: nextStaffId,
+        }),
+      })
+      const result = await response.json()
+      if (!result.success) throw new Error(result.message)
+
       await onSaved()
       showToast('Ownership realigned ✓')
     } catch (error) {
@@ -556,456 +471,6 @@ function OwnershipQuickFix({ booking, staffUsers, currentStaff, onSaved, showToa
       <button className="btn btn-secondary btn-xs" onClick={alignOwnership} disabled={saving || !selectedStaffId}>
         {saving ? 'Saving…' : 'Align'}
       </button>
-    </div>
-  )
-}
-
-// ── BOOKING DETAIL PANEL ───────────────────────────────────
-function BookingDetailPanel({ booking, onClose, onRefresh, showToast }: {
-  booking: Booking
-  onClose: () => void
-  onRefresh: () => void
-  showToast: (msg: string) => void
-}) {
-  const [tasks, setTasks]               = useState<BookingTask[]>(booking.booking_tasks || [])
-  const [passengers, setPassengers]     = useState<Passenger[]>(booking.booking_passengers || [])
-  const [tab, setTab]                   = useState<'tasks' | 'passengers' | 'financials' | 'notes'>('tasks')
-  const [saving, setSaving]             = useState(false)
-  const [showAddPax, setShowAddPax]     = useState(false)
-  const [bookingNotes, setBookingNotes] = useState(booking.booking_notes || '')
-  const [editingNotes, setEditingNotes] = useState(false)
-
-  const client   = booking.deals?.clients
-  const depDays  = daysUntil(booking.departure_date)
-  const balDays  = daysUntil(booking.balance_due_date)
-  const progress = taskProgress(tasks)
-  const cfg      = STATUS_CONFIG[booking.status] || STATUS_CONFIG.CONFIRMED
-
-  async function initializeTasks() {
-    const inserts = TASK_TEMPLATE.map(t => ({
-      booking_id: booking.id,
-      task_name:  t.name,
-      task_key:   t.key,
-      category:   t.category,
-      sort_order: t.sort,
-      is_done:    false,
-    }))
-    const { data } = await supabase.from('booking_tasks').insert(inserts).select()
-    if (data) setTasks(data)
-  }
-
-  // Initialize tasks if none exist
-  useEffect(() => {
-    if (tasks.length > 0) return
-    const timer = window.setTimeout(() => { void initializeTasks() }, 0)
-    return () => window.clearTimeout(timer)
-  }, [tasks.length])
-
-  async function toggleTask(task: BookingTask) {
-    const newDone = !task.is_done
-    setTasks(prev => prev.map(t => t.id === task.id ? { ...t, is_done: newDone, completed_at: newDone ? new Date().toISOString() : null } : t))
-    await supabase.from('booking_tasks').update({
-      is_done: newDone,
-      completed_at: newDone ? new Date().toISOString() : null,
-    }).eq('id', task.id)
-  }
-
-  async function saveNotes() {
-    await supabase.from('bookings').update({ booking_notes: bookingNotes }).eq('id', booking.id)
-    setEditingNotes(false)
-    showToast('Notes saved')
-  }
-
-  async function updateStatus(status: string) {
-    await supabase.from('bookings').update({ status }).eq('id', booking.id)
-    showToast(`Status updated to ${STATUS_CONFIG[status]?.label}`)
-    onRefresh()
-  }
-
-  // Group tasks by category
-  const tasksByCategory = TASK_TEMPLATE.reduce((acc, tmpl) => {
-    if (!acc[tmpl.category]) acc[tmpl.category] = []
-    const task = tasks.find(t => t.task_key === tmpl.key)
-    if (task) acc[tmpl.category].push(task)
-    return acc
-  }, {} as Record<string, BookingTask[]>)
-
-  const TABS = [
-    { key: 'tasks',      label: `Tasks (${tasks.filter(t => t.is_done).length}/${tasks.length})` },
-    { key: 'passengers', label: `Passengers (${passengers.length})` },
-    { key: 'financials', label: 'Financials' },
-    { key: 'notes',      label: 'Notes' },
-  ] as const
-
-  return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,14,13,0.55)', backdropFilter: 'blur(4px)', zIndex: 200, display: 'flex', justifyContent: 'flex-end' }}
-      onClick={e => { if (e.target === e.currentTarget) onClose() }}>
-      <div style={{ width: '560px', background: 'var(--surface)', height: '100vh', overflowY: 'auto', boxShadow: 'var(--shadow-lg)', display: 'flex', flexDirection: 'column' }}>
-
-        {/* Panel header */}
-        <div style={{ padding: '20px 24px', borderBottom: '1px solid var(--border)', position: 'sticky', top: 0, background: 'var(--surface)', zIndex: 10 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '10px' }}>
-            <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '4px' }}>
-                <span style={{ fontFamily: 'monospace', fontWeight: '800', fontSize: '20px', color: 'var(--accent)' }}>
-                  {booking.booking_reference}
-                </span>
-                <span style={{ padding: '3px 10px', borderRadius: '20px', fontSize: '11.5px', fontWeight: '500', background: cfg.bg, color: cfg.color }}>
-                  {cfg.label}
-                </span>
-              </div>
-              <div style={{ fontFamily: 'Instrument Serif, serif', fontSize: '18px', color: 'var(--text-primary)', marginBottom: '2px' }}>
-                {booking.deals?.title || '—'}
-              </div>
-              {client && (
-                <div style={{ fontSize: '12.5px', color: 'var(--text-muted)' }}>
-                  {client.first_name} {client.last_name}
-                  {client.phone && ` · ${client.phone}`}
-                </div>
-              )}
-            </div>
-            <button className="btn btn-ghost btn-sm" onClick={onClose}>✕</button>
-          </div>
-
-          {/* Quick stats bar */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px', marginBottom: '12px' }}>
-            {[
-              { label: 'Departure', val: fmtDate(booking.departure_date, { day: 'numeric', month: 'short', year: 'numeric' }), sub: depDays !== null && depDays >= 0 ? `${depDays}d away` : 'Past', color: depDays !== null && depDays <= 7 ? 'var(--red)' : 'var(--text-muted)' },
-              { label: 'Return', val: fmtDate(booking.return_date, { day: 'numeric', month: 'short', year: 'numeric' }), sub: '', color: 'var(--text-muted)' },
-              { label: 'Balance Due', val: fmtDate(booking.balance_due_date, { day: 'numeric', month: 'short' }), sub: balDays !== null && balDays >= 0 ? `${balDays}d` : 'Overdue', color: balDays !== null && balDays <= 14 ? 'var(--red)' : 'var(--text-muted)' },
-            ].map(s => (
-              <div key={s.label} style={{ background: 'var(--bg-tertiary)', borderRadius: '8px', padding: '8px 12px' }}>
-                <div style={{ fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)', marginBottom: '3px' }}>{s.label}</div>
-                <div style={{ fontSize: '13px', fontWeight: '500', color: 'var(--text-primary)' }}>{s.val}</div>
-                {s.sub && <div style={{ fontSize: '11px', color: s.color, fontWeight: '500' }}>{s.sub}</div>}
-              </div>
-            ))}
-          </div>
-
-          {/* Progress bar */}
-          <div style={{ marginBottom: '12px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11.5px', color: 'var(--text-muted)', marginBottom: '5px' }}>
-              <span>Booking progress</span>
-              <span style={{ fontWeight: '600', color: progress === 100 ? 'var(--green)' : 'var(--text-primary)' }}>{progress}%</span>
-            </div>
-            <div style={{ height: '8px', background: 'var(--border)', borderRadius: '4px', overflow: 'hidden' }}>
-              <div style={{ height: '100%', width: `${progress}%`, borderRadius: '4px', transition: 'width 0.4s', background: progress === 100 ? 'var(--green)' : progress >= 60 ? 'var(--accent)' : progress >= 30 ? 'var(--amber)' : 'var(--red)' }} />
-            </div>
-          </div>
-
-          {/* Quick actions */}
-          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-            {client?.phone && (
-              <>
-                <a href={`tel:${client.phone}`} className="btn btn-secondary btn-sm" style={{ textDecoration: 'none' }}>📞 Call</a>
-                <a href={`https://wa.me/${client.phone.replace(/\D/g, '')}`} target="_blank" className="btn btn-sm btn-sm"
-                  style={{ textDecoration: 'none', background: '#e8f9ef', color: '#1a9e52', border: 'none', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', padding: '5px 11px', borderRadius: '6px', fontSize: '12px', fontWeight: '500', fontFamily: 'DM Sans, sans-serif' }}>
-                  💬 WhatsApp
-                </a>
-              </>
-            )}
-            <Link href={`/deals/${booking.deal_id}`} className="btn btn-secondary btn-sm" style={{ textDecoration: 'none' }}>
-              Open Deal →
-            </Link>
-            <select className="input" style={{ padding: '5px 10px', fontSize: '12px', width: 'auto' }}
-              value={booking.status} onChange={e => updateStatus(e.target.value)}>
-              {Object.entries(STATUS_CONFIG).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
-            </select>
-          </div>
-        </div>
-
-        {/* Tabs */}
-        <div style={{ padding: '0 24px', borderBottom: '1px solid var(--border)', display: 'flex', gap: '0' }}>
-          {TABS.map(t => (
-            <button key={t.key} onClick={() => setTab(t.key)}
-              style={{ padding: '12px 16px', border: 'none', background: 'transparent', fontSize: '13px', cursor: 'pointer', whiteSpace: 'nowrap',
-                color: tab === t.key ? 'var(--accent)' : 'var(--text-muted)',
-                fontWeight: tab === t.key ? '500' : '400',
-                borderBottom: tab === t.key ? '2px solid var(--accent)' : '2px solid transparent',
-                marginBottom: '-1px' }}>
-              {t.label}
-            </button>
-          ))}
-        </div>
-
-        {/* Tab content */}
-        <div style={{ padding: '20px 24px', flex: 1 }}>
-
-          {/* TASKS TAB */}
-          {tab === 'tasks' && (
-            <div>
-              {tasks.length === 0 ? (
-                <div style={{ textAlign: 'center', padding: '32px', color: 'var(--text-muted)', fontSize: '13px' }}>
-                  <div style={{ marginBottom: '12px' }}>Initialising tasks…</div>
-                </div>
-              ) : (
-                Object.entries(tasksByCategory).map(([category, catTasks]) => {
-                  if (catTasks.length === 0) return null
-                  const catDone = catTasks.filter(t => t.is_done).length
-                  const catColor = CATEGORY_COLORS[category] || 'var(--accent)'
-                  return (
-                    <div key={category} style={{ marginBottom: '20px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
-                        <span style={{ fontSize: '16px' }}>{CATEGORY_ICONS[category]}</span>
-                        <span style={{ fontSize: '12px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.07em', color: catColor }}>
-                          {category}
-                        </span>
-                        <span style={{ fontSize: '11px', color: 'var(--text-muted)', marginLeft: 'auto' }}>
-                          {catDone}/{catTasks.length}
-                        </span>
-                      </div>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                        {catTasks.map(task => (
-                          <div key={task.id}
-                            style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '10px 14px', borderRadius: '8px',
-                              background: task.is_done ? 'var(--green-light)' : 'var(--bg-tertiary)',
-                              border: '1px solid', borderColor: task.is_done ? 'var(--green)' + '44' : 'var(--border)',
-                              cursor: 'pointer', transition: 'all 0.15s' }}
-                            onClick={() => toggleTask(task)}>
-                            <div style={{ width: '20px', height: '20px', borderRadius: '50%', border: '2px solid',
-                              borderColor: task.is_done ? 'var(--green)' : 'var(--border)',
-                              background: task.is_done ? 'var(--green)' : 'transparent',
-                              display: 'flex', alignItems: 'center', justifyContent: 'center',
-                              color: 'white', fontSize: '11px', flexShrink: 0, transition: 'all 0.15s' }}>
-                              {task.is_done ? '✓' : ''}
-                            </div>
-                            <span style={{ fontSize: '13.5px', color: task.is_done ? 'var(--green)' : 'var(--text-primary)',
-                              textDecoration: task.is_done ? 'line-through' : 'none', flex: 1,
-                              opacity: task.is_done ? 0.75 : 1 }}>
-                              {task.task_name}
-                            </span>
-                            {task.completed_at && (
-                              <span style={{ fontSize: '10.5px', color: 'var(--green)', whiteSpace: 'nowrap' }}>
-                                {new Date(task.completed_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
-                              </span>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )
-                })
-              )}
-            </div>
-          )}
-
-          {/* PASSENGERS TAB */}
-          {tab === 'passengers' && (
-            <div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-                <div style={{ fontSize: '13px', color: 'var(--text-muted)' }}>{passengers.length} passenger{passengers.length !== 1 ? 's' : ''}</div>
-                <button className="btn btn-primary btn-sm" onClick={() => setShowAddPax(true)}>+ Add Passenger</button>
-              </div>
-
-              {passengers.length === 0 ? (
-                <div style={{ textAlign: 'center', padding: '32px', color: 'var(--text-muted)' }}>
-                  <div style={{ fontSize: '24px', marginBottom: '10px' }}>👥</div>
-                  <div style={{ fontSize: '13px', marginBottom: '14px' }}>No passengers added yet</div>
-                  <button className="btn btn-primary btn-sm" onClick={() => setShowAddPax(true)}>Add first passenger</button>
-                </div>
-              ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                  {passengers.map(pax => (
-                    <div key={pax.id} className="card" style={{ padding: '14px 16px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '6px' }}>
-                        <div style={{ fontFamily: 'Instrument Serif, serif', fontSize: '16px', color: 'var(--text-primary)', flex: 1 }}>
-                          {pax.title} {pax.first_name} {pax.last_name}
-                        </div>
-                        <div style={{ display: 'flex', gap: '6px' }}>
-                          {pax.is_lead && (
-                            <span style={{ fontSize: '11px', padding: '2px 8px', borderRadius: '10px', background: 'var(--accent-light)', color: 'var(--accent)', fontWeight: '500' }}>Lead</span>
-                          )}
-                          <span style={{ fontSize: '11px', padding: '2px 8px', borderRadius: '10px', background: 'var(--bg-tertiary)', color: 'var(--text-muted)' }}>{pax.passenger_type}</span>
-                        </div>
-                      </div>
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', fontSize: '12.5px', color: 'var(--text-muted)' }}>
-                        {pax.date_of_birth && <span>DOB: {fmtDate(pax.date_of_birth)}</span>}
-                        {pax.passport_number && <span>Passport: {pax.passport_number}</span>}
-                        {pax.passport_expiry && <span>Expires: {fmtDate(pax.passport_expiry)}</span>}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {showAddPax && (
-                <AddPassengerForm
-                  bookingId={booking.id}
-                  onSaved={async () => {
-                    const { data } = await supabase.from('booking_passengers').select('*').eq('booking_id', booking.id)
-                    setPassengers(data || [])
-                    setShowAddPax(false)
-                    showToast('Passenger added ✓')
-                  }}
-                  onCancel={() => setShowAddPax(false)}
-                />
-              )}
-            </div>
-          )}
-
-          {/* FINANCIALS TAB */}
-          {tab === 'financials' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-              {[
-                { label: 'Total Holiday Value', val: fmt(booking.deals?.deal_value || 0), color: 'var(--green)', large: true },
-                { label: 'Final Profit', val: booking.final_profit ? fmt(booking.final_profit) : 'Not set', color: 'var(--gold)', large: true },
-                { label: 'Deposit Received', val: booking.deposit_received ? '✓ Yes' : '✗ Pending', color: booking.deposit_received ? 'var(--green)' : 'var(--red)', large: false },
-                { label: 'Balance Due Date', val: fmtDate(booking.balance_due_date), color: balDays !== null && balDays <= 14 ? 'var(--red)' : 'var(--text-primary)', large: false },
-              ].map(f => (
-                <div key={f.label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '14px 16px', background: 'var(--bg-tertiary)', borderRadius: '10px' }}>
-                  <span style={{ fontSize: '13px', color: 'var(--text-muted)', fontWeight: '500' }}>{f.label}</span>
-                  <span style={{ fontFamily: f.large ? 'Instrument Serif, serif' : 'DM Sans, sans-serif', fontSize: f.large ? '22px' : '14px', fontWeight: f.large ? '400' : '500', color: f.color }}>{f.val}</span>
-                </div>
-              ))}
-
-              {/* Balance due urgency alert */}
-              {balDays !== null && balDays <= 14 && balDays >= 0 && (
-                <div style={{ background: 'var(--red-light)', border: '1px solid var(--red)', borderRadius: '10px', padding: '14px 16px', display: 'flex', gap: '10px' }}>
-                  <span style={{ fontSize: '20px' }}>⚠️</span>
-                  <div>
-                    <div style={{ fontSize: '13.5px', fontWeight: '600', color: 'var(--red)', marginBottom: '2px' }}>Balance due in {balDays} day{balDays !== 1 ? 's' : ''}</div>
-                    <div style={{ fontSize: '12.5px', color: 'var(--red)' }}>Contact client to arrange payment before {fmtDate(booking.balance_due_date)}</div>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* NOTES TAB */}
-          {tab === 'notes' && (
-            <div>
-              {editingNotes ? (
-                <div>
-                  <textarea className="input" style={{ minHeight: '200px', resize: 'vertical', marginBottom: '12px' }}
-                    value={bookingNotes} onChange={e => setBookingNotes(e.target.value)}
-                    placeholder="Booking notes, special requests, important information…" />
-                  <div style={{ display: 'flex', gap: '8px' }}>
-                    <button className="btn btn-primary btn-sm" onClick={saveNotes}>Save Notes</button>
-                    <button className="btn btn-ghost btn-sm" onClick={() => setEditingNotes(false)}>Cancel</button>
-                  </div>
-                </div>
-              ) : (
-                <div>
-                  <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '12px' }}>
-                    <button className="btn btn-secondary btn-sm" onClick={() => setEditingNotes(true)}>Edit Notes</button>
-                  </div>
-                  {bookingNotes ? (
-                    <div style={{ background: 'var(--gold-light)', borderRadius: '10px', padding: '16px', fontSize: '13.5px', color: 'var(--text-secondary)', lineHeight: '1.7', whiteSpace: 'pre-wrap', border: '1px solid var(--border)' }}>
-                      {bookingNotes}
-                    </div>
-                  ) : (
-                    <div style={{ textAlign: 'center', padding: '32px', color: 'var(--text-muted)', fontSize: '13px' }}>
-                      <div style={{ fontSize: '24px', marginBottom: '10px' }}>📝</div>
-                      No notes yet
-                      <div style={{ marginTop: '12px' }}>
-                        <button className="btn btn-secondary btn-sm" onClick={() => setEditingNotes(true)}>Add Notes</button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-// ── ADD PASSENGER FORM ─────────────────────────────────────
-function AddPassengerForm({ bookingId, onSaved, onCancel }: {
-  bookingId: number
-  onSaved: () => void
-  onCancel: () => void
-}) {
-  type PassengerForm = {
-    title: string
-    first_name: string
-    last_name: string
-    date_of_birth: string
-    passenger_type: string
-    is_lead: boolean
-    passport_number: string
-    passport_expiry: string
-  }
-
-  const [form, setForm] = useState<PassengerForm>({
-    title: 'Mr', first_name: '', last_name: '',
-    date_of_birth: '', passenger_type: 'Adult',
-    is_lead: false, passport_number: '', passport_expiry: '',
-  })
-  const [saving, setSaving] = useState(false)
-  const up = <K extends keyof PassengerForm>(field: K, value: PassengerForm[K]) => {
-    setForm(prev => ({ ...prev, [field]: value }))
-  }
-
-  async function save() {
-    if (!form.first_name.trim()) return
-    setSaving(true)
-    await supabase.from('booking_passengers').insert({
-      booking_id:      bookingId,
-      title:           form.title,
-      first_name:      form.first_name.trim(),
-      last_name:       form.last_name.trim(),
-      date_of_birth:   form.date_of_birth || null,
-      passenger_type:  form.passenger_type,
-      is_lead:         form.is_lead,
-      passport_number: form.passport_number || null,
-      passport_expiry: form.passport_expiry || null,
-    })
-    setSaving(false)
-    onSaved()
-  }
-
-  return (
-    <div style={{ marginTop: '20px', padding: '18px', background: 'var(--bg-tertiary)', borderRadius: '12px', border: '1px solid var(--border)' }}>
-      <div style={{ fontFamily: 'Instrument Serif, serif', fontSize: '16px', marginBottom: '14px' }}>Add Passenger</div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr 1fr', gap: '10px', marginBottom: '10px' }}>
-        <div>
-          <label className="label">Title</label>
-          <select className="input" style={{ width: '70px' }} value={form.title} onChange={e => up('title', e.target.value)}>
-            {['Mr', 'Mrs', 'Ms', 'Miss', 'Dr', 'Prof'].map(t => <option key={t}>{t}</option>)}
-          </select>
-        </div>
-        <div>
-          <label className="label">First Name *</label>
-          <input className="input" placeholder="John" value={form.first_name} onChange={e => up('first_name', e.target.value)} />
-        </div>
-        <div>
-          <label className="label">Last Name</label>
-          <input className="input" placeholder="Smith" value={form.last_name} onChange={e => up('last_name', e.target.value)} />
-        </div>
-      </div>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '10px' }}>
-        <div>
-          <label className="label">Date of Birth</label>
-          <input className="input" type="date" value={form.date_of_birth} onChange={e => up('date_of_birth', e.target.value)} />
-        </div>
-        <div>
-          <label className="label">Type</label>
-          <select className="input" value={form.passenger_type} onChange={e => up('passenger_type', e.target.value)}>
-            {['Adult', 'Child', 'Infant'].map(t => <option key={t}>{t}</option>)}
-          </select>
-        </div>
-        <div>
-          <label className="label">Passport Number</label>
-          <input className="input" placeholder="123456789" value={form.passport_number} onChange={e => up('passport_number', e.target.value)} />
-        </div>
-        <div>
-          <label className="label">Passport Expiry</label>
-          <input className="input" type="date" value={form.passport_expiry} onChange={e => up('passport_expiry', e.target.value)} />
-        </div>
-      </div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px' }}>
-        <input type="checkbox" id="islead" checked={form.is_lead} onChange={e => up('is_lead', e.target.checked)} style={{ width: '16px', height: '16px', cursor: 'pointer' }} />
-        <label htmlFor="islead" style={{ fontSize: '13.5px', color: 'var(--text-secondary)', cursor: 'pointer' }}>Lead passenger</label>
-      </div>
-      <div style={{ display: 'flex', gap: '8px' }}>
-        <button className="btn btn-primary btn-sm" onClick={save} disabled={saving || !form.first_name.trim()}>
-          {saving ? 'Saving…' : 'Add Passenger'}
-        </button>
-        <button className="btn btn-ghost btn-sm" onClick={onCancel}>Cancel</button>
-      </div>
     </div>
   )
 }

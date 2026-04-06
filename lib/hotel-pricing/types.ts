@@ -131,6 +131,16 @@ export type HotelOfferRule = {
   notes: string | null
 }
 
+export type HotelOfferBlackoutWindow = {
+  id: number
+  hotel_offer_id: number
+  booking_from: string | null
+  booking_to: string | null
+  travel_from: string | null
+  travel_to: string | null
+  notes: string | null
+}
+
 export type HotelCompulsoryCharge = {
   id: number
   contract_version_id: number
@@ -166,6 +176,7 @@ export type PricingRequest = {
   checkOutDate: string
   roomName: string
   boardBasis: string
+  selectedOfferFamilies: OfferFamily[]
   adults: number
   childAges: number[]
   teenAges: number[]

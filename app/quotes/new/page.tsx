@@ -2,14 +2,110 @@
 
 import { useEffect, useState, useRef } from 'react'
 import { useSearchParams } from 'next/navigation'
-import { supabase } from '@/lib/supabase'
 import Link from 'next/link'
 
 // ── CONSTANTS ─────────────────────────────────────────────
-const AIRPORTS    = ['LGW','LHR','MAN','BHX','EDI','GLA','BRS','LTN','STN','NCL','LBA','EMA','DXB','AUH','SIN','CPT','JNB','MRU','SEZ','CMB','BKK','HKG']
-const CABIN_CLASS = ['Economy','Premium Economy','Business Class','First Class']
-const AIRLINES    = ['Air Mauritius','British Airways','TUI','Jet2','Virgin Atlantic','Emirates','Air France','KLM','Qatar Airways','Etihad','Singapore Airlines','Condor','Other']
-const QUICK_EXTRAS = ['Airport Lounge Access','Airport Parking','Honeymoon Package','Wedding Package','Travel Insurance','Room Upgrade','Meet & Greet','Private Transfers','Car Hire','Excursion Package','Spa Credit','Legal Fees']
+type FlightLeg = {
+  id: string
+  flight_number?: string
+  date?: string
+  depart_time?: string
+  arrival_time?: string
+  checkin_time?: string
+  airline?: string
+  from?: string
+  to?: string
+  cabin?: string
+  overnight?: boolean
+}
+
+type ExtraItem = {
+  id: string
+  label: string
+  net: number
+}
+
+type HotelOption = {
+  id: string
+  hotel: string
+  roomType?: string
+  boardBasis: string
+  nights: string
+  checkinDate?: string
+  checkinNextDay: boolean
+  outLegs: FlightLeg[]
+  retLegs: FlightLeg[]
+  flightNet: string
+  accNet: string
+  transNet: string
+  extras: ExtraItem[]
+  sellPrice: string
+  margin: string
+  profit: string
+}
+
+type Centre = {
+  id: string
+  destination: string
+  hotel: string
+  roomType?: string
+  boardBasis: string
+  nights: string
+  checkinDate?: string
+  checkinNextDay: boolean
+  inboundLegs: FlightLeg[]
+  outboundLegs: FlightLeg[]
+  flightNet: string
+  accNet: string
+  transNet: string
+  extras: ExtraItem[]
+}
+
+type DealInfo = {
+  id: number
+  title: string
+  departure_date?: string
+  clients?: {
+    first_name: string
+    last_name: string
+    email: string
+    phone?: string
+  }
+}
+
+type EmailTemplate = {
+  id: number
+  name: string
+  description?: string
+  opening_hook?: string
+  why_choose_us?: string
+  urgency_notice?: string
+  closing_cta?: string
+}
+
+const AIRLINES = [
+  'British Airways', 'Virgin Atlantic', 'Emirates', 'Qatar Airways', 'Etihad Airways',
+  'Air Mauritius', 'Air France', 'KLM', 'Lufthansa', 'Swiss Air', 'Austrian Airlines',
+  'Turkish Airlines', 'Singapore Airlines', 'Cathay Pacific', 'Malaysia Airlines',
+  'South African Airways', 'Kenya Airways', 'Ethiopian Airlines', 'EgyptAir',
+  'Condor', 'TUI', 'Thomas Cook', 'Monarch', 'EasyJet', 'Ryanair'
+]
+
+const AIRPORTS = [
+  'LHR', 'LGW', 'LTN', 'STN', 'LCY', 'MAN', 'BHX', 'GLA', 'EDI', 'BRS', 'NCL',
+  'EMA', 'LBA', 'SOU', 'CWL', 'BFS', 'JER', 'GCI', 'DUB', 'ORK', 'SNN',
+  'CDG', 'ORY', 'FRA', 'MUC', 'FCO', 'AMS', 'ZRH', 'VIE', 'IST',
+  'DOH', 'AUH', 'DXB', 'SIN', 'HKG', 'BKK', 'KUL', 'JNB', 'NBO', 'ADD',
+  'CAI', 'MRU', 'SEZ', 'BEY', 'TLV', 'CPT', 'DAR', 'MBA', 'ZNZ'
+]
+
+const CABIN_CLASS = ['Economy', 'Premium Economy', 'Business', 'First']
+
+const QUICK_EXTRAS = [
+  'Airport Lounge Access', 'Private Transfer', 'Welcome Amenity',
+  'Excursion Credit', 'Travel Insurance', 'Visa Fees'
+]
+
 const CONTACT = {
   direct:'020 8951 6922', whatsapp:'07881 551204',
   email:'samir@mauritiusholidaysdirect.co.uk',
@@ -19,53 +115,220 @@ const CONTACT = {
   web:'www.mauritiusholidaysdirect.co.uk',
 }
 
-// ── TYPES ─────────────────────────────────────────────────
-type FlightLeg  = { id:string; date:string; depart_time:string; checkin_time:string; arrival_time:string; airline:string; from:string; to:string; cabin:string; overnight:boolean; flight_number:string }
-type ExtraItem  = { id:string; label:string; net:number }
-type DealInfo   = { id:number; title:string; departure_date:string|null; clients?:{ first_name:string; last_name:string; email?:string; phone?:string } }
-
-type HotelOption = {
-  id:string; hotel:string; roomType:string; boardBasis:string; nights:string
-  checkinDate:string; checkinNextDay:boolean
-  outLegs:FlightLeg[]; retLegs:FlightLeg[]
-  flightNet:string; accNet:string; transNet:string; extras:ExtraItem[]
-  sellPrice:string; margin:string; profit:string
-}
-
-type Centre = {
-  id:string; destination:string; hotel:string; roomType:string; boardBasis:string
-  nights:string; checkinDate:string; checkinNextDay:boolean
-  inboundLegs:FlightLeg[]; outboundLegs:FlightLeg[]
-  accNet:string; flightNet:string; transNet:string; extras:ExtraItem[]
-}
-
 // ── HELPERS ───────────────────────────────────────────────
-const uid  = () => Math.random().toString(36).slice(2,8)
-const fmt  = (n:number) => '£'+(n||0).toLocaleString('en-GB',{minimumFractionDigits:2,maximumFractionDigits:2})
-const fmtS = (n:number) => '£'+(n||0).toLocaleString('en-GB',{maximumFractionDigits:0})
-function genRef(initials:string, count:number) {
-  const n=new Date(), d=String(n.getDate()).padStart(2,'0'), m=String(n.getMonth()+1).padStart(2,'0'), y=String(n.getFullYear()).slice(-2)
-  return `${d}${m}${y}${(initials||'SA').toUpperCase()}${String(count+1).padStart(2,'0')}`
+function uid(): string {
+  return Math.random().toString(36).substr(2, 9)
 }
-function newLeg(dir:'out'|'ret'|'in'): FlightLeg {
-  return { id:uid(), date:'', depart_time:'', checkin_time:'', arrival_time:'', airline:'Air Mauritius', from:dir==='out'?'LGW':'MRU', to:dir==='out'?'MRU':'LGW', cabin:'Economy', overnight:false, flight_number:'' }
+
+function addDays(dateStr: string, days: number): string {
+  const date = new Date(dateStr + 'T12:00')
+  date.setDate(date.getDate() + days)
+  return date.toISOString().split('T')[0]
 }
-function addDays(dateStr:string, days:number): string {
-  if (!dateStr) return ''
-  const d=new Date(dateStr+'T12:00'); d.setDate(d.getDate()+days)
-  return d.toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})
+
+function fmt(num: number): string {
+  return '£' + num.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
-function fmtLegDate(d:string): string {
-  if (!d) return '—'
-  return new Date(d+'T12:00').toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})
+
+function fmtS(num: number): string {
+  return '£' + num.toLocaleString('en-GB', { maximumFractionDigits: 0 })
 }
+
+function genRef(initials: string, count: number): string {
+  const now = new Date()
+  const year = now.getFullYear().toString().slice(-2)
+  const month = (now.getMonth() + 1).toString().padStart(2, '0')
+  return `${initials}${year}${month}${(count + 1).toString().padStart(3, '0')}`
+}
+
+function newLeg(direction: 'out' | 'ret'): FlightLeg {
+  return {
+    id: uid(),
+    flight_number: '',
+    date: '',
+    depart_time: '',
+    arrival_time: '',
+    checkin_time: '',
+    airline: '',
+    from: direction === 'out' ? 'LHR' : '',
+    to: direction === 'out' ? '' : 'LHR',
+    cabin: 'Economy',
+    overnight: false
+  }
+}
+
 function newHotelOption(): HotelOption {
-  return { id:uid(), hotel:'', roomType:'', boardBasis:'All Inclusive', nights:'7', checkinDate:'', checkinNextDay:false, outLegs:[newLeg('out')], retLegs:[newLeg('ret')], flightNet:'', accNet:'', transNet:'', extras:[], sellPrice:'', margin:'', profit:'' }
+  return {
+    id: uid(),
+    hotel: '',
+    roomType: '',
+    boardBasis: 'All Inclusive',
+    nights: '7',
+    checkinDate: '',
+    checkinNextDay: false,
+    outLegs: [newLeg('out')],
+    retLegs: [newLeg('ret')],
+    flightNet: '',
+    accNet: '',
+    transNet: '',
+    extras: [],
+    sellPrice: '',
+    margin: '',
+    profit: ''
+  }
 }
-function newCentre(destination='', idx=0): Centre {
-  const from = idx===0?'LGW':'MRU'
-  const to   = idx===0?'DXB':'MRU'
-  return { id:uid(), destination, hotel:'', roomType:'', boardBasis:'All Inclusive', nights:'3', checkinDate:'', checkinNextDay:false, inboundLegs:[{...newLeg('out'), from, to}], outboundLegs:[{...newLeg('ret'), from:to, to:idx===0?'MRU':'LGW'}], accNet:'', flightNet:'', transNet:'', extras:[] }
+
+function newCentre(destination: string): Centre {
+  return {
+    id: uid(),
+    destination,
+    hotel: '',
+    roomType: '',
+    boardBasis: 'All Inclusive',
+    nights: '7',
+    checkinDate: '',
+    checkinNextDay: false,
+    inboundLegs: [newLeg('out')],
+    outboundLegs: [newLeg('ret')],
+    flightNet: '',
+    accNet: '',
+    transNet: '',
+    extras: []
+  }
+}
+
+function fmtDate(d: string | undefined): string {
+  if (!d) return '—'
+  return new Date(d + 'T12:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+}
+
+
+function normaliseLegTime(t: string): string {
+  // Accept both HH:MM and HHMM — browsers emit HH:MM from time inputs but
+  // users sometimes type HHMM directly (4-digit no colon).
+  if (t.length === 4 && !t.includes(':')) return t.slice(0, 2) + ':' + t.slice(2)
+  return t
+}
+
+function getLegTimestamp(leg: FlightLeg): number {
+  if (!leg.date) return Number.MAX_SAFE_INTEGER
+  const raw = leg.depart_time || leg.checkin_time || leg.arrival_time || '23:59'
+  const time = normaliseLegTime(raw)
+  const ts = new Date(`${leg.date}T${time}`).getTime()
+  return isNaN(ts) ? Number.MAX_SAFE_INTEGER : ts
+}
+
+function getStayTimestamp(checkinDate?: string, checkinNextDay?: boolean): number {
+  if (!checkinDate) return Number.MAX_SAFE_INTEGER
+  const actualDate = checkinNextDay ? addDays(checkinDate, 1) : checkinDate
+  return new Date(`${actualDate}T15:00`).getTime()
+}
+
+function sortFlightLegs(legs: FlightLeg[]): FlightLeg[] {
+  return [...legs].sort((a, b) => getLegTimestamp(a) - getLegTimestamp(b))
+}
+
+function normalizeHotelOption(option: HotelOption): HotelOption {
+  return {
+    ...option,
+    outLegs: sortFlightLegs(option.outLegs || []),
+    retLegs: sortFlightLegs(option.retLegs || []),
+  }
+}
+
+function getCentreTimestamp(centre: Centre): number {
+  const legTimes = [...(centre.inboundLegs || []), ...(centre.outboundLegs || [])]
+    .map(getLegTimestamp)
+    .filter(Number.isFinite)
+
+  const stayTime = getStayTimestamp(centre.checkinDate, centre.checkinNextDay)
+  const candidates = stayTime === Number.MAX_SAFE_INTEGER ? legTimes : [...legTimes, stayTime]
+  return candidates.length > 0 ? Math.min(...candidates) : Number.MAX_SAFE_INTEGER
+}
+
+function normalizeCentre(centre: Centre): Centre {
+  return {
+    ...centre,
+    inboundLegs: sortFlightLegs(centre.inboundLegs || []),
+    outboundLegs: sortFlightLegs(centre.outboundLegs || []),
+  }
+}
+
+function sortCentresChronologically(centres: Centre[]): Centre[] {
+  return [...centres]
+    .map(normalizeCentre)
+    .sort((a, b) => getCentreTimestamp(a) - getCentreTimestamp(b))
+}
+
+
+
+function buildChronologicalItinerary(centres: Centre[]): Array<{
+  type: 'flights' | 'stay'
+  timestamp: number
+  title?: string
+  legs?: FlightLeg[]
+  centre?: Centre
+  centreIndex?: number
+}> {
+  const events: Array<{
+    type: 'flights' | 'stay'
+    timestamp: number
+    title?: string
+    legs?: FlightLeg[]
+    centre?: Centre
+    centreIndex?: number
+  }> = []
+
+  // Collect all flight legs from all centres
+  const allFlightLegs: Array<{ leg: FlightLeg, centre: Centre, centreIndex: number, legType: 'inbound' | 'outbound' }> = []
+
+  centres.forEach((centre, index) => {
+    centre.inboundLegs?.forEach(leg => {
+      allFlightLegs.push({ leg, centre, centreIndex: index, legType: 'inbound' })
+    })
+    centre.outboundLegs?.forEach(leg => {
+      allFlightLegs.push({ leg, centre, centreIndex: index, legType: 'outbound' })
+    })
+  })
+
+  // Sort all flight legs chronologically — include legs with any meaningful data (date OR depart_time),
+  // matching old rendering behaviour which showed flights when either field was set.
+  const sortedFlights = allFlightLegs
+    .filter(item => item.leg.date || item.leg.depart_time || item.leg.flight_number)
+    .sort((a, b) => getLegTimestamp(a.leg) - getLegTimestamp(b.leg))
+
+  // Get stay timestamps to determine journey segments
+  const stayEvents = centres
+    .map((centre, index) => ({
+      centre,
+      centreIndex: index,
+      timestamp: getStayTimestamp(centre.checkinDate, centre.checkinNextDay)
+    }))
+    .filter(item => item.timestamp !== Number.MAX_SAFE_INTEGER)
+    .sort((a, b) => a.timestamp - b.timestamp)
+
+  // All flights in one chronological block — one segment, all legs sorted by date/time
+  if (sortedFlights.length > 0) {
+    events.push({
+      type: 'flights',
+      timestamp: getLegTimestamp(sortedFlights[0].leg),
+      title: 'Flights',
+      legs: sortedFlights.map(f => f.leg)
+    })
+  }
+
+  // Add stays
+  stayEvents.forEach(stay => {
+    events.push({
+      type: 'stay',
+      timestamp: stay.timestamp,
+      centre: stay.centre,
+      centreIndex: stay.centreIndex
+    })
+  })
+
+  // Sort all events chronologically
+  return events.sort((a, b) => a.timestamp - b.timestamp)
 }
 
 // ── DB-BACKED SEARCH ──────────────────────────────────────
@@ -86,10 +349,15 @@ function DBSearch({ table, field='name', value, onChange, placeholder, extraQuer
   function search(val:string){
     if(timer.current) clearTimeout(timer.current)
     timer.current=setTimeout(async()=>{
-      let q2=supabase.from(table).select(field).ilike(field,`%${val}%`).order(field).limit(10)
-      if(extraQuery) q2=extraQuery(q2)
-      const{data}=await q2
-      setRes((data||[]).map((r:any)=>r[field]))
+      try {
+        const response = await fetch(`/api/search?table=${table}&q=${encodeURIComponent(val)}`)
+        if (response.ok) {
+          const data = await response.json()
+          setRes(data)
+        }
+      } catch (error) {
+        console.error('Search failed:', error)
+      }
     },200)
   }
 
@@ -98,8 +366,20 @@ function DBSearch({ table, field='name', value, onChange, placeholder, extraQuer
   async function saveNew(){
     if(!q.trim()) return
     setSaving(true)
-    await supabase.from(table).insert({[field]:q.trim()})
-    setSaving(false); setOpen(false); onChange(q.trim())
+    try {
+      const response = await fetch('/api/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ table, field, value: q.trim() })
+      })
+      if (response.ok) {
+        setOpen(false)
+        onChange(q.trim())
+      }
+    } catch (error) {
+      console.error('Save failed:', error)
+    }
+    setSaving(false)
   }
 
   const showSaveNew = q.trim().length>1 && !results.includes(q.trim())
@@ -358,10 +638,7 @@ function CentrePanel({centre,index,total,onChange,onRemove}:{centre:Centre;index
   const extrasN=centre.extras.reduce((a,e)=>a+(e.net||0),0)
   const totalNet=accN+flightN+transN+extrasN
 
-  const checkinDisplay=centre.checkinDate
-    ? centre.checkinNextDay ? addDays(centre.checkinDate,1)
-      : new Date(centre.checkinDate+'T12:00').toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})
-    : '—'
+  const checkinDisplay = fmtDate(centre.checkinNextDay && centre.checkinDate ? addDays(centre.checkinDate, 1) : centre.checkinDate)
 
   const isFirst=index===0
   const isLast=index===total-1
@@ -516,7 +793,7 @@ export default function NewQuotePage(){
   const [hotelOptions,setHotelOptions] = useState<HotelOption[]>([newHotelOption()])
 
   // Multi-centre mode
-  const [centres,setCentres]   = useState<Centre[]>([newCentre('Dubai',0), newCentre('Mauritius',1)])
+  const [centres,setCentres]   = useState<Centre[]>([newCentre('Dubai'), newCentre('Mauritius')])
   const [mcSellPrice,setMcSell]= useState('')
   const [mcMargin,setMcMargin] = useState('')
   const [mcProfit,setMcProfit] = useState('')
@@ -529,39 +806,80 @@ export default function NewQuotePage(){
   },[dealId,editQuoteId])
 
   async function loadCustomTemplates(){
-    const{data}=await supabase.from('email_templates').select('id,name,description,opening_hook,why_choose_us,urgency_notice,closing_cta').eq('is_built_in',false).order('created_at',{ascending:false})
-    setCustomTemplates(data||[])
+    try {
+      const response = await fetch('/api/templates')
+      if (response.ok) {
+        const data = await response.json()
+        setCustomTemplates(data)
+      }
+    } catch (error) {
+      console.error('Failed to load templates:', error)
+    }
   }
   async function loadDeal(id:number){
-    const{data}=await supabase.from('deals').select('id,title,departure_date,clients(first_name,last_name,email,phone)').eq('id',id).single()
-    if(data){
-      setDeal(data)
-      if(!isEditMode){
-        setHotelOptions(prev=>prev.map(o=>({...o,checkinDate:data.departure_date||''})))
-        setCentres(prev=>prev.map((c,i)=>i===prev.length-1?{...c,checkinDate:data.departure_date||''}:c))
+    try {
+      const response = await fetch(`/api/deals?id=${id}`)
+      if (response.ok) {
+        const data = await response.json()
+        setDeal(data)
+        if(!isEditMode){
+          setHotelOptions(prev=>prev.map(o=>({...o,checkinDate:data.departure_date||''})))
+          setCentres(prev=>prev.map((c,i)=>i===prev.length-1?{...c,checkinDate:data.departure_date||''}:c))
+        }
       }
+      // Get quote count for reference generation
+      const countResponse = await fetch(`/api/deals?id=${id}`)
+      if (countResponse.ok) {
+        const dealData = await countResponse.json()
+        // For now, we'll estimate the count - this could be improved with a separate endpoint
+        setQuoteCount(0) // TODO: Add quote count endpoint
+      }
+    } catch (error) {
+      console.error('Failed to load deal:', error)
     }
-    const{count}=await supabase.from('quotes').select('id',{count:'exact',head:true}).eq('deal_id',id)
-    setQuoteCount(count||0)
   }
   async function loadDeals(){
-    const{data}=await supabase.from('deals').select('id,title,departure_date,clients(first_name,last_name,email)').not('stage','in','("BOOKED","LOST")').order('created_at',{ascending:false})
-    setDeals(data||[])
+    try {
+      const response = await fetch('/api/deals')
+      if (response.ok) {
+        const data = await response.json()
+        setDeals(data)
+      }
+    } catch (error) {
+      console.error('Failed to load deals:', error)
+    }
   }
   async function loadExistingQuote(qid:number){
-    const{data}=await supabase.from('quotes').select('*').eq('id',qid).single()
-    if(!data) return
-    setEditingRef(data.quote_ref||'')
-    setAdults(String(data.adults||2)); setChildren(String(data.children||0)); setInfants(String(data.infants||0))
-    setInitials(data.consultant_initials||'SA'); setAdditionalServices(data.additional_services||'')
-    if(data.quote_type==='multi_centre'&&data.centres){
-      setQuoteMode('multi'); setCentres(data.centres)
-      setMcSell(String(data.price||'')); setMcMargin(String(data.margin_percent||'')); setMcProfit(String(data.profit||''))
-    } else {
-      setQuoteMode('single')
-      const costs=data.cost_breakdown||{}, fd=data.flight_details||{}
-      setHotelOptions([{ id:uid(), hotel:data.hotel||'', roomType:data.room_type||'', boardBasis:data.board_basis||'All Inclusive', nights:String(data.nights||7), checkinDate:data.checkin_date||data.departure_date||'', checkinNextDay:data.checkin_next_day||false, outLegs:fd.outbound?.length>0?fd.outbound:[newLeg('out')], retLegs:fd.return?.length>0?fd.return:[newLeg('ret')], flightNet:String(costs.flight_net||''), accNet:String(costs.acc_net||''), transNet:String(costs.trans_net||''), extras:costs.extras||[], sellPrice:String(data.price||''), margin:String(data.margin_percent||''), profit:String(data.profit||'') }])
+    try {
+      const response = await fetch(`/api/quotes/${qid}`)
+      if (response.ok) {
+        const data = await response.json()
+        setEditingRef(data.quote_ref||'')
+        if (data.deal_id) {
+          setDealIdVal(String(data.deal_id))
+          if (!dealId) {
+            loadDeal(Number(data.deal_id))
+          }
+        }
+        setAdults(String(data.adults||2)); setChildren(String(data.children||0)); setInfants(String(data.infants||0))
+        setInitials(data.consultant_initials||'SA'); setAdditionalServices(data.additional_services||'')
+        if(data.quote_type==='multi_centre'&&data.centres){
+          setQuoteMode('multi'); setCentres(sortCentresChronologically(data.centres))
+          setMcSell(String(data.price||'')); setMcMargin(String(data.margin_percent||'')); setMcProfit(String(data.profit||''))
+        } else {
+          setQuoteMode('single')
+          const costs=data.cost_breakdown||{}, fd=data.flight_details||{}
+          setHotelOptions([normalizeHotelOption({ id:uid(), hotel:data.hotel||'', roomType:data.room_type||'', boardBasis:data.board_basis||'All Inclusive', nights:String(data.nights||7), checkinDate:data.checkin_date||data.departure_date||'', checkinNextDay:data.checkin_next_day||false, outLegs:fd.outbound?.length>0?fd.outbound:[newLeg('out')], retLegs:fd.return?.length>0?fd.return:[newLeg('ret')], flightNet:String(costs.flight_net||''), accNet:String(costs.acc_net||''), transNet:String(costs.trans_net||''), extras:costs.extras||[], sellPrice:String(data.price||''), margin:String(data.margin_percent||''), profit:String(data.profit||'') })])
+        }
+      }
+    } catch (error) {
+      console.error('Failed to load quote:', error)
     }
+  }
+
+  function markDirty(){
+    setSaved(false)
+    setSavedRefs([])
   }
 
   // Multi-centre pricing
@@ -571,7 +889,9 @@ export default function NewQuotePage(){
     const accN=parseFloat(c.accNet)||0,flightN=parseFloat(c.flightNet)||0,transN=parseFloat(c.transNet)||0
     return a+accN+flightN+transN+c.extras.reduce((x,e)=>x+(e.net||0),0)
   },0)
+  const sortedCentres = sortCentresChronologically(centres)
   function onMcSell(v:string){
+    markDirty()
     const sell=parseFloat(v)||0,mg=parseFloat(mcMargin)||0,pr=parseFloat(mcProfit)||0
     if(sell>0&&mg>0){
       const profit = mcTotalNet>0 ? mcTotalNet*mg/100 : sell*mg/(100+mg)
@@ -583,6 +903,7 @@ export default function NewQuotePage(){
     setMcSell(v)
   }
   function onMcMargin(v:string){
+    markDirty()
     const sell=parseFloat(mcSellPrice)||0,mg=parseFloat(v)||0
     if(mcTotalNet>0&&mg>0){
       const s=mcTotalNet*(1+mg/100)
@@ -594,6 +915,7 @@ export default function NewQuotePage(){
     setMcMargin(v)
   }
   function onMcProfit(v:string){
+    markDirty()
     const sell=parseFloat(mcSellPrice)||0,pr=parseFloat(v)||0
     if(sell>0&&pr>0){
       const markup = sell>pr ? (pr/(sell-pr))*100 : 0
@@ -604,103 +926,53 @@ export default function NewQuotePage(){
     setMcProfit(v)
   }
 
-  const quoteRef = isEditMode ? editingRef : genRef(initials,quoteCount)
+  const quoteRef = isEditMode ? editingRef : genRef(initials, quoteCount)
 
   async function handleSave(){
-    const tid=Number(dealIdVal)
+    const tid = Number(dealIdVal)
     if(!tid){ setError('Select a deal'); return }
-
-    if(quoteMode==='single'){
-      if(hotelOptions.some(o=>!o.hotel.trim())){ setError('All hotel options need a hotel name'); return }
-      if(hotelOptions.some(o=>!o.sellPrice)){ setError('All hotel options need a sell price'); return }
-    } else {
-      if(centres.some(c=>!c.destination.trim())){ setError('All centres need a destination'); return }
-      if(centres.some(c=>!c.hotel.trim())){ setError('All centres need a hotel'); return }
-      if(!mcSellPrice){ setError('Sell price required'); return }
-    }
 
     setSaving(true); setError('')
 
-    if(isEditMode&&editQuoteId){
-      // EDIT MODE — overwrite
-      if(quoteMode==='single'){
-        const o=hotelOptions[0]
-        const sellN=parseFloat(o.sellPrice)||0,profitN=parseFloat(o.profit)||0
-        const marginN = sellN>0&&profitN>0&&profitN<sellN ? (profitN/(sellN-profitN))*100 : (parseFloat(o.margin)||0)
-        const flightN=parseFloat(o.flightNet)||0,accN=parseFloat(o.accNet)||0,transN=parseFloat(o.transNet)||0
-        const extrasN=o.extras.reduce((a,e)=>a+(e.net||0),0)
-        await supabase.from('quotes').update({
-          hotel:o.hotel.trim(),board_basis:o.boardBasis,room_type:o.roomType||null,quote_type:'single',
-          cabin_class:o.outLegs[0]?.cabin||'Economy',departure_date:o.outLegs[0]?.date||null,
-          departure_airport:o.outLegs[0]?.from||null,airline:o.outLegs[0]?.airline||null,
-          nights:parseInt(o.nights)||null,adults:parseInt(adults)||2,children:parseInt(children)||0,infants:parseInt(infants)||0,
-          price:sellN,profit:profitN,margin_percent:parseFloat(marginN.toFixed(1))||0,consultant_initials:initials,
-          flight_details:{outbound:o.outLegs,return:o.retLegs},
-          cost_breakdown:{flight_net:flightN,acc_net:accN,trans_net:transN,extras:o.extras,total_net:flightN+accN+transN+extrasN},
-          additional_services:additionalServices.trim()||null,
-          checkin_date:o.checkinDate||null,checkin_next_day:o.checkinNextDay,
-        }).eq('id',editQuoteId)
-      } else {
-        await supabase.from('quotes').update({
-          quote_type:'multi_centre',centres,hotel:centres[0]?.hotel||'Multi-Centre',
-          board_basis:centres[0]?.boardBasis||'',departure_date:centres[0]?.inboundLegs[0]?.date||null,
-          nights:centres.reduce((a,c)=>a+(parseInt(c.nights)||0),0),
-          adults:parseInt(adults)||2,children:parseInt(children)||0,infants:parseInt(infants)||0,
-          price:mcSellN,profit:mcProfitN,margin_percent:parseFloat(mcMarginN.toFixed(1))||0,
-          consultant_initials:initials,additional_services:additionalServices.trim()||null,
-          cost_breakdown:{total_net:mcTotalNet,centres:centres.map(c=>({destination:c.destination,net:parseFloat(c.accNet||'0')+(parseFloat(c.flightNet||'0'))+(parseFloat(c.transNet||'0'))}))},
-        }).eq('id',editQuoteId)
-      }
-      await supabase.from('activities').insert({deal_id:tid,activity_type:'QUOTE_CREATED',notes:`Quote ${editingRef} updated`})
-      setSavedRefs([editingRef]); setSaving(false); setSaved(true); return
-    }
-
-    // NEW QUOTES
-    const refs:string[]=[]
-    if(quoteMode==='single'){
-      for(let i=0;i<hotelOptions.length;i++){
-        const o=hotelOptions[i], ref=genRef(initials,quoteCount+i); refs.push(ref)
-        const sellN=parseFloat(o.sellPrice)||0,profitN=parseFloat(o.profit)||0
-        const marginN = sellN>0&&profitN>0&&profitN<sellN ? (profitN/(sellN-profitN))*100 : (parseFloat(o.margin)||0)
-        const flightN=parseFloat(o.flightNet)||0,accN=parseFloat(o.accNet)||0,transN=parseFloat(o.transNet)||0
-        const extrasN=o.extras.reduce((a,e)=>a+(e.net||0),0)
-        const{error:qErr}=await supabase.from('quotes').insert({
-          deal_id:tid,hotel:o.hotel.trim(),board_basis:o.boardBasis,room_type:o.roomType||null,quote_type:'single',
-          cabin_class:o.outLegs[0]?.cabin||'Economy',departure_date:o.outLegs[0]?.date||null,
-          departure_airport:o.outLegs[0]?.from||null,airline:o.outLegs[0]?.airline||null,
-          nights:parseInt(o.nights)||null,adults:parseInt(adults)||2,children:parseInt(children)||0,infants:parseInt(infants)||0,
-          price:sellN,profit:profitN,margin_percent:parseFloat(marginN.toFixed(1))||0,
-          consultant_initials:initials,quote_ref:ref,sent_to_client:false,
-          flight_details:{outbound:o.outLegs,return:o.retLegs},
-          cost_breakdown:{flight_net:flightN,acc_net:accN,trans_net:transN,extras:o.extras,total_net:flightN+accN+transN+extrasN},
-          additional_services:additionalServices.trim()||null,checkin_date:o.checkinDate||null,checkin_next_day:o.checkinNextDay,
+    try {
+      const response = await fetch('/api/quotes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          dealId: tid,
+          quoteType: quoteMode,
+          quoteRef: quoteRef,
+          adults: parseInt(adults),
+          children: parseInt(children),
+          infants: parseInt(infants),
+          initials,
+          additionalServices,
+          hotelOptions: hotelOptions.map(normalizeHotelOption),
+          centres: sortCentresChronologically(centres),
+          sellPrice: parseFloat(mcSellPrice),
+          margin: parseFloat(mcMargin),
+          profit: parseFloat(mcProfit),
+          isEdit: isEditMode,
+          editQuoteId
         })
-        if(qErr){ setError('Failed on option '+(i+1)+': '+qErr.message); setSaving(false); return }
-      }
-      const first=hotelOptions[0]
-      await supabase.from('deals').update({deal_value:parseFloat(first.sellPrice)||0,departure_date:first.outLegs[0]?.date||undefined}).eq('id',tid)
-      await supabase.from('activities').insert({deal_id:tid,activity_type:'QUOTE_CREATED',notes:`${hotelOptions.length} option quote — ${hotelOptions.map(o=>o.hotel).join(' / ')} · Refs: ${refs.join(', ')}`})
-    } else {
-      const ref=genRef(initials,quoteCount); refs.push(ref)
-      const totalNights=centres.reduce((a,c)=>a+(parseInt(c.nights)||0),0)
-      const destList=centres.map(c=>c.destination).filter(Boolean).join(' → ')
-      const{error:qErr}=await supabase.from('quotes').insert({
-        deal_id:tid,quote_type:'multi_centre',centres,
-        hotel:`Multi-Centre: ${destList}`,destination:destList,
-        board_basis:centres.map(c=>c.boardBasis).join(' / '),
-        departure_date:centres[0]?.inboundLegs[0]?.date||null,
-        nights:totalNights,adults:parseInt(adults)||2,children:parseInt(children)||0,infants:parseInt(infants)||0,
-        price:mcSellN,profit:mcProfitN,margin_percent:parseFloat(mcMarginN.toFixed(1))||0,
-        consultant_initials:initials,quote_ref:ref,sent_to_client:false,
-        cost_breakdown:{total_net:mcTotalNet,centres:centres.map(c=>({destination:c.destination,hotel:c.hotel,nights:c.nights,net:parseFloat(c.accNet||'0')+(parseFloat(c.flightNet||'0'))+(parseFloat(c.transNet||'0'))}))},
-        additional_services:additionalServices.trim()||null,
       })
-      if(qErr){ setError('Failed: '+qErr.message); setSaving(false); return }
-      await supabase.from('deals').update({deal_value:mcSellN,departure_date:centres[0]?.inboundLegs[0]?.date||undefined}).eq('id',tid)
-      await supabase.from('activities').insert({deal_id:tid,activity_type:'QUOTE_CREATED',notes:`Multi-centre quote — ${destList} · ${fmtS(mcSellN)} · Ref: ${ref}`})
-    }
 
-    setSavedRefs(refs); setSaving(false); setSaved(true); setQuoteCount(c=>c+refs.length)
+      if (response.ok) {
+        const { refs } = await response.json()
+        setSavedRefs(refs)
+        setSaving(false)
+        setSaved(true)
+        setQuoteCount(c => c + refs.length)
+      } else {
+        const errorData = await response.json()
+        setError(errorData.error || 'Failed to save quote')
+        setSaving(false)
+      }
+    } catch (error) {
+      console.error('Save failed:', error)
+      setError('Failed to save quote')
+      setSaving(false)
+    }
   }
 
   const TEMPLATES=[{id:1,label:'The Dream Seller',desc:'Sell the experience'},{id:2,label:'The Trusted Expert',desc:'Authority & credentials'},{id:3,label:'The Urgency Close',desc:'Drive action now'},{id:4,label:'The VIP Treatment',desc:'Bespoke & exclusive'}] as const
@@ -722,7 +994,7 @@ export default function NewQuotePage(){
           </div>
         </div>
         <div style={{display:'flex',gap:'8px'}}>
-          {hotel&&<button className="btn btn-secondary" onClick={()=>setShowPreview(true)}>👁 Preview Email</button>}
+          {hotel(hotelOptions)&&<button className="btn btn-secondary" onClick={()=>setShowPreview(true)}>👁 Preview Email</button>}
           {saved
             ?<Link href={`/deals/${dealIdVal}`}><button className="btn btn-primary">← Back to Deal</button></Link>
             :<button className="btn btn-cta btn-lg" onClick={handleSave} disabled={saving}>{saving?'Saving…':isEditMode?'Update Quote':'Save Quote'}</button>}
@@ -753,12 +1025,12 @@ export default function NewQuotePage(){
                     <div style={{fontWeight:'500',color:'var(--accent-mid)',fontSize:'14px'}}>{deal.title}</div>
                     {deal.clients&&<div style={{fontSize:'12px',color:'var(--text-muted)',marginTop:'1px'}}>{(deal.clients as any).first_name} {(deal.clients as any).last_name} · {(deal.clients as any).email}</div>}
                   </div>
-                  <button onClick={()=>{ setDeal(null); setDealIdVal('') }} className="btn btn-secondary btn-sm">Change</button>
+                  <button onClick={()=>{ markDirty(); setDeal(null); setDealIdVal('') }} className="btn btn-secondary btn-sm">Change</button>
                 </div>
               ):(
                 <div>
                   <label className="label">Select Deal *</label>
-                  <select className="input" value={dealIdVal} onChange={e=>{setDealIdVal(e.target.value);loadDeal(Number(e.target.value))}}>
+                  <select className="input" value={dealIdVal} onChange={e=>{ markDirty(); setDealIdVal(e.target.value);loadDeal(Number(e.target.value)) }}>
                     <option value="">Choose…</option>
                     {deals.map(d=><option key={d.id} value={d.id}>{d.title}{d.clients?` — ${(d.clients as any).first_name} ${(d.clients as any).last_name}`:''}</option>)}
                   </select>
@@ -775,7 +1047,7 @@ export default function NewQuotePage(){
                     {key:'single',label:'Single Destination',desc:'One or more hotel options for the same destination',icon:'🏨'},
                     {key:'multi',label:'Multi-Centre',desc:'Sequential itinerary across 2+ destinations (e.g. Dubai + Mauritius)',icon:'✈'},
                   ].map(t=>(
-                    <button key={t.key} onClick={()=>setQuoteMode(t.key as 'single'|'multi')}
+                    <button key={t.key} onClick={()=>{ markDirty(); setQuoteMode(t.key as 'single'|'multi') }}
                       style={{padding:'14px',borderRadius:'10px',border:'2px solid',textAlign:'left',cursor:'pointer',fontFamily:'Outfit,sans-serif',
                         borderColor:quoteMode===t.key?'var(--accent-mid)':'var(--border)',
                         background:quoteMode===t.key?'var(--accent-light)':'transparent',
@@ -793,9 +1065,9 @@ export default function NewQuotePage(){
             <div className="card" style={{padding:'18px 20px'}}>
               <div style={{fontFamily:'Fraunces,serif',fontSize:'17px',fontWeight:'300',marginBottom:'12px'}}>Passengers</div>
               <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'10px'}}>
-                <div><label className="label">Adults</label><input className="input" type="number" min="1" value={adults} onChange={e=>setAdults(e.target.value)}/></div>
-                <div><label className="label">Children</label><input className="input" type="number" min="0" value={children} onChange={e=>setChildren(e.target.value)}/></div>
-                <div><label className="label">Infants</label><input className="input" type="number" min="0" value={infants} onChange={e=>setInfants(e.target.value)}/></div>
+                <div><label className="label">Adults</label><input className="input" type="number" min="1" value={adults} onChange={e=>{ markDirty(); setAdults(e.target.value) }}/></div>
+                <div><label className="label">Children</label><input className="input" type="number" min="0" value={children} onChange={e=>{ markDirty(); setChildren(e.target.value) }}/></div>
+                <div><label className="label">Infants</label><input className="input" type="number" min="0" value={infants} onChange={e=>{ markDirty(); setInfants(e.target.value) }}/></div>
               </div>
             </div>
 
@@ -804,16 +1076,16 @@ export default function NewQuotePage(){
               <div>
                 <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'12px'}}>
                   <div style={{fontFamily:'Fraunces,serif',fontSize:'17px',fontWeight:'300'}}>Hotel Options</div>
-                  {!isEditMode&&<button className="btn btn-secondary btn-sm" onClick={()=>setHotelOptions(p=>[...p,newHotelOption()])}>+ Add Option</button>}
+                  {!isEditMode&&<button className="btn btn-secondary btn-sm" onClick={()=>{ markDirty(); setHotelOptions(p=>[...p,normalizeHotelOption(newHotelOption())]) }}>+ Add Option</button>}
                 </div>
                 {hotelOptions.map((o,i)=>(
                   <HotelOptionPanel key={o.id} option={o} index={i} totalOptions={hotelOptions.length}
-                    onChange={updated=>setHotelOptions(p=>p.map(x=>x.id===updated.id?updated:x))}
-                    onRemove={()=>setHotelOptions(p=>p.filter(x=>x.id!==o.id))}
-                    onDuplicate={()=>{const src=hotelOptions.find(x=>x.id===o.id);if(src)setHotelOptions(p=>[...p,{...src,id:uid(),hotel:''}])}}/>
+                    onChange={updated=>{ markDirty(); setHotelOptions(p=>p.map(x=>x.id===updated.id?normalizeHotelOption(updated):x)) }}
+                    onRemove={()=>{ markDirty(); setHotelOptions(p=>p.filter(x=>x.id!==o.id)) }}
+                    onDuplicate={()=>{ const src=hotelOptions.find(x=>x.id===o.id); if(src){ markDirty(); setHotelOptions(p=>[...p,normalizeHotelOption({...src,id:uid(),hotel:''})]) } }}/>
                 ))}
                 {!isEditMode&&hotelOptions.length<6&&(
-                  <button onClick={()=>setHotelOptions(p=>[...p,newHotelOption()])}
+                  <button onClick={()=>{ markDirty(); setHotelOptions(p=>[...p,normalizeHotelOption(newHotelOption())]) }}
                     style={{width:'100%',padding:'13px',border:'2px dashed var(--border)',borderRadius:'12px',background:'transparent',color:'var(--text-muted)',fontSize:'13px',cursor:'pointer',fontFamily:'Outfit,sans-serif'}}
                     onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--accent)';e.currentTarget.style.color='var(--accent)'}}
                     onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--border)';e.currentTarget.style.color='var(--text-muted)'}}>
@@ -828,18 +1100,18 @@ export default function NewQuotePage(){
               <div>
                 <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'4px'}}>
                   <div style={{fontFamily:'Fraunces,serif',fontSize:'17px',fontWeight:'300'}}>Centres</div>
-                  <button className="btn btn-secondary btn-sm" onClick={()=>setCentres(p=>[...p,newCentre('',p.length)])}>+ Add Centre</button>
+                  <button className="btn btn-secondary btn-sm" onClick={()=>{ markDirty(); setCentres(p=>sortCentresChronologically([...p,newCentre('')])) }}>+ Add Centre</button>
                 </div>
                 <div style={{fontSize:'12px',color:'var(--text-muted)',marginBottom:'14px'}}>Each centre has its own destination, hotel, flights and net costs. The return flight goes on the last centre.</div>
 
                 {centres.map((c,i)=>(
                   <CentrePanel key={c.id} centre={c} index={i} total={centres.length}
-                    onChange={updated=>setCentres(p=>p.map(x=>x.id===updated.id?updated:x))}
-                    onRemove={()=>setCentres(p=>p.filter(x=>x.id!==c.id))}/>
+                    onChange={updated=>{ markDirty(); setCentres(p=>sortCentresChronologically(p.map(x=>x.id===updated.id?normalizeCentre(updated):x))) }}
+                    onRemove={()=>{ markDirty(); setCentres(p=>sortCentresChronologically(p.filter(x=>x.id!==c.id))) }}/>
                 ))}
 
                 {centres.length<6&&(
-                  <button onClick={()=>setCentres(p=>[...p,newCentre('',p.length)])}
+                  <button onClick={()=>{ markDirty(); setCentres(p=>sortCentresChronologically([...p,newCentre('')])) }}
                     style={{width:'100%',padding:'13px',border:'2px dashed var(--border)',borderRadius:'12px',background:'transparent',color:'var(--text-muted)',fontSize:'13px',cursor:'pointer',fontFamily:'Outfit,sans-serif'}}
                     onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--accent)';e.currentTarget.style.color='var(--accent)'}}
                     onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--border)';e.currentTarget.style.color='var(--text-muted)'}}>
@@ -879,7 +1151,7 @@ export default function NewQuotePage(){
               <div style={{fontSize:'12px',color:'var(--text-muted)',marginBottom:'10px'}}>Shown to client in the quote email</div>
               <textarea className="input" style={{minHeight:'90px',resize:'vertical'}}
                 placeholder="e.g. Airport lounge access at Gatwick South Terminal, private chauffeur transfer, welcome amenity at resort on arrival…"
-                value={additionalServices} onChange={e=>setAdditionalServices(e.target.value)}/>
+                value={additionalServices} onChange={e=>{ markDirty(); setAdditionalServices(e.target.value) }}/>
             </div>
           </div>
 
@@ -909,7 +1181,7 @@ export default function NewQuotePage(){
             {quoteMode==='multi'&&(
               <div style={{background:'#0d1b2a',borderRadius:'12px',padding:'16px',color:'white'}}>
                 <div style={{fontSize:'9px',textTransform:'uppercase',letterSpacing:'0.12em',color:'#d4a84a',marginBottom:'6px'}}>Multi-Centre Itinerary</div>
-                {centres.map((c,i)=>(
+                {sortedCentres.map((c,i)=>(
                   <div key={c.id} style={{marginBottom:'6px',paddingBottom:'6px',borderBottom:i<centres.length-1?'1px solid rgba(255,255,255,0.07)':'none'}}>
                     <div style={{fontSize:'11px',fontWeight:'600',color:'#d4a84a'}}>{c.destination||`Centre ${i+1}`}</div>
                     <div style={{fontSize:'12px',color:'rgba(255,255,255,0.75)',fontFamily:'Fraunces,serif',fontWeight:'300'}}>{c.hotel||'—'}</div>
@@ -926,7 +1198,7 @@ export default function NewQuotePage(){
             {/* Consultant initials */}
             <div className="card" style={{padding:'14px 16px'}}>
               <label className="label">Consultant Initials</label>
-              <input className="input" maxLength={3} style={{textTransform:'uppercase',letterSpacing:'0.1em',fontWeight:'600',marginBottom:'6px'}} value={initials} onChange={e=>setInitials(e.target.value.toUpperCase())}/>
+              <input className="input" maxLength={3} style={{textTransform:'uppercase',letterSpacing:'0.1em',fontWeight:'600',marginBottom:'6px'}} value={initials} onChange={e=>{ markDirty(); setInitials(e.target.value.toUpperCase()) }}/>
               <div style={{fontSize:'11.5px',color:'var(--text-muted)'}}>Ref: <span style={{fontWeight:'600',color:'var(--accent-mid)',fontFamily:'monospace'}}>{quoteRef}</span></div>
             </div>
 
@@ -1004,6 +1276,7 @@ function EmailPreviewModal({deal,quoteMode,hotelOptions,centres,adults,children,
   const [activeCustom,setActiveCustom]=useState<number|null>(selectedCustomTemplate)
   const isMulti   = quoteMode==='multi'
   const depositAmt= (sellPrice*0.1).toLocaleString('en-GB',{minimumFractionDigits:2,maximumFractionDigits:2})
+  const orderedCentres = sortCentresChronologically(centres || [])
 
   const TEMPLATES=[{id:1,label:'The Dream Seller'},{id:2,label:'The Trusted Expert'},{id:3,label:'The Urgency Close'},{id:4,label:'The VIP Treatment'}] as const
 
@@ -1096,10 +1369,8 @@ function EmailPreviewModal({deal,quoteMode,hotelOptions,centres,adults,children,
 
   // Single hotel block
   const SingleHotelBlock=({option,index,showLabel}:{option:HotelOption;index:number;showLabel:boolean})=>{
-    const allLegs=[...option.outLegs,...option.retLegs]
-    const checkinDisplay=option.checkinDate
-      ? option.checkinNextDay?addDays(option.checkinDate,1):new Date(option.checkinDate+'T12:00').toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})
-      : '—'
+    const allLegs=sortFlightLegs([...(option.outLegs||[]),...(option.retLegs||[])])
+    const checkinDisplay = fmtDate(option.checkinNextDay && option.checkinDate ? addDays(option.checkinDate, 1) : option.checkinDate)
     const COLORS=['#8b5cf6','#3b82f6','#10b981','#f59e0b','#ec4899']
     const col=COLORS[index%COLORS.length]
     const sellN=parseFloat(option.sellPrice)||0
@@ -1131,7 +1402,7 @@ function EmailPreviewModal({deal,quoteMode,hotelOptions,centres,adults,children,
                 <tbody>{allLegs.map((f,i)=>(
                   <tr key={f.id} style={{background:i%2===0?'#f8f9fb':'white',borderBottom:'1px solid #eee'}}>
                     <td style={{padding:'6px 9px',fontFamily:'monospace',fontWeight:'600'}}>{f.flight_number||'—'}</td>
-                    <td style={{padding:'6px 9px'}}>{fmtLegDate(f.date)}</td>
+                    <td style={{padding:'6px 9px'}}>{fmtDate(f.date)}</td>
                     <td style={{padding:'6px 9px',fontFamily:'monospace'}}>{f.depart_time||'—'}</td>
                     <td style={{padding:'6px 9px',fontFamily:'monospace'}}>{f.arrival_time||'—'}{f.overnight?' (+1)':''}</td>
                     <td style={{padding:'6px 9px'}}>{f.airline}</td>
@@ -1156,54 +1427,67 @@ function EmailPreviewModal({deal,quoteMode,hotelOptions,centres,adults,children,
     <div>
       <div style={{background:'#f0f4f9',borderRadius:'7px',padding:'12px 16px',marginBottom:'18px',fontSize:'12px',color:'#555'}}>
         <strong style={{color:'#1a3a5c'}}>Your Multi-Centre Holiday Itinerary</strong>
-        <div style={{marginTop:'4px'}}>{centres.map((c:Centre)=>c.destination).filter(Boolean).join(' → ')}</div>
+        <div style={{marginTop:'4px'}}>{orderedCentres.map((c:Centre)=>c.destination).filter(Boolean).join(' → ')}</div>
       </div>
-      {centres.map((c:Centre,i:number)=>{
-        const DEST_COLORS=['#f59e0b','#8b5cf6','#10b981','#3b82f6','#ec4899']
-        const col=DEST_COLORS[i%DEST_COLORS.length]
-        const allLegs=[...(c.inboundLegs||[]),...(i===centres.length-1?c.outboundLegs||[]:[]) ]
-        const checkinDisplay=c.checkinDate
-          ? c.checkinNextDay?addDays(c.checkinDate,1):new Date(c.checkinDate+'T12:00').toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})
-          : '—'
-        return(
-          <div key={c.id} style={{marginBottom:'20px',borderLeft:`3px solid ${col}`,paddingLeft:'14px'}}>
-            <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'10px'}}>
-              <div style={{width:'22px',height:'22px',borderRadius:'50%',background:col,color:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:'11px',fontWeight:'700',flexShrink:0}}>{i+1}</div>
-              <div style={{fontWeight:'700',fontSize:'14px',color:'#1a3a5c'}}>{c.destination||`Centre ${i+1}`}</div>
-              <div style={{fontSize:'12px',color:'#888'}}>· {c.nights} nights</div>
-            </div>
-            <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px',border:'1px solid #e5e7eb',marginBottom:'10px'}}>
-              <tbody>
-                {[['Hotel',c.hotel,'Meal Plan',c.boardBasis],['Room',c.roomType||'To be confirmed','Check-In',checkinDisplay]].map(([l1,v1,l2,v2],j)=>(
-                  <tr key={j} style={{background:j%2===0?'#f8f9fb':'white'}}>
-                    <td style={{padding:'7px 10px',fontWeight:'600',width:'90px',fontSize:'11px',color:'#555'}}>{l1}</td><td style={{padding:'7px 10px'}}>{v1}</td>
-                    <td style={{padding:'7px 10px',fontWeight:'600',width:'80px',fontSize:'11px',color:'#555'}}>{l2}</td><td style={{padding:'7px 10px'}}>{v2}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {allLegs.some((l:FlightLeg)=>l.date||l.depart_time)&&(
-              <table style={{width:'100%',borderCollapse:'collapse',fontSize:'11px',marginBottom:'6px'}}>
-                <thead><tr style={{background:'#1a3a5c',color:'white'}}>{['Date','Departs','Arrives','Airline','Route'].map(h=><th key={h} style={{padding:'5px 8px',textAlign:'left',fontWeight:'500',fontSize:'10px'}}>{h}</th>)}</tr></thead>
-                <tbody>{allLegs.map((f:FlightLeg,j:number)=>(
-                  <tr key={f.id} style={{background:j%2===0?'#f8f9fb':'white',borderBottom:'1px solid #eee'}}>
-                    <td style={{padding:'5px 8px'}}>{fmtLegDate(f.date)}</td>
-                    <td style={{padding:'5px 8px',fontFamily:'monospace'}}>{f.depart_time||'—'}</td>
-                    <td style={{padding:'5px 8px',fontFamily:'monospace'}}>{f.arrival_time||'—'}{f.overnight?' (+1)':''}</td>
-                    <td style={{padding:'5px 8px'}}>{f.airline}</td>
-                    <td style={{padding:'5px 8px',fontWeight:'500'}}>{f.from} → {f.to}</td>
-                  </tr>
-                ))}</tbody>
-              </table>
-            )}
-          </div>
-        )
-      })}
+      {(() => {
+        const itinerary = buildChronologicalItinerary(orderedCentres)
+        let centreCounter = 0
+
+        return itinerary.map((event, eventIndex) => {
+          if (event.type === 'stay') {
+            const c = event.centre!
+            const DEST_COLORS=['#f59e0b','#8b5cf6','#10b981','#3b82f6','#ec4899']
+            const col = DEST_COLORS[centreCounter % DEST_COLORS.length]
+            centreCounter++
+
+            const checkinDisplay = fmtDate(c.checkinNextDay && c.checkinDate ? addDays(c.checkinDate, 1) : c.checkinDate)
+
+            return (
+              <div key={`stay-${eventIndex}`} style={{marginBottom:'20px',borderLeft:`3px solid ${col}`,paddingLeft:'14px'}}>
+                <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'10px'}}>
+                  <div style={{width:'22px',height:'22px',borderRadius:'50%',background:col,color:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:'11px',fontWeight:'700',flexShrink:0}}>{centreCounter}</div>
+                  <div style={{fontWeight:'700',fontSize:'14px',color:'#1a3a5c'}}>{c.destination || `Centre ${centreCounter}`}</div>
+                  <div style={{fontSize:'12px',color:'#888'}}>· {c.nights} nights</div>
+                </div>
+                <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px',border:'1px solid #e5e7eb',marginBottom:'10px'}}>
+                  <tbody>
+                    {[['Hotel', c.hotel, 'Meal Plan', c.boardBasis], ['Room', c.roomType || 'To be confirmed', 'Check-In', checkinDisplay]].map(([l1, v1, l2, v2], j) => (
+                      <tr key={j} style={{background: j % 2 === 0 ? '#f8f9fb' : 'white'}}>
+                        <td style={{padding:'7px 10px',fontWeight:'600',width:'90px',fontSize:'11px',color:'#555'}}>{l1}</td><td style={{padding:'7px 10px'}}>{v1}</td>
+                        <td style={{padding:'7px 10px',fontWeight:'600',width:'80px',fontSize:'11px',color:'#555'}}>{l2}</td><td style={{padding:'7px 10px'}}>{v2}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )
+          } else if (event.type === 'flights') {
+            return (
+              <div key={`flights-${eventIndex}`} style={{marginBottom:'10px'}}>
+                <div style={{fontWeight:'700',marginBottom:'6px',fontSize:'12px',color:'#1a3a5c'}}>{event.title}</div>
+                <table style={{width:'100%',borderCollapse:'collapse',fontSize:'11px',marginBottom:'6px'}}>
+                  <thead><tr style={{background:'#1a3a5c',color:'white'}}>{['Date','Departs','Arrives','Airline','Route'].map(h=><th key={h} style={{padding:'5px 8px',textAlign:'left',fontWeight:'500',fontSize:'10px'}}>{h}</th>)}</tr></thead>
+                  <tbody>{event.legs?.map((f: FlightLeg, j: number) => (
+                    <tr key={f.id} style={{background: j % 2 === 0 ? '#f8f9fb' : 'white', borderBottom:'1px solid #eee'}}>
+                      <td style={{padding:'5px 8px'}}>{fmtDate(f.date)}</td>
+                      <td style={{padding:'5px 8px',fontFamily:'monospace'}}>{f.depart_time || '—'}</td>
+                      <td style={{padding:'5px 8px',fontFamily:'monospace'}}>{f.arrival_time || '—'}{f.overnight ? ' (+1)' : ''}</td>
+                      <td style={{padding:'5px 8px'}}>{f.airline}</td>
+                      <td style={{padding:'5px 8px',fontWeight:'500'}}>{f.from} → {f.to}</td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              </div>
+            )
+          }
+          return null
+        })
+      })()}
     </div>
   )
 
   // Build 4 templates
-  const multiDesc=isMulti?`a multi-centre holiday across ${centres.map((c:Centre)=>c.destination).filter(Boolean).join(', ')}`:`a luxury holiday at ${hotelOptions[0]?.hotel||'the resort'}`
+  const multiDesc=isMulti?`a multi-centre holiday across ${orderedCentres.map((c:Centre)=>c.destination).filter(Boolean).join(', ')}`:`a luxury holiday at ${hotelOptions[0]?.hotel||'the resort'}`
   const singleHotelName=hotelOptions[0]?.hotel||'the resort'
 
   const T1=()=>(
@@ -1213,9 +1497,9 @@ function EmailPreviewModal({deal,quoteMode,hotelOptions,centres,adults,children,
         <EMeta/>
         <p style={{marginBottom:'8px'}}><strong>Dear {firstName},</strong></p>
         <p style={{marginBottom:'18px',fontSize:'15px',lineHeight:'1.8',color:'#1a3a5c',fontStyle:'italic',borderLeft:'3px solid #c9963a',paddingLeft:'14px'}}>
-          {isMulti?`Imagine the perfect journey — the glamour of ${centres[0]?.destination||'your first destination'}, then the turquoise waters and warm sands of Mauritius. This is the holiday I've crafted for you.`:`Imagine waking up to the sound of the Indian Ocean, stepping onto your private terrace as the Mauritian sun rises over a turquoise lagoon. This is the holiday I've crafted for you.`}
+          {isMulti?`Imagine the perfect journey — the glamour of ${orderedCentres[0]?.destination||'your first destination'}, then the turquoise waters and warm sands of Mauritius. This is the holiday I've crafted for you.`:`Imagine waking up to the sound of the Indian Ocean, stepping onto your private terrace as the Mauritian sun rises over a turquoise lagoon. This is the holiday I've crafted for you.`}
         </p>
-        <p style={{marginBottom:'18px'}}>Thank you for entrusting us with your {isMulti?'dream multi-centre holiday':'dream holiday to Mauritius'}. I've personally curated this quote for you — {isMulti?`a carefully planned itinerary across ${centres.map((c:Centre)=>c.destination).filter(Boolean).join(' and ')}`:`selecting ${singleHotelName} because I believe it perfectly matches what you're looking for`}.</p>
+        <p style={{marginBottom:'18px'}}>Thank you for entrusting us with your {isMulti?'dream multi-centre holiday':'dream holiday to Mauritius'}. I've personally curated this quote for you — {isMulti?`a carefully planned itinerary across ${orderedCentres.map((c:Centre)=>c.destination).filter(Boolean).join(' and ')}`:`selecting ${singleHotelName} because I believe it perfectly matches what you're looking for`}.</p>
         <ETravellers/>
         {isMulti?<MultiCentreBlocks/>:hotelOptions.map((o:HotelOption,i:number)=><SingleHotelBlock key={o.id} option={o} index={i} showLabel={hotelOptions.length>1}/>)}
         <EServices/>
@@ -1234,7 +1518,7 @@ function EmailPreviewModal({deal,quoteMode,hotelOptions,centres,adults,children,
         <EMeta/>
         <p style={{marginBottom:'8px'}}><strong>Dear {firstName},</strong></p>
         <p style={{marginBottom:'14px'}}>My name is Samir Abattouy. For over 25 years I have specialised exclusively in {isMulti?'luxury long-haul holidays including Mauritius':'Mauritius'} — I have personally visited the island many times, staying at over 40 resorts, and have arranged thousands of holidays for discerning travellers. When I prepare a quote, it reflects genuine expertise.</p>
-        <p style={{marginBottom:'18px'}}>Having considered your requirements carefully, I have prepared {isMulti?`a bespoke multi-centre itinerary — ${centres.map((c:Centre)=>c.destination).filter(Boolean).join(' followed by ')}`:`this quote for ${singleHotelName}`}. Please find the full details below.</p>
+        <p style={{marginBottom:'18px'}}>Having considered your requirements carefully, I have prepared {isMulti?`a bespoke multi-centre itinerary — ${orderedCentres.map((c:Centre)=>c.destination).filter(Boolean).join(' followed by ')}`:`this quote for ${singleHotelName}`}. Please find the full details below.</p>
         <ETravellers/>
         {isMulti?<MultiCentreBlocks/>:hotelOptions.map((o:HotelOption,i:number)=><SingleHotelBlock key={o.id} option={o} index={i} showLabel={hotelOptions.length>1}/>)}
         <EServices/>
@@ -1280,7 +1564,7 @@ function EmailPreviewModal({deal,quoteMode,hotelOptions,centres,adults,children,
       <div style={{padding:'28px 32px'}}>
         <EMeta/>
         <p style={{marginBottom:'8px'}}><strong>Dear {firstName},</strong></p>
-        <p style={{marginBottom:'14px',fontSize:'15px',lineHeight:'1.8'}}>What follows is not an off-the-shelf package. This is a personally curated {isMulti?`multi-centre itinerary — ${centres.map((c:Centre)=>c.destination).filter(Boolean).join(' and ')} — `:'Mauritius holiday '}prepared exclusively for you by our senior Indian Ocean specialist.</p>
+        <p style={{marginBottom:'14px',fontSize:'15px',lineHeight:'1.8'}}>What follows is not an off-the-shelf package. This is a personally curated {isMulti?`multi-centre itinerary — ${orderedCentres.map((c:Centre)=>c.destination).filter(Boolean).join(' and ')} — `:'Mauritius holiday '}prepared exclusively for you by our senior Indian Ocean specialist.</p>
         <ETravellers/>
         {isMulti?<MultiCentreBlocks/>:hotelOptions.map((o:HotelOption,i:number)=><SingleHotelBlock key={o.id} option={o} index={i} showLabel={hotelOptions.length>1}/>)}
         <EServices/>
@@ -1309,7 +1593,7 @@ function EmailPreviewModal({deal,quoteMode,hotelOptions,centres,adults,children,
       <div style={{padding:'28px 32px'}}>
         <EMeta/>
         <p style={{marginBottom:'8px'}}><strong>Dear {firstName},</strong></p>
-        {ct.opening_hook&&<p style={{marginBottom:'18px',whiteSpace:'pre-wrap'}}>{ct.opening_hook.replace(/\[Client Name\]/g,firstName).replace(/\[Hotel Name\]/g,isMulti?centres[0]?.hotel||'the resort':hotelOptions[0]?.hotel||'the resort')}</p>}
+        {ct.opening_hook&&<p style={{marginBottom:'18px',whiteSpace:'pre-wrap'}}>{ct.opening_hook.replace(/\[Client Name\]/g,firstName).replace(/\[Hotel Name\]/g,isMulti?orderedCentres[0]?.hotel||'the resort':hotelOptions[0]?.hotel||'the resort')}</p>}
         {ct.urgency_notice&&(
           <div style={{background:'#fff4e5',border:'1px solid #f0a830',borderRadius:'7px',padding:'12px 16px',marginBottom:'18px',fontSize:'13px'}}>
             <strong style={{color:'#c07000'}}>⚠ </strong>{ct.urgency_notice}

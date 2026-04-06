@@ -1,7 +1,6 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { supabase } from '@/lib/supabase'
 import Link from 'next/link'
 
 const fmt     = (n: number) => '£' + (n||0).toLocaleString('en-GB', { maximumFractionDigits: 0 })
@@ -21,6 +20,24 @@ type MonthData = {
 
 type LostReason = { reason: string; count: number }
 type StaffUser = { id: number; name: string; role: string | null; is_active: boolean | null }
+type Target = {
+  id?: number
+  month?: number
+  year?: number
+  revenue_target: number
+  profit_target?: number
+  bookings_target?: number
+  quotes_target: number
+  leads_target: number
+  rotten_days?: number
+  profit_target_bronze?: number
+  profit_target_silver?: number
+  profit_target_gold?: number
+  bonus_bronze?: number
+  bonus_silver?: number
+  bonus_gold?: number
+  [key: string]: number | string | undefined
+}
 type CommissionRow = {
   bookingId: number
   bookingReference: string
@@ -101,21 +118,36 @@ type AssignmentHealth = {
   bookingsWithoutOwner: number
 }
 
+type ProfitTargetKey = 'profit_target_bronze' | 'profit_target_silver' | 'profit_target_gold'
+type BonusTargetKey = 'bonus_bronze' | 'bonus_silver' | 'bonus_gold'
+
 type ReportView = 'commission' | 'overview' | 'sales' | 'quotes' | 'suppliers'
-
-function startOfMonth(value: string) {
-  return `${value}-01`
-}
-
-function endOfMonth(value: string) {
-  const [year, month] = value.split('-').map(Number)
-  return new Date(year, month, 0).toISOString().split('T')[0]
-}
 
 function previousMonthValue() {
   const d = new Date()
   d.setMonth(d.getMonth() - 1)
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+}
+
+function calcCommission(total: number) {
+  const firstBand = Math.min(total, 10000)
+  const secondBand = Math.max(total - 10000, 0)
+  return firstBand * 0.1 + secondBand * 0.15
+}
+
+function fmtDuration(hours: number) {
+  if (!hours || hours <= 0) return '—'
+  if (hours < 24) return `${hours.toFixed(1)}h`
+  return `${(hours / 24).toFixed(1)}d`
+}
+
+function startOfMonth(value: string): string {
+  return `${value}-01`
+}
+
+function endOfMonth(value: string): string {
+  const [year, month] = value.split('-').map(Number)
+  return new Date(year, month, 0).toISOString().split('T')[0]
 }
 
 function previousMonthRange() {
@@ -133,34 +165,6 @@ function currentMonthRange() {
     from: startOfMonth(monthValue),
     to: now.toISOString().split('T')[0],
   }
-}
-
-function dateTimeRange(from: string, to: string) {
-  return {
-    fromIso: `${from}T00:00:00.000Z`,
-    toIso: `${to}T23:59:59.999Z`,
-  }
-}
-
-function bestQuoteProfit(quotes: { profit: number | null; sent_to_client?: boolean | null; created_at?: string | null }[] | null | undefined) {
-  if (!quotes || quotes.length === 0) return 0
-  const sentQuotes = quotes
-    .filter(quote => !!quote.sent_to_client)
-    .sort((a, b) => new Date(b.created_at || '').getTime() - new Date(a.created_at || '').getTime())
-  const latest = sentQuotes[0] || [...quotes].sort((a, b) => new Date(b.created_at || '').getTime() - new Date(a.created_at || '').getTime())[0]
-  return Number(latest?.profit || 0)
-}
-
-function calcCommission(total: number) {
-  const firstBand = Math.min(total, 10000)
-  const secondBand = Math.max(total - 10000, 0)
-  return firstBand * 0.1 + secondBand * 0.15
-}
-
-function fmtDuration(hours: number) {
-  if (!hours || hours <= 0) return '—'
-  if (hours < 24) return `${hours.toFixed(1)}h`
-  return `${(hours / 24).toFixed(1)}d`
 }
 
 export default function ReportsPage() {
@@ -200,494 +204,37 @@ export default function ReportsPage() {
   })
   const [loading, setLoading]           = useState(true)
   const [editingTargets, setEditTargets] = useState(false)
-  const [targets, setTargets]           = useState<any>(null)
+  const [targets, setTargets]           = useState<Target | null>(null)
   const [savingTargets, setSavingTargets] = useState(false)
   const [toast, setToast]               = useState<string|null>(null)
   const [selectedYear, setYear]         = useState(new Date().getFullYear())
 
-  async function fetchReportData() {
-    // Monthly data for selected year
-    const yearStart = new Date(selectedYear, 0, 1).toISOString()
-    const yearEnd   = new Date(selectedYear, 11, 31, 23, 59, 59).toISOString()
-
-    const { data: bookings } = await supabase.from('bookings')
-      .select('id, created_at, deal_id, deals(deal_value, quotes(profit, sent_to_client, created_at))')
-      .eq('status', 'CONFIRMED')
-      .gte('created_at', yearStart)
-      .lte('created_at', yearEnd)
-
-    const { data: quotes } = await supabase.from('quotes')
-      .select('id, created_at')
-      .eq('sent_to_client', true)
-      .gte('created_at', yearStart)
-      .lte('created_at', yearEnd)
-
-    const { data: leads } = await supabase.from('deals')
-      .select('id, created_at')
-      .gte('created_at', yearStart)
-      .lte('created_at', yearEnd)
-
-    // Build monthly breakdown
-    const monthly: Record<number, MonthData> = {}
-    for (let m = 1; m <= 12; m++) {
-      monthly[m] = { month: m, year: selectedYear, revenue: 0, profit: 0, bookings: 0, quotes: 0, leads: 0 }
-    }
-
-    ;(bookings||[]).forEach((b: any) => {
-      const m = new Date(b.created_at).getMonth() + 1
-      const sentQuotes = (b.deals?.quotes||[]).filter((q:any)=>q.sent_to_client).sort((a:any,z:any)=>new Date(z.created_at).getTime()-new Date(a.created_at).getTime())
-      const bestQuote  = sentQuotes[0] || (b.deals?.quotes||[])[0]
-      monthly[m].revenue  += b.deals?.deal_value || 0
-      monthly[m].profit   += bestQuote?.profit || 0
-      monthly[m].bookings += 1
-    })
-
-    ;(quotes||[]).forEach((q: any) => { monthly[new Date(q.created_at).getMonth()+1].quotes++ })
-    ;(leads||[]).forEach((l: any)  => { monthly[new Date(l.created_at).getMonth()+1].leads++   })
-
-    // Lost reasons
-    const { data: lostDeals } = await supabase.from('deals').select('lost_reason').eq('stage', 'LOST').not('lost_reason', 'is', null)
-    const reasonMap: Record<string,number> = {}
-    ;(lostDeals||[]).forEach((d:any) => { const r=d.lost_reason?.trim(); if(r) reasonMap[r]=(reasonMap[r]||0)+1 })
-    const lostReasonsData = Object.entries(reasonMap).sort((a,b)=>b[1]-a[1]).map(([reason,count])=>({reason,count}))
-
-    // Stage breakdown
-    const { data: allDeals } = await supabase.from('deals').select('stage, deal_value')
-    const stageMap: Record<string,{count:number;value:number}> = {}
-    ;(allDeals||[]).forEach((d:any) => {
-      if (!stageMap[d.stage]) stageMap[d.stage] = { count:0, value:0 }
-      stageMap[d.stage].count++
-      stageMap[d.stage].value += d.deal_value||0
-    })
-    const stageOrder = ['NEW_LEAD','QUOTE_SENT','ENGAGED','FOLLOW_UP','DECISION_PENDING','BOOKED','LOST']
-    const stageLabels: Record<string,string> = { NEW_LEAD:'New Lead', QUOTE_SENT:'Quote Sent', ENGAGED:'Engaged', FOLLOW_UP:'Follow Up', DECISION_PENDING:'Decision Pending', BOOKED:'Booked', LOST:'Lost' }
-    const stageData = stageOrder.filter(s=>stageMap[s]).map(s=>({ stage:stageLabels[s]||s, count:stageMap[s].count, value:stageMap[s].value }))
-
-    // Targets
-    const now = new Date()
-    const { data: tData } = await supabase.from('targets').select('*').eq('month', now.getMonth()+1).eq('year', now.getFullYear()).single()
-
-    const { data: staffData } = await supabase.from('staff_users')
-      .select('id,name,role,is_active')
-      .eq('is_active', true)
-      .order('name')
-    const activeStaff = (staffData || []) as StaffUser[]
-
-    const [{ data: clientOwners }, { data: dealOwners }, { data: bookingOwners }] = await Promise.all([
-      supabase.from('clients').select('id, owner_staff_id'),
-      supabase.from('deals').select('id, staff_id, stage'),
-      supabase.from('bookings').select('id, staff_id, booking_status'),
-    ])
-
-    return {
-      monthlyData: Object.values(monthly),
-      lostReasons: lostReasonsData,
-      stageBreakdown: stageData,
-      targets: tData,
-      staffUsers: activeStaff,
-      assignmentHealth: {
-        clientsWithoutOwner: (clientOwners || []).filter((client: any) => !client.owner_staff_id).length,
-        dealsWithoutOwner: (dealOwners || []).filter((deal: any) => !deal.staff_id && deal.stage !== 'LOST').length,
-        bookingsWithoutOwner: (bookingOwners || []).filter((booking: any) => !booking.staff_id && booking.booking_status !== 'cancelled').length,
-      },
-    }
-  }
-
-  async function fetchCommissionRows() {
-    if (!selectedStaffId) {
-      return []
-    }
-    const from = commissionFrom
-    const to = commissionTo
-
-    const { data: bookings } = await supabase.from('bookings')
-      .select('id, booking_reference, total_sell, final_profit, staff_id, deals(clients(last_name))')
-      .eq('staff_id', selectedStaffId)
-      .not('total_sell', 'is', null)
-      .not('final_profit', 'is', null)
-
-    const bookingIds = (bookings || []).map((b: any) => b.id)
-    if (bookingIds.length === 0) {
-      return []
-    }
-
-    const { data: payments } = await supabase.from('booking_payments')
-      .select('id, booking_id, amount, payment_date')
-      .in('booking_id', bookingIds)
-      .order('payment_date', { ascending: true })
-      .order('id', { ascending: true })
-
-    const paymentsByBooking = new Map<number, any[]>()
-    ;(payments || []).forEach((payment: any) => {
-      const rows = paymentsByBooking.get(payment.booking_id) || []
-      rows.push(payment)
-      paymentsByBooking.set(payment.booking_id, rows)
-    })
-
-    const rows: CommissionRow[] = []
-    ;(bookings || []).forEach((booking: any) => {
-      const sell = Number(booking.total_sell || 0)
-      const commissionable = Number(booking.final_profit || 0)
-      if (sell <= 0 || commissionable <= 0) return
-
-      let running = 0
-      let clearedDate: string | null = null
-      let paymentReceived = 0
-
-      for (const payment of paymentsByBooking.get(booking.id) || []) {
-        const amount = Number(payment.amount || 0)
-        const before = running
-        running += amount
-
-        if (before < sell && running >= sell) {
-          clearedDate = payment.payment_date
-          paymentReceived = Math.max(Math.min(sell - before, amount), 0)
-          break
-        }
-      }
-
-      if (!clearedDate || clearedDate < from || clearedDate > to) return
-
-      rows.push({
-        bookingId: booking.id,
-        bookingReference: booking.booking_reference,
-        surname: booking.deals?.clients?.last_name || '—',
-        clearedDate,
-        paymentReceived,
-        commissionableAmount: commissionable,
-      })
-    })
-
-    rows.sort((a, b) => a.clearedDate.localeCompare(b.clearedDate) || a.bookingReference.localeCompare(b.bookingReference))
-    return rows
-  }
-
-  async function fetchSalesData() {
-    const { fromIso, toIso } = dateTimeRange(salesFrom, salesTo)
-
-    const [
-      { data: leadDeals },
-      { data: dealLookupRows },
-      { data: quoteRows },
-      { data: bookingRows },
-    ] = await Promise.all([
-      supabase
-        .from('deals')
-        .select('id, staff_id, deal_value, created_at, stage')
-        .gte('created_at', fromIso)
-        .lte('created_at', toIso),
-      supabase
-        .from('deals')
-        .select('id, staff_id'),
-      supabase
-        .from('quotes')
-        .select('id, deal_id, created_at')
-        .eq('sent_to_client', true)
-        .gte('created_at', fromIso)
-        .lte('created_at', toIso),
-      supabase
-        .from('bookings')
-        .select('id, booking_reference, created_at, staff_id, total_sell, final_profit, booking_status, deals(title, deal_value, clients(last_name), quotes(profit, sent_to_client, created_at))')
-        .gte('created_at', fromIso)
-        .lte('created_at', toIso),
-    ])
-
-    const rowsMap = new Map<number, SalesRow>()
-    staffUsers.forEach(staff => {
-      rowsMap.set(staff.id, {
-        staffId: staff.id,
-        name: staff.name,
-        role: staff.role,
-        leads: 0,
-        quotesSent: 0,
-        bookings: 0,
-        bookedValue: 0,
-        bookedProfit: 0,
-        avgBookingValue: 0,
-        leadToBookingPct: 0,
-        quoteToBookingPct: 0,
-      })
-    })
-
-    const unassigned: SalesUnassigned = { leads: 0, quotesSent: 0, bookings: 0, bookedValue: 0 }
-    const dealLookup = new Map<number, number | null>()
-    ;((dealLookupRows || []) as { id: number; staff_id: number | null }[]).forEach(deal => {
-      dealLookup.set(deal.id, deal.staff_id ?? null)
-    })
-
-    ;((leadDeals || []) as { id: number; staff_id: number | null; deal_value: number | null; created_at: string; stage: string }[]).forEach(deal => {
-      if (!deal.staff_id) {
-        unassigned.leads += 1
-        return
-      }
-      const row = rowsMap.get(deal.staff_id)
-      if (!row) return
-      row.leads += 1
-    })
-
-    ;((quoteRows || []) as { id: number; deal_id: number; created_at: string }[]).forEach(quote => {
-      const staffId = dealLookup.get(quote.deal_id) ?? null
-      if (!staffId) {
-        unassigned.quotesSent += 1
-        return
-      }
-      const row = rowsMap.get(staffId)
-      if (!row) return
-      row.quotesSent += 1
-    })
-
-    const bookingDetailRows: SalesBookingRow[] = []
-    ;((bookingRows || []) as {
-      id: number
-      booking_reference: string
-      created_at: string
-      staff_id: number | null
-      total_sell: number | null
-      final_profit: number | null
-      booking_status: string | null
-      deals?: {
-        title?: string | null
-        deal_value?: number | null
-        clients?: { last_name?: string | null } | null
-        quotes?: { profit: number | null; sent_to_client?: boolean | null; created_at?: string | null }[] | null
-      } | null
-    }[]).forEach(booking => {
-      if (booking.booking_status === 'cancelled') return
-      const bookedValue = Number(booking.total_sell || booking.deals?.deal_value || 0)
-      const bookedProfit = booking.final_profit != null
-        ? Number(booking.final_profit || 0)
-        : bestQuoteProfit(booking.deals?.quotes)
-      const staffId = booking.staff_id ?? null
-
-      if (!staffId) {
-        unassigned.bookings += 1
-        unassigned.bookedValue += bookedValue
-        return
-      }
-
-      const row = rowsMap.get(staffId)
-      if (!row) return
-
-      row.bookings += 1
-      row.bookedValue += bookedValue
-      row.bookedProfit += bookedProfit
-      bookingDetailRows.push({
-        bookingId: booking.id,
-        bookingReference: booking.booking_reference,
-        staffId,
-        staffName: row.name,
-        clientSurname: booking.deals?.clients?.last_name || '—',
-        title: booking.deals?.title || '—',
-        bookedAt: booking.created_at,
-        bookedValue,
-        bookedProfit,
-      })
-    })
-
-    const rows = [...rowsMap.values()]
-      .map(row => ({
-        ...row,
-        avgBookingValue: row.bookings > 0 ? row.bookedValue / row.bookings : 0,
-        leadToBookingPct: row.leads > 0 ? (row.bookings / row.leads) * 100 : 0,
-        quoteToBookingPct: row.quotesSent > 0 ? (row.bookings / row.quotesSent) * 100 : 0,
-      }))
-      .filter(row => row.leads > 0 || row.quotesSent > 0 || row.bookings > 0)
-      .sort((a, b) => b.bookedProfit - a.bookedProfit || b.bookings - a.bookings || a.name.localeCompare(b.name))
-
-    bookingDetailRows.sort((a, b) => new Date(b.bookedAt).getTime() - new Date(a.bookedAt).getTime())
-
-    return { rows, bookings: bookingDetailRows, unassigned }
-  }
-
-  async function fetchQuoteData() {
-    const { fromIso, toIso } = dateTimeRange(quoteFrom, quoteTo)
-    const { data: quotesData } = await supabase
-      .from('quotes')
-      .select('id, deal_id, quote_ref, version, hotel, price, profit, sent_to_client, created_at, deals(id, staff_id, title, stage, created_at, clients(last_name), bookings(id, booking_reference, created_at))')
-      .gte('created_at', fromIso)
-      .lte('created_at', toIso)
-
-    const quoteRowsRaw = ((quotesData || []) as {
-      id: number
-      deal_id: number
-      quote_ref: string
-      version: number | null
-      hotel: string | null
-      price: number | null
-      profit: number | null
-      sent_to_client: boolean | null
-      created_at: string
-      deals?: {
-        id: number
-        staff_id: number | null
-        title: string | null
-        stage: string | null
-        created_at: string | null
-        clients?: { last_name?: string | null } | null
-        bookings?: { id: number; booking_reference: string; created_at: string }[] | null
-      } | null
-    }[])
-
-    const dealIds = [...new Set(quoteRowsRaw.map(quote => quote.deal_id))]
-    const { data: allDealQuotes } = dealIds.length === 0
-      ? { data: [] as { deal_id: number; created_at: string }[] }
-      : await supabase
-          .from('quotes')
-          .select('deal_id, created_at')
-          .in('deal_id', dealIds)
-
-    const firstQuoteByDeal = new Map<number, string>()
-    ;((allDealQuotes || []) as { deal_id: number; created_at: string }[]).forEach(quote => {
-      const current = firstQuoteByDeal.get(quote.deal_id)
-      if (!current || new Date(quote.created_at).getTime() < new Date(current).getTime()) {
-        firstQuoteByDeal.set(quote.deal_id, quote.created_at)
-      }
-    })
-
-    const rowsMap = new Map<number, QuoteRow>()
-    staffUsers.forEach(staff => {
-      rowsMap.set(staff.id, {
-        staffId: staff.id,
-        name: staff.name,
-        role: staff.role,
-        quotesBuilt: 0,
-        quotesSent: 0,
-        quotedDeals: 0,
-        sentDeals: 0,
-        bookedDeals: 0,
-        quotedValue: 0,
-        quotedProfit: 0,
-        avgQuoteValue: 0,
-        avgVersionsPerDeal: 0,
-        avgTurnaroundHours: 0,
-        conversionPct: 0,
-      })
-    })
-
-    const dealSetByStaff = new Map<number, Set<number>>()
-    const sentDealSetByStaff = new Map<number, Set<number>>()
-    const bookedDealSetByStaff = new Map<number, Set<number>>()
-    const turnaroundHoursByStaff = new Map<number, number[]>()
-    const unassignedDealSet = new Set<number>()
-    const unassigned: QuoteUnassigned = { quotesBuilt: 0, quotesSent: 0, quotedDeals: 0 }
-    const recentRows: QuoteRecentRow[] = []
-
-    quoteRowsRaw.forEach(quote => {
-      const staffId = quote.deals?.staff_id ?? null
-      const booked = quote.deals?.stage === 'BOOKED' || (quote.deals?.bookings?.length || 0) > 0
-      const firstQuoteAt = firstQuoteByDeal.get(quote.deal_id) || null
-
-      recentRows.push({
-        quoteId: quote.id,
-        quoteRef: quote.quote_ref,
-        version: quote.version ?? null,
-        staffId,
-        staffName: staffUsers.find(staff => staff.id === staffId)?.name || 'Unassigned',
-        clientSurname: quote.deals?.clients?.last_name || '—',
-        title: quote.deals?.title || '—',
-        hotel: quote.hotel || '—',
-        createdAt: quote.created_at,
-        sentToClient: !!quote.sent_to_client,
-        booked,
-        quotedValue: Number(quote.price || 0),
-        quotedProfit: Number(quote.profit || 0),
-      })
-
-      if (!staffId) {
-        unassigned.quotesBuilt += 1
-        if (quote.sent_to_client) unassigned.quotesSent += 1
-        unassignedDealSet.add(quote.deal_id)
-        return
-      }
-
-      const row = rowsMap.get(staffId)
-      if (!row) return
-
-      row.quotesBuilt += 1
-      row.quotedValue += Number(quote.price || 0)
-      row.quotedProfit += Number(quote.profit || 0)
-      if (quote.sent_to_client) row.quotesSent += 1
-
-      if (!dealSetByStaff.has(staffId)) dealSetByStaff.set(staffId, new Set())
-      dealSetByStaff.get(staffId)!.add(quote.deal_id)
-
-      if (quote.sent_to_client) {
-        if (!sentDealSetByStaff.has(staffId)) sentDealSetByStaff.set(staffId, new Set())
-        sentDealSetByStaff.get(staffId)!.add(quote.deal_id)
-      }
-
-      if (booked) {
-        if (!bookedDealSetByStaff.has(staffId)) bookedDealSetByStaff.set(staffId, new Set())
-        bookedDealSetByStaff.get(staffId)!.add(quote.deal_id)
-      }
-
-      if (
-        quote.deals?.created_at &&
-        firstQuoteAt &&
-        firstQuoteAt === quote.created_at &&
-        firstQuoteAt >= fromIso &&
-        firstQuoteAt <= toIso
-      ) {
-        const turnaroundHours = (new Date(firstQuoteAt).getTime() - new Date(quote.deals.created_at).getTime()) / 3600000
-        if (turnaroundHours >= 0) {
-          const values = turnaroundHoursByStaff.get(staffId) || []
-          values.push(turnaroundHours)
-          turnaroundHoursByStaff.set(staffId, values)
-        }
-      }
-    })
-
-    unassigned.quotedDeals = unassignedDealSet.size
-
-    const rows = [...rowsMap.values()]
-      .map(row => {
-        const quotedDeals = dealSetByStaff.get(row.staffId)?.size || 0
-        const sentDeals = sentDealSetByStaff.get(row.staffId)?.size || 0
-        const bookedDeals = bookedDealSetByStaff.get(row.staffId)?.size || 0
-        const turnaroundHours = turnaroundHoursByStaff.get(row.staffId) || []
-        const avgTurnaroundHours = turnaroundHours.length > 0
-          ? turnaroundHours.reduce((sum, value) => sum + value, 0) / turnaroundHours.length
-          : 0
-        return {
-          ...row,
-          quotedDeals,
-          sentDeals,
-          bookedDeals,
-          avgQuoteValue: row.quotesBuilt > 0 ? row.quotedValue / row.quotesBuilt : 0,
-          avgVersionsPerDeal: quotedDeals > 0 ? row.quotesBuilt / quotedDeals : 0,
-          avgTurnaroundHours,
-          conversionPct: sentDeals > 0 ? (bookedDeals / sentDeals) * 100 : 0,
-        }
-      })
-      .filter(row => row.quotesBuilt > 0 || row.sentDeals > 0 || row.bookedDeals > 0)
-      .sort((a, b) => b.conversionPct - a.conversionPct || b.quotesSent - a.quotesSent || a.name.localeCompare(b.name))
-
-    recentRows.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-
-    return { rows, recentRows, unassigned }
-  }
-
   async function createStaffUser() {
     if (!staffForm.name.trim()) return
     setStaffSaving(true)
-    const { error } = await supabase.from('staff_users').insert({
-      name: staffForm.name.trim(),
-      role: staffForm.role,
-      is_active: true,
+    const response = await fetch('/api/reports/staff', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(staffForm),
     })
+    const error = response.ok ? null : await response.json()
 
     if (error) {
-      setToast(error.message || 'Failed to add staff user')
+      setToast(error.error || 'Failed to add staff user')
       setTimeout(() => setToast(null), 3000)
       setStaffSaving(false)
       return
     }
 
-    const { data: staffData } = await supabase.from('staff_users')
-      .select('id,name,role,is_active')
-      .eq('is_active', true)
-      .order('name')
-    const activeStaff = (staffData || []) as StaffUser[]
+    const reportResponse = await fetch(`/api/reports?year=${selectedYear}`)
+    if (!reportResponse.ok) {
+      setToast('Failed to refresh reports')
+      setTimeout(() => setToast(null), 3000)
+      setStaffSaving(false)
+      return
+    }
+    const reportData = await reportResponse.json()
+    const activeStaff = reportData.staffUsers as StaffUser[]
     setStaffUsers(activeStaff)
     const newStaff = activeStaff.find(user => user.name === staffForm.name.trim())
     if (newStaff) setSelectedStaffId(newStaff.id)
@@ -700,8 +247,11 @@ export default function ReportsPage() {
   async function saveTargets() {
     if (!targets) return
     setSavingTargets(true)
-    const now = new Date()
-    await supabase.from('targets').upsert({ ...targets, month: now.getMonth()+1, year: now.getFullYear() }, { onConflict: 'month,year' })
+    await fetch('/api/reports/targets', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(targets),
+    })
     setSavingTargets(false)
     setEditTargets(false)
     setToast('Targets updated ✓')
@@ -713,7 +263,12 @@ export default function ReportsPage() {
 
     async function run() {
       setLoading(true)
-      const data = await fetchReportData()
+      const response = await fetch(`/api/reports?year=${selectedYear}`)
+      if (!response.ok) {
+        if (!cancelled) setLoading(false)
+        return
+      }
+      const data = await response.json()
       if (cancelled) return
 
       setMonthlyData(data.monthlyData)
@@ -731,7 +286,7 @@ export default function ReportsPage() {
 
     void run()
     return () => { cancelled = true }
-  }, [selectedYear])
+  }, [selectedStaffId, selectedYear])
 
   useEffect(() => {
     let cancelled = false
@@ -743,9 +298,14 @@ export default function ReportsPage() {
       }
 
       setCommissionLoading(true)
-      const rows = await fetchCommissionRows()
+      const response = await fetch(`/api/reports/commission?staffId=${selectedStaffId}&from=${commissionFrom}&to=${commissionTo}`)
+      if (!response.ok) {
+        if (!cancelled) setCommissionLoading(false)
+        return
+      }
+      const data = await response.json()
       if (cancelled) return
-      setCommissionRows(rows)
+      setCommissionRows(data.rows || [])
       setCommissionLoading(false)
     }
 
@@ -758,7 +318,12 @@ export default function ReportsPage() {
 
     async function run() {
       setSalesLoading(true)
-      const data = await fetchSalesData()
+      const response = await fetch(`/api/reports/sales?from=${salesFrom}&to=${salesTo}`)
+      if (!response.ok) {
+        if (!cancelled) setSalesLoading(false)
+        return
+      }
+      const data = await response.json()
       if (cancelled) return
       setSalesRows(data.rows)
       setSalesBookings(data.bookings)
@@ -775,7 +340,12 @@ export default function ReportsPage() {
 
     async function run() {
       setQuoteLoading(true)
-      const data = await fetchQuoteData()
+      const response = await fetch(`/api/reports/quotes?from=${quoteFrom}&to=${quoteTo}`)
+      if (!response.ok) {
+        if (!cancelled) setQuoteLoading(false)
+        return
+      }
+      const data = await response.json()
       if (cancelled) return
       setQuoteRows(data.rows)
       setQuoteRecentRows(data.recentRows)
@@ -1506,19 +1076,19 @@ export default function ReportsPage() {
             <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'12px' }}>
               <div>
                 <label className="label">Revenue Target (£)</label>
-                <input className="input" type="number" value={targets.revenue_target} onChange={e=>setTargets((p:any)=>({...p,revenue_target:Number(e.target.value)}))}/>
+                <input className="input" type="number" value={targets.revenue_target} onChange={e=>setTargets(prev => prev ? ({ ...prev, revenue_target: Number(e.target.value) }) : prev)}/>
               </div>
               <div>
                 <label className="label">Quotes Target</label>
-                <input className="input" type="number" value={targets.quotes_target} onChange={e=>setTargets((p:any)=>({...p,quotes_target:Number(e.target.value)}))}/>
+                <input className="input" type="number" value={targets.quotes_target} onChange={e=>setTargets(prev => prev ? ({ ...prev, quotes_target: Number(e.target.value) }) : prev)}/>
               </div>
               <div>
                 <label className="label">Leads Target</label>
-                <input className="input" type="number" value={targets.leads_target} onChange={e=>setTargets((p:any)=>({...p,leads_target:Number(e.target.value)}))}/>
+                <input className="input" type="number" value={targets.leads_target} onChange={e=>setTargets(prev => prev ? ({ ...prev, leads_target: Number(e.target.value) }) : prev)}/>
               </div>
               <div>
                 <label className="label">Rotten Deal Threshold (days)</label>
-                <input className="input" type="number" value={targets.rotten_days||3} onChange={e=>setTargets((p:any)=>({...p,rotten_days:Number(e.target.value)}))}/>
+                <input className="input" type="number" value={targets.rotten_days||3} onChange={e=>setTargets(prev => prev ? ({ ...prev, rotten_days: Number(e.target.value) }) : prev)}/>
               </div>
             </div>
             <div style={{ marginTop:'16px', padding:'14px', background:'var(--bg-tertiary)', borderRadius:'10px' }}>
@@ -1528,11 +1098,11 @@ export default function ReportsPage() {
                   { key:'profit_target_bronze', bonus_key:'bonus_bronze', label:'🥉 Bronze', color:'#cd7f32' },
                   { key:'profit_target_silver', bonus_key:'bonus_silver', label:'🥈 Silver', color:'#9e9e9e' },
                   { key:'profit_target_gold',   bonus_key:'bonus_gold',   label:'🥇 Gold',   color:'#f59e0b' },
-                ].map(tier=>(
+                ].map((tier: { key: ProfitTargetKey; bonus_key: BonusTargetKey; label: string; color: string })=>(
                   <div key={tier.key}>
                     <label className="label" style={{ color:tier.color }}>{tier.label}</label>
-                    <input className="input" type="number" placeholder="Profit target" value={targets[tier.key]} onChange={e=>setTargets((p:any)=>({...p,[tier.key]:Number(e.target.value)}))} style={{ marginBottom:'6px' }}/>
-                    <input className="input" type="number" placeholder="Bonus (£)" value={targets[tier.bonus_key]} onChange={e=>setTargets((p:any)=>({...p,[tier.bonus_key]:Number(e.target.value)}))}/>
+                    <input className="input" type="number" placeholder="Profit target" value={Number(targets[tier.key] || 0)} onChange={e=>setTargets(prev => prev ? ({ ...prev, [tier.key]: Number(e.target.value) }) : prev)} style={{ marginBottom:'6px' }}/>
+                    <input className="input" type="number" placeholder="Bonus (£)" value={Number(targets[tier.bonus_key] || 0)} onChange={e=>setTargets(prev => prev ? ({ ...prev, [tier.bonus_key]: Number(e.target.value) }) : prev)}/>
                   </div>
                 ))}
               </div>

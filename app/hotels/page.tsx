@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState, useRef } from 'react'
-import { supabase } from '@/lib/supabase'
+import Link from 'next/link'
 
 type Supplier = {
   id: number
@@ -101,24 +101,27 @@ export default function HotelsPage() {
   const [editing, setEditing]       = useState<Hotel | null>(null)
   const [saving, setSaving]         = useState(false)
   const [toast, setToast]           = useState<{ msg: string; type: 'success' | 'error' } | null>(null)
-  const toastTimer                  = useRef<any>(null)
+  const toastTimer                  = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const [form, setForm] = useState<Partial<Hotel & { room_types_text: string; meal_plans_text: string; highlights_text: string }>>({})
   const [isNew, setIsNew] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null)
 
-  useEffect(() => { load() }, [])
-
-  async function load() {
+  async function loadPage() {
     setLoading(true)
-    const [{ data: hotelData }, { data: supplierData }] = await Promise.all([
-      supabase.from('hotel_list').select('*').order('name'),
-      supabase.from('suppliers').select('id,name,type,payment_terms,credit_agreement,contact_name,email,phone').order('name'),
-    ])
-    setHotels(hotelData || [])
-    setSuppliers(supplierData || [])
+    const response = await fetch('/api/hotels')
+    if (response.ok) {
+      const data = await response.json()
+      setHotels(data.hotels || [])
+      setSuppliers(data.suppliers || [])
+    }
     setLoading(false)
   }
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => { void loadPage() }, 0)
+    return () => window.clearTimeout(timeoutId)
+  }, [])
 
   function showToast(msg: string, type: 'success' | 'error' = 'success') {
     setToast({ msg, type })
@@ -158,25 +161,35 @@ export default function HotelsPage() {
       highlights:  highlights_text ? highlights_text.split('\n').map(s => s.trim()).filter(Boolean) : [],
     }
     if (isNew) {
-      const { error } = await supabase.from('hotel_list').insert(payload)
+      const response = await fetch('/api/hotels', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      const error = response.ok ? null : await response.json()
       if (error) { showToast('Failed: ' + error.message, 'error'); setSaving(false); return }
       showToast('Hotel added ✓')
     } else {
-      const { error } = await supabase.from('hotel_list').update(payload).eq('id', editing.id)
+      const response = await fetch(`/api/hotels/${editing.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      const error = response.ok ? null : await response.json()
       if (error) { showToast('Failed: ' + error.message, 'error'); setSaving(false); return }
       showToast('Hotel updated ✓')
     }
     setSaving(false)
     setEditing(null)
     setIsNew(false)
-    load()
+    loadPage()
   }
 
   async function handleDelete(id: number) {
-    await supabase.from('hotel_list').delete().eq('id', id)
+    await fetch(`/api/hotels/${id}`, { method: 'DELETE' })
     showToast('Hotel deleted')
     setConfirmDelete(null)
-    load()
+    loadPage()
   }
 
   const supplierMap = Object.fromEntries(suppliers.map(s => [s.id, s]))
@@ -283,7 +296,7 @@ export default function HotelsPage() {
                   </select>
                   {suppliers.length === 0 && (
                     <div style={{ fontSize: '11.5px', color: 'var(--text-muted)', marginTop: '4px' }}>
-                      No suppliers yet — <a href="/suppliers" style={{ color: 'var(--accent)' }}>add one in Suppliers</a>
+                      No suppliers yet — <Link href="/suppliers" style={{ color: 'var(--accent)' }}>add one in Suppliers</Link>
                     </div>
                   )}
                 </div>

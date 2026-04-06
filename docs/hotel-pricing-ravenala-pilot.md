@@ -94,6 +94,7 @@ The pilot calculator should accept:
 - child ages
 - teens
 - teen ages
+- special-offer triggers such as `HM Offers`
 
 Recommended output:
 

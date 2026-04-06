@@ -1,4 +1,4 @@
-import { supabase } from './supabase'
+import { dbMutate } from './api-client'
 import type { StaffUser } from './access'
 
 type AuditEntry = {
@@ -15,8 +15,10 @@ type AuditEntry = {
 
 export async function logAuditEntries(entries: AuditEntry[]) {
   if (entries.length === 0) return
-  await supabase.from('audit_log').insert(
-    entries.map(entry => ({
+  await dbMutate({
+    table: 'audit_log',
+    action: 'insert',
+    values: entries.map(entry => ({
       entity_type: entry.entity_type,
       entity_id: entry.entity_id,
       action: entry.action,
@@ -26,8 +28,8 @@ export async function logAuditEntries(entries: AuditEntry[]) {
       performed_by_staff_id: entry.performed_by_staff_id ?? null,
       performed_by_role: entry.performed_by_role ?? null,
       notes: entry.notes || null,
-    }))
-  )
+    })),
+  })
 }
 
 export function buildFieldAuditEntries({

@@ -1,7 +1,6 @@
 'use client'
 
 import { useEffect, useState, useRef } from 'react'
-import { supabase } from '@/lib/supabase'
 import Link from 'next/link'
 
 type LostDeal = {
@@ -22,31 +21,29 @@ function fmt(n: number) {
   return '£' + (n || 0).toLocaleString('en-GB', { maximumFractionDigits: 0 })
 }
 
-const STAGE_COLORS: Record<string, string> = {
-  NEW_LEAD: '#8b5cf6', QUOTE_SENT: '#f59e0b', ENGAGED: '#3b82f6',
-  FOLLOW_UP: '#f97316', DECISION_PENDING: '#ec4899',
-}
-
 export default function LostDealsPage() {
   const [deals, setDeals]     = useState<LostDeal[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch]   = useState('')
   const [toast, setToast]     = useState<string | null>(null)
   const [reopening, setReopening] = useState<number | null>(null)
-  const toastTimer = useRef<any>(null)
-
-  useEffect(() => { loadDeals() }, [])
+  const [renderTime] = useState(() => Date.now())
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   async function loadDeals() {
     setLoading(true)
-    const { data } = await supabase
-      .from('deals')
-      .select('*, clients(first_name, last_name)')
-      .eq('stage', 'LOST')
-      .order('created_at', { ascending: false })
-    setDeals(data || [])
+    const response = await fetch('/api/lost')
+    if (response.ok) {
+      const data = await response.json()
+      setDeals(data || [])
+    }
     setLoading(false)
   }
+
+  useEffect(() => {
+    const timeoutId = setTimeout(() => { void loadDeals() }, 0)
+    return () => clearTimeout(timeoutId)
+  }, [])
 
   function showToast(msg: string) {
     setToast(msg)
@@ -56,15 +53,12 @@ export default function LostDealsPage() {
 
   async function reopen(deal: LostDeal) {
     setReopening(deal.id)
-    const { error } = await supabase.from('deals')
-      .update({ stage: 'NEW_LEAD', lost_reason: null })
-      .eq('id', deal.id)
-    if (!error) {
-      await supabase.from('activities').insert({
-        deal_id: deal.id,
-        activity_type: 'STAGE_CHANGE',
-        notes: 'Reopened from Lost — Win-back',
-      })
+    const response = await fetch(`/api/lost/${deal.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'reopen' }),
+    })
+    if (response.ok) {
       showToast(`Reopened: ${deal.title}`)
       loadDeals()
     }
@@ -72,12 +66,12 @@ export default function LostDealsPage() {
   }
 
   async function scheduleWinback(deal: LostDeal, days: number) {
-    const at = new Date()
-    at.setDate(at.getDate() + days)
-    const { error } = await supabase.from('deals')
-      .update({ next_activity_at: at.toISOString(), next_activity_type: 'FOLLOW_UP' })
-      .eq('id', deal.id)
-    if (!error) showToast(`Win-back scheduled in ${days} days`)
+    const response = await fetch(`/api/lost/${deal.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'schedule_winback', days }),
+    })
+    if (response.ok) showToast(`Win-back scheduled in ${days} days`)
     loadDeals()
   }
 
@@ -167,7 +161,7 @@ export default function LostDealsPage() {
             {filtered.map(deal => {
               const hasWinback = deal.next_activity_at && new Date(deal.next_activity_at) > new Date()
               const daysUntilWinback = hasWinback
-                ? Math.ceil((new Date(deal.next_activity_at!).getTime() - Date.now()) / 86400000)
+                ? Math.ceil((new Date(deal.next_activity_at!).getTime() - renderTime) / 86400000)
                 : null
 
               return (

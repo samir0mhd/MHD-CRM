@@ -1,7 +1,6 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { supabase } from '@/lib/supabase'
 
 type Template = {
   id: number
@@ -120,14 +119,20 @@ export default function TemplatesPage() {
   })
   const [saving, setSaving] = useState(false)
 
-  useEffect(() => { load() }, [])
-
   async function load() {
     setLoading(true)
-    const { data } = await supabase.from('email_templates').select('*').eq('is_built_in', false).order('created_at', { ascending: false })
-    setCustoms(data || [])
+    const response = await fetch('/api/templates')
+    if (response.ok) {
+      const data = await response.json()
+      setCustoms(data || [])
+    }
     setLoading(false)
   }
+
+  useEffect(() => {
+    const timeoutId = setTimeout(() => { void load() }, 0)
+    return () => clearTimeout(timeoutId)
+  }, [])
 
   function showToast(msg: string, type: 'success'|'error' = 'success') {
     setToast({ msg, type })
@@ -157,11 +162,21 @@ export default function TemplatesPage() {
     if (!form.opening_hook.trim()) { showToast('Opening hook is required', 'error'); return }
     setSaving(true)
     if (editingId === 'new') {
-      const { error } = await supabase.from('email_templates').insert({ ...form, is_built_in: false })
+      const response = await fetch('/api/templates', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...form, is_built_in: false }),
+      })
+      const error = response.ok ? null : await response.json()
       if (error) { showToast('Failed to save: '+error.message, 'error'); setSaving(false); return }
       showToast('Template saved ✓')
     } else {
-      const { error } = await supabase.from('email_templates').update({ ...form, updated_at: new Date().toISOString() }).eq('id', editingId)
+      const response = await fetch(`/api/templates/${editingId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(form),
+      })
+      const error = response.ok ? null : await response.json()
       if (error) { showToast('Failed to update: '+error.message, 'error'); setSaving(false); return }
       showToast('Template updated ✓')
     }
@@ -172,7 +187,7 @@ export default function TemplatesPage() {
 
   async function handleDelete(id: number) {
     setDeleting(id)
-    await supabase.from('email_templates').delete().eq('id', id)
+    await fetch(`/api/templates/${id}`, { method: 'DELETE' })
     showToast('Template deleted')
     setDeleting(null)
     load()
@@ -241,7 +256,7 @@ export default function TemplatesPage() {
                 className="input"
                 style={{ minHeight: field==='opening_hook'?'140px':field==='why_choose_us'?'120px':'100px', resize:'vertical', fontFamily:'Outfit,sans-serif', fontSize:'13.5px', lineHeight:'1.7' }}
                 placeholder={PLACEHOLDERS[field]}
-                value={(form as any)[field]}
+                value={form[field]}
                 onChange={e => setForm(p=>({...p,[field]:e.target.value}))}
               />
             </div>
@@ -312,7 +327,7 @@ export default function TemplatesPage() {
           </div>
 
           {(['opening_hook','why_choose_us','urgency_notice','closing_cta'] as const).map(field => {
-            const val = (viewingBuiltIn as any)[field]
+            const val = viewingBuiltIn[field]
             if (!val) return null
             return (
               <div key={field} className="card" style={{ padding:'18px 22px', marginBottom:'12px' }}>
@@ -363,7 +378,7 @@ export default function TemplatesPage() {
                 </div>
                 <div style={{ fontSize:'13px', color:'var(--text-muted)', lineHeight:'1.5', marginBottom:'10px' }}>{t.description}</div>
                 <div style={{ fontSize:'12px', color:'var(--text-secondary)', background:'var(--bg-tertiary)', borderRadius:'6px', padding:'8px 10px', fontStyle:'italic' }}>
-                  "{t.opening_hook.split('\n')[0].slice(0,120)}{t.opening_hook.length>120?'…':''}"
+                  &quot;{t.opening_hook.split('\n')[0].slice(0,120)}{t.opening_hook.length>120?'…':''}&quot;
                 </div>
               </div>
             ))}
@@ -403,7 +418,7 @@ export default function TemplatesPage() {
                       {t.subject_line&&<div style={{ fontSize:'12px', color:'var(--text-secondary)', marginBottom:'6px' }}>Subject: <em>{t.subject_line}</em></div>}
                       {t.opening_hook&&(
                         <div style={{ fontSize:'12.5px', color:'var(--text-secondary)', background:'var(--bg-tertiary)', borderRadius:'6px', padding:'8px 10px', fontStyle:'italic', lineHeight:'1.5' }}>
-                          "{t.opening_hook.split('\n')[0].slice(0,140)}{t.opening_hook.length>140?'…':''}"
+                          &quot;{t.opening_hook.split('\n')[0].slice(0,140)}{t.opening_hook.length>140?'…':''}&quot;
                         </div>
                       )}
                       <div style={{ fontSize:'11px', color:'var(--text-muted)', marginTop:'6px' }}>Created {fmt(t.created_at)}</div>

@@ -1,34 +1,13 @@
 'use client'
 
 import { useEffect, useState, useRef } from 'react'
-import { supabase } from '@/lib/supabase'
 import { getAccessContext, isManager, type StaffUser } from '@/lib/access'
-import { buildFieldAuditEntries, logAuditEntries } from '@/lib/audit'
+import { authedFetch } from '@/lib/api-client'
+import { getAllClients, getClient, type ClientWithStats, BEHAVIOUR_TAGS, SOURCES, BUDGET_RANGES, STAGE_LABELS, STAGE_COLORS, AVATAR_COLORS, formatCurrency, getClientInitials, getAvatarColor, getTagInfo, calculateClientAge, getBudgetRangeLabel } from '@/lib/modules/clients/client.service'
 import Link from 'next/link'
 
 // ── TYPES ─────────────────────────────────────────────────
-type Client = {
-  id: number
-  first_name: string
-  last_name: string
-  phone: string
-  email: string
-  date_of_birth: string | null
-  budget_min: number | null
-  budget_max: number | null
-  special_occasions: string | null
-  behaviour_tags: string[]
-  advisor_notes: string | null
-  source: string | null
-  billing_address_line1: string | null
-  billing_address_line2: string | null
-  billing_city: string | null
-  billing_postcode: string | null
-  billing_country: string | null
-  owner_staff_id: number | null
-  created_at: string
-  deals?: DealSnap[]
-}
+type Client = ClientWithStats
 
 type DealSnap = {
   id: number
@@ -39,81 +18,31 @@ type DealSnap = {
   created_at: string
 }
 
-type ClientWithStats = Client & {
-  dealCount: number
-  bookedCount: number
-  lifetimeValue: number
-  lastDealDate: string | null
-}
-
 // ── CONSTANTS ─────────────────────────────────────────────
-const BEHAVIOUR_TAGS = [
-  { key: 'price-driven',         label: 'Price-driven',        icon: '💰', color: '#ef4444' },
-  { key: 'value-seeker',         label: 'Value seeker',        icon: '🔍', color: '#f97316' },
-  { key: 'luxury-spender',       label: 'Luxury spender',      icon: '💎', color: '#8b5cf6' },
-  { key: 'repeat-client',        label: 'Repeat client',       icon: '🔁', color: '#10b981' },
-  { key: 'vip',                  label: 'VIP',                 icon: '⭐', color: '#f59e0b' },
-  { key: 'fast-decision',        label: 'Fast decision',       icon: '⚡', color: '#3b82f6' },
-  { key: 'slow-to-commit',       label: 'Slow to commit',      icon: '🐢', color: '#6b7280' },
-  { key: 'cancellation-history', label: 'Cancellation history',icon: '⚠️', color: '#dc2626' },
-  { key: 'prefers-whatsapp',     label: 'Prefers WhatsApp',    icon: '💬', color: '#25d366' },
-  { key: 'prefers-phone',        label: 'Prefers phone',       icon: '📞', color: '#1a3a5c' },
-]
-
-const SOURCES = ['Referral', 'Website', 'Instagram', 'Facebook', 'Travel Fair', 'Repeat Client', 'Phone Enquiry', 'Email Enquiry', 'Google', 'Other']
-
-const BUDGET_RANGES = [
-  { label: 'Under £3,000',   min: 0,     max: 3000  },
-  { label: '£3,000–£5,000',  min: 3000,  max: 5000  },
-  { label: '£5,000–£8,000',  min: 5000,  max: 8000  },
-  { label: '£8,000–£12,000', min: 8000,  max: 12000 },
-  { label: '£12,000–£20,000',min: 12000, max: 20000 },
-  { label: '£20,000+',       min: 20000, max: 999999 },
-]
-
-const STAGE_LABELS: Record<string, string> = {
-  NEW_LEAD: 'New Lead', QUOTE_SENT: 'Quote Sent', ENGAGED: 'Engaged',
-  FOLLOW_UP: 'Follow Up', DECISION_PENDING: 'Decision Pending',
-  BOOKED: 'Booked', LOST: 'Lost',
-}
-
-const STAGE_COLORS: Record<string, string> = {
-  NEW_LEAD: '#8b5cf6', QUOTE_SENT: '#f59e0b', ENGAGED: '#3b82f6',
-  FOLLOW_UP: '#f97316', DECISION_PENDING: '#ec4899',
-  BOOKED: '#10b981', LOST: '#ef4444',
-}
-
-const AVATAR_COLORS = [
-  '#1a3a5c','#534AB7','#0F6E56','#993C1D','#BA7517',
-  '#185FA5','#3B6D11','#8b5cf6','#0d9488','#b45309',
-]
 
 // ── HELPERS ───────────────────────────────────────────────
 function fmt(n: number) {
-  return '£' + (n || 0).toLocaleString('en-GB', { maximumFractionDigits: 0 })
+  return formatCurrency(n)
 }
 
 function initials(c: { first_name: string; last_name: string }) {
-  return ((c.first_name?.[0] || '') + (c.last_name?.[0] || '')).toUpperCase()
+  return getClientInitials(c)
 }
 
 function avatarColor(id: number) {
-  return AVATAR_COLORS[id % AVATAR_COLORS.length]
+  return getAvatarColor(id)
 }
 
 function calcAge(dob: string | null) {
-  if (!dob) return null
-  return Math.floor((Date.now() - new Date(dob).getTime()) / (365.25 * 86400000))
+  return calculateClientAge(dob)
 }
 
 function budgetLabel(min: number | null, max: number | null) {
-  if (!min && !max) return null
-  const r = BUDGET_RANGES.find(b => b.min === min && b.max === max)
-  return r ? r.label : `${fmt(min || 0)} – ${max === 999999 ? '£20,000+' : fmt(max || 0)}`
+  return getBudgetRangeLabel(min, max)
 }
 
 function tagInfo(key: string) {
-  return BEHAVIOUR_TAGS.find(t => t.key === key)
+  return getTagInfo(key)
 }
 
 // ── BLANK FORM ─────────────────────────────────────────────
@@ -158,23 +87,8 @@ export default function ClientsPage() {
 
   async function loadClients() {
     setLoading(true)
-    const { data } = await supabase
-      .from('clients')
-      .select('*, deals(id, title, stage, deal_value, departure_date, created_at)')
-      .order('created_at', { ascending: false })
-
-    const enriched: ClientWithStats[] = ((data || []) as Client[]).map(c => {
-      const deals = c.deals || []
-      return {
-        ...c,
-        behaviour_tags: c.behaviour_tags || [],
-        dealCount:     deals.length,
-        bookedCount:   deals.filter(d => d.stage === 'BOOKED').length,
-        lifetimeValue: deals.filter(d => d.stage === 'BOOKED').reduce((a, d) => a + (d.deal_value || 0), 0),
-        lastDealDate:  deals.length > 0 ? [...deals].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0].created_at : null,
-      }
-    })
-    setClients(enriched)
+    const clients = await getAllClients()
+    setClients(clients)
     setLoading(false)
   }
 
@@ -754,6 +668,7 @@ function ClientModal({ client, staffUsers, currentStaff, onClose, onSaved }: {
   async function handleSave() {
     if (!form.first_name.trim()) { setError('First name is required'); return }
     setSaving(true); setError('')
+
     const payload = {
       first_name:           form.first_name.trim(),
       last_name:            form.last_name.trim(),
@@ -776,36 +691,26 @@ function ClientModal({ client, staffUsers, currentStaff, onClose, onSaved }: {
         : (client?.owner_staff_id ?? currentStaff?.id ?? null),
     }
 
-    const { data, error: err } = client
-      ? await supabase.from('clients').update(payload).eq('id', client.id).select('id').single()
-      : await supabase.from('clients').insert(payload).select('id').single()
+    try {
+      const response = await authedFetch(client ? `/api/clients/${client.id}` : '/api/clients', {
+        method: client ? 'PUT' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
 
-    if (err) { setError(err.message); setSaving(false); return }
-    const entityId = client?.id || data?.id
-    if (entityId) {
-      if (client) {
-        await logAuditEntries(buildFieldAuditEntries({
-          entityType: 'client',
-          entityId,
-          performedBy: currentStaff,
-          action: 'client_updated',
-          before: client,
-          after: payload,
-          fields: ['first_name', 'last_name', 'phone', 'email', 'date_of_birth', 'source', 'advisor_notes', 'billing_address_line1', 'billing_city', 'billing_postcode', 'billing_country', 'owner_staff_id'],
-        }))
-      } else {
-        await logAuditEntries([{
-          entity_type: 'client',
-          entity_id: entityId,
-          action: 'client_created',
-          new_value: payload,
-          performed_by_staff_id: currentStaff?.id ?? null,
-          performed_by_role: currentStaff?.role ?? null,
-          notes: 'Client created',
-        }])
+      const result = await response.json()
+
+      if (!result.success) {
+        setError(result.message)
+        setSaving(false)
+        return
       }
+
+      onSaved()
+    } catch (error) {
+      setError('Failed to save client')
+      setSaving(false)
     }
-    onSaved()
   }
 
   const TABS = [

@@ -2,84 +2,22 @@
 
 import { useEffect, useState, useRef, type CSSProperties } from 'react'
 import { useParams, useRouter } from 'next/navigation'
-import { supabase } from '@/lib/supabase'
-import { buildFieldAuditEntries, logAuditEntries } from '@/lib/audit'
 import { getAccessContext, isManager, type StaffUser } from '@/lib/access'
 import Link from 'next/link'
-
-type Deal = {
-  id: number
-  title: string
-  stage: string
-  deal_value: number
-  departure_date: string | null
-  source: string | null
-  next_activity_at: string | null
-  next_activity_type: string | null
-  lost_reason: string | null
-  created_at: string
-  client_id: number | null
-  staff_id: number | null
-  clients?: { id: number; first_name: string; last_name: string; phone: string; email: string; date_of_birth: string | null; owner_staff_id?: number | null }
-  quotes?: Quote[]
-  activities?: Activity[]
-  bookings?: { id: number; booking_reference: string; staff_id: number | null }[]
-}
-
-type Quote = {
-  id: number
-  deal_id: number
-  quote_ref: string
-  hotel: string
-  price: number
-  profit: number
-  margin_percent: number
-  board_basis: string
-  nights: number
-  departure_date: string | null
-  checkin_date: string | null
-  checkin_next_day: boolean
-  sent_to_client: boolean
-  cabin_class: string | null
-  room_type: string | null
-  airline: string | null
-  departure_airport: string | null
-  adults: number
-  children: number
-  infants: number
-  additional_services: string | null
-  flight_details: any
-  cost_breakdown: any
-  created_at: string
-}
-
-type Activity = {
-  id: number; deal_id: number; activity_type: string; notes: string | null; created_at: string
-}
-
-type CelebrationMilestone = {
-  tier: 'bronze' | 'silver' | 'gold'
-  label: string
-  color: string
-  target: number
-  bonus: number
-  reachedTotal: number
-}
-
-type TargetTierRow = {
-  profit_target_bronze: number | null
-  profit_target_silver: number | null
-  profit_target_gold: number | null
-  bonus_bronze: number | null
-  bonus_silver: number | null
-  bonus_gold: number | null
-}
-
-type BookingTargetLookup = {
-  deals?: {
-    quotes?: Quote[]
-  } | null
-}
+import {
+  fetchDealById,
+  changeStage as changeStageService,
+  logActivity as logActivityService,
+  saveNextAction as saveNextActionService,
+  markQuoteSent as markQuoteSentService,
+  deleteQuote as deleteQuoteService,
+  markBooked as markBookedService,
+  markLost as markLostService,
+  saveOwnership as saveOwnershipService,
+  isExistingBookingResult,
+  type CelebrationMilestone,
+} from '@/lib/modules/deals/deal.service'
+import type { Activity, Deal, Quote } from '@/lib/modules/deals/deal.repository'
 
 const STAGES = ['NEW_LEAD','QUOTE_SENT','ENGAGED','FOLLOW_UP','DECISION_PENDING','BOOKED']
 
@@ -115,91 +53,8 @@ const FIREWORKS = [
   { left: '50%', top: '10%', color: '#facc15', delay: '1.45s', size: 190 },
 ]
 
-const PROFIT_TIERS = [
-  { tier: 'gold', label: 'Gold Target Hit', color: '#f59e0b', targetKey: 'profit_target_gold', bonusKey: 'bonus_gold' },
-  { tier: 'silver', label: 'Silver Target Hit', color: '#cbd5e1', targetKey: 'profit_target_silver', bonusKey: 'bonus_silver' },
-  { tier: 'bronze', label: 'Bronze Target Hit', color: '#cd7f32', targetKey: 'profit_target_bronze', bonusKey: 'bonus_bronze' },
-] as const
-
-const BOOKING_TASKS = [
-  { key:'deposit_received',      name:'Deposit received',               category:'Financial',     sort:1  },
-  { key:'balance_due_set',       name:'Balance due date set',           category:'Financial',     sort:2  },
-  { key:'balance_received',      name:'Balance received',               category:'Financial',     sort:3  },
-  { key:'final_costing',         name:'Final costing confirmed',        category:'Financial',     sort:4  },
-  { key:'flights_ticketed',      name:'Flights ticketed',               category:'Flights',       sort:5  },
-  { key:'etickets_sent',         name:'E-tickets sent to client',       category:'Flights',       sort:6  },
-  { key:'hotel_confirmation',    name:'Hotel confirmation received',    category:'Accommodation', sort:7  },
-  { key:'special_requests',      name:'Special requests confirmed',     category:'Accommodation', sort:8  },
-  { key:'transfer_confirmation', name:'Transfers confirmed',            category:'Transfers',     sort:9  },
-  { key:'booking_confirmation',  name:'Booking confirmation sent',      category:'Documents',     sort:10 },
-  { key:'travel_docs',           name:'Travel documents issued',        category:'Documents',     sort:11 },
-  { key:'atol_certificate',      name:'ATOL certificate issued',        category:'Documents',     sort:12 },
-  { key:'predeparture_call',     name:'Pre-departure contact made',     category:'Pre-Departure', sort:13 },
-  { key:'review_requested',      name:'Post-trip review requested',     category:'Post-Trip',     sort:14 },
-  { key:'rebook_conversation',   name:'Re-book conversation started',   category:'Post-Trip',     sort:15 },
-]
-
 const fmt     = (n:number) => '£'+(n||0).toLocaleString('en-GB',{maximumFractionDigits:0})
 const fmtDate = (d:string|null) => !d ? '—' : new Date(d).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})
-const fmtFull = (d:string|null) => !d ? '—' : new Date(d+'T12:00').toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})
-
-function bestQuoteProfit(quotes: Quote[] | undefined) {
-  if (!quotes || quotes.length === 0) return 0
-  const sentQuotes = quotes
-    .filter(quote => quote.sent_to_client)
-    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
-  const bestQuote = sentQuotes[0] || [...quotes].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0]
-  return Number(bestQuote?.profit || 0)
-}
-
-async function resolveCelebrationMilestone(staffId: number | null, addedProfit: number) {
-  if (!staffId || addedProfit <= 0) return null
-
-  const now = new Date()
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1)
-  const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999)
-
-  const [{ data: targetRowData }, { data: monthlyBookings }] = await Promise.all([
-    supabase
-      .from('targets')
-      .select('profit_target_bronze,profit_target_silver,profit_target_gold,bonus_bronze,bonus_silver,bonus_gold')
-      .eq('month', now.getMonth() + 1)
-      .eq('year', now.getFullYear())
-      .maybeSingle(),
-    supabase
-      .from('bookings')
-      .select('deals(quotes(profit, sent_to_client, created_at))')
-      .eq('staff_id', staffId)
-      .eq('status', 'CONFIRMED')
-      .gte('created_at', monthStart.toISOString())
-      .lte('created_at', monthEnd.toISOString()),
-  ])
-
-  const targetRow = targetRowData as TargetTierRow | null
-  if (!targetRow) return null
-
-  const currentProfit = ((monthlyBookings || []) as BookingTargetLookup[]).reduce((sum, booking) => {
-    return sum + bestQuoteProfit(booking.deals?.quotes)
-  }, 0)
-  const reachedTotal = currentProfit + addedProfit
-
-  for (const tier of PROFIT_TIERS) {
-    const target = Number(targetRow[tier.targetKey] || 0)
-    if (!target) continue
-    if (currentProfit < target && reachedTotal >= target) {
-      return {
-        tier: tier.tier,
-        label: tier.label,
-        color: tier.color,
-        target,
-        bonus: Number(targetRow[tier.bonusKey] || 0),
-        reachedTotal,
-      } satisfies CelebrationMilestone
-    }
-  }
-
-  return null
-}
 
 export default function DealDetailPage() {
   const { id }    = useParams()
@@ -232,18 +87,32 @@ export default function DealDetailPage() {
   const [currentStaff, setCurrentStaff] = useState<StaffUser | null>(null)
   const [ownerDraft, setOwnerDraft]   = useState('')
   const [savingOwner, setSavingOwner] = useState(false)
-  const toastTimer = useRef<any>(null)
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
-    void loadDeal()
-    void loadAccess()
+    void (async () => {
+      setLoading(true)
+      const [data, access] = await Promise.all([
+        fetchDealById(Number(id)),
+        getAccessContext(),
+      ])
+
+      if (data) {
+        setDeal(data)
+        setNextActType(data.next_activity_type || '')
+        setNextActDate(data.next_activity_at ? data.next_activity_at.split('T')[0] : '')
+        setOwnerDraft(String(data.staff_id || data.clients?.owner_staff_id || ''))
+      }
+
+      setStaffUsers(access.staffUsers)
+      setCurrentStaff(access.currentStaff)
+      setLoading(false)
+    })()
   }, [id])
 
   async function loadDeal() {
     setLoading(true)
-    const { data } = await supabase.from('deals')
-      .select('*, clients(*), quotes(*), activities(*), bookings(id, booking_reference, staff_id)')
-      .eq('id', id).single()
+    const data = await fetchDealById(Number(id))
     if (data) {
       setDeal(data)
       setNextActType(data.next_activity_type || '')
@@ -251,12 +120,6 @@ export default function DealDetailPage() {
       setOwnerDraft(String(data.staff_id || data.clients?.owner_staff_id || ''))
     }
     setLoading(false)
-  }
-
-  async function loadAccess() {
-    const { staffUsers, currentStaff } = await getAccessContext()
-    setStaffUsers(staffUsers)
-    setCurrentStaff(currentStaff)
   }
 
   function showToast(msg:string, type:'success'|'error'='success') {
@@ -267,8 +130,7 @@ export default function DealDetailPage() {
 
   async function changeStage(newStage:string) {
     if (!deal || deal.stage === newStage) return
-    await supabase.from('deals').update({ stage: newStage }).eq('id', deal.id)
-    await supabase.from('activities').insert({ deal_id:deal.id, activity_type:'STAGE_CHANGE', notes:`Moved to ${STAGE_LABELS[newStage]||newStage}` })
+    await changeStageService(deal.id, newStage)
     showToast(`Moved to ${STAGE_LABELS[newStage]}`)
     loadDeal()
   }
@@ -276,7 +138,7 @@ export default function DealDetailPage() {
   async function logActivity() {
     if (!deal || !actNotes.trim()) return
     setLoggingAct(true)
-    await supabase.from('activities').insert({ deal_id:deal.id, activity_type:actType, notes:actNotes.trim() })
+    await logActivityService(deal.id, actType, actNotes.trim())
     setActNotes('')
     showToast('Activity logged ✓')
     setLoggingAct(false)
@@ -286,10 +148,7 @@ export default function DealDetailPage() {
   async function saveNextAction() {
     if (!deal) return
     setSavingNext(true)
-    await supabase.from('deals').update({
-      next_activity_type: nextActType||null,
-      next_activity_at:   nextActDate ? new Date(nextActDate).toISOString() : null,
-    }).eq('id', deal.id)
+    await saveNextActionService(deal.id, nextActType || null, nextActDate || null)
     setSavingNext(false); setNextSaved(true)
     showToast('Next action saved ✓')
     setTimeout(() => setNextSaved(false), 2500)
@@ -297,28 +156,17 @@ export default function DealDetailPage() {
   }
 
   async function markQuoteSent(quoteId:number) {
-    await supabase.from('quotes').update({ sent_to_client:true }).eq('id', quoteId)
-    await supabase.from('activities').insert({ deal_id:deal!.id, activity_type:'QUOTE_SENT', notes:'Quote sent to client' })
-
-    // Auto-create follow-up sequences (Day 2, 5, 10)
-    const now = new Date()
-    const sequences = [2, 5, 10].map(day => {
-      const scheduled = new Date(now)
-      scheduled.setDate(scheduled.getDate() + day)
-      scheduled.setHours(9, 0, 0, 0) // 9am on the due day
-      return { deal_id: deal!.id, sequence_day: day, status: 'pending', scheduled_for: scheduled.toISOString() }
-    })
-    // Only create if no sequences exist yet for this deal
-    const { data: existing } = await supabase.from('follow_up_sequences').select('id').eq('deal_id', deal!.id)
-    if (!existing || existing.length === 0) {
-      await supabase.from('follow_up_sequences').insert(sequences)
-    }
-
-    if (deal?.stage === 'NEW_LEAD') {
-      await supabase.from('deals').update({ stage:'QUOTE_SENT' }).eq('id', deal.id)
-      await supabase.from('activities').insert({ deal_id:deal.id, activity_type:'STAGE_CHANGE', notes:'Moved to Quote Sent' })
-    }
+    if (!deal) return
+    await markQuoteSentService(deal, quoteId)
     showToast('Quote marked as sent — follow-up sequence created ✓')
+    loadDeal()
+  }
+
+  async function deleteQuote(quoteId:number) {
+    if (!deal) return
+    if (!confirm('Delete this quote? This cannot be undone.')) return
+    await deleteQuoteService(deal.id, quoteId)
+    showToast('Quote deleted')
     loadDeal()
   }
 
@@ -326,57 +174,33 @@ export default function DealDetailPage() {
     if (!deal) return
     setMarking(true)
     try {
-      const { data: existing } = await supabase.from('bookings').select('id,booking_reference').eq('deal_id', deal.id)
-      if (existing && existing.length > 0) {
-        showToast(`Already has booking — ${existing[0].booking_reference}`, 'error')
-        setMarking(false); return
+      const result = await markBookedService(deal, staffUsers, currentStaff)
+      if (isExistingBookingResult(result)) {
+        showToast(`Already has booking — ${result.bookingReference}`, 'error')
+        setMarking(false)
+        return
       }
-      const { data: seqData } = await supabase.rpc('next_booking_ref')
-      const bookingRef = seqData || `${133610+Math.floor(Math.random()*100)}`
-      let balanceDueDate = null
-      if (deal.departure_date) {
-        const dep = new Date(deal.departure_date)
-        balanceDueDate = new Date(dep.getTime()-84*86400000).toISOString().split('T')[0]
-      }
-      const topQuote = (deal.quotes||[]).sort((a,b)=>(b.profit||0)-(a.profit||0))[0]
-      const consultantId = deal.staff_id || deal.clients?.owner_staff_id || null
-      const milestone = await resolveCelebrationMilestone(consultantId, Number(topQuote?.profit || 0))
 
-      const { data: booking, error } = await supabase.from('bookings').insert({
-        deal_id:deal.id, booking_reference:bookingRef, departure_date:deal.departure_date,
-        status:'CONFIRMED', balance_due_date:balanceDueDate, deposit_received:false, staff_id: deal.staff_id || deal.clients?.owner_staff_id || null,
-      }).select().single()
-      if (error) throw error
-      await supabase.from('booking_tasks').insert(BOOKING_TASKS.map(t=>({ booking_id:booking.id, task_name:t.name, task_key:t.key, category:t.category, sort_order:t.sort, is_done:false })))
-      if (deal.clients) {
-        const c = deal.clients
-        await supabase.from('booking_passengers').insert({ booking_id:booking.id, title:'Mr/Mrs', first_name:c.first_name, last_name:c.last_name, date_of_birth:c.date_of_birth||null, passenger_type:'Adult', is_lead:true })
-      }
-      await supabase.from('deals').update({ stage:'BOOKED' }).eq('id', deal.id)
-      await supabase.from('activities').insert({ deal_id:deal.id, activity_type:'BOOKING_CREATED', notes:`Booking confirmed — Ref: ${bookingRef}` })
-      const clientName = deal.clients ? `${deal.clients.first_name} ${deal.clients.last_name}` : deal.title
-      const topHotel = topQuote?.hotel || ''
-      const consultantName = staffUsers.find(staff => staff.id === consultantId)?.name || null
       setCelebration({
-        ref: bookingRef,
-        value: deal.deal_value||0,
-        profit: topQuote?.profit||0,
-        clientName,
-        hotel: topHotel,
-        consultantName,
-        milestone,
+        ref: result.bookingRef,
+        value: result.value,
+        profit: result.profit,
+        clientName: result.clientName,
+        hotel: result.hotel,
+        consultantName: result.consultantName,
+        milestone: result.milestone,
       })
       setTimeout(() => { router.refresh(); router.push('/bookings') }, 5500)
-    } catch (err:any) {
-      showToast('Error creating booking — '+err.message, 'error')
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Unknown error'
+      showToast('Error creating booking — '+message, 'error')
       setMarking(false)
     }
   }
 
   async function markLost() {
     if (!deal || !lostReason.trim()) return
-    await supabase.from('deals').update({ stage:'LOST', lost_reason:lostReason.trim() }).eq('id', deal.id)
-    await supabase.from('activities').insert({ deal_id:deal.id, activity_type:'STAGE_CHANGE', notes:`Deal lost — ${lostReason.trim()}` })
+    await markLostService(deal.id, lostReason)
     setShowLost(false); showToast('Deal marked as lost'); loadDeal()
   }
 
@@ -384,70 +208,18 @@ export default function DealDetailPage() {
     if (!deal || !isManager(currentStaff) || !ownerDraft) return
     const nextStaffId = Number(ownerDraft)
     const bookingTargets = (deal.bookings || []).filter(booking => booking.staff_id !== nextStaffId)
-    const auditEntries = [
-      ...(client
-        ? buildFieldAuditEntries({
-            entityType: 'client',
-            entityId: client.id,
-            performedBy: currentStaff,
-            action: 'ownership_reassigned',
-            before: { owner_staff_id: client.owner_staff_id ?? null },
-            after: { owner_staff_id: nextStaffId },
-            fields: ['owner_staff_id'],
-            notes: `Ownership reassigned from deal ${deal.id}`,
-          })
-        : []),
-      ...buildFieldAuditEntries({
-        entityType: 'deal',
-        entityId: deal.id,
-        performedBy: currentStaff,
-        action: 'ownership_reassigned',
-        before: { staff_id: deal.staff_id ?? null },
-        after: { staff_id: nextStaffId },
-        fields: ['staff_id'],
-        notes: 'Deal ownership realigned',
-      }),
-      ...bookingTargets.flatMap(booking =>
-        buildFieldAuditEntries({
-          entityType: 'booking',
-          entityId: booking.id,
-          performedBy: currentStaff,
-          action: 'ownership_reassigned',
-          before: { staff_id: booking.staff_id ?? null },
-          after: { staff_id: nextStaffId },
-          fields: ['staff_id'],
-          notes: `Inherited from deal ${deal.id}`,
-        })
-      ),
-    ]
-
-    if (auditEntries.length === 0) {
-      showToast('Ownership already aligned')
-      return
-    }
 
     setSavingOwner(true)
     try {
-      if (client && client.owner_staff_id !== nextStaffId) {
-        const { error } = await supabase.from('clients').update({ owner_staff_id: nextStaffId }).eq('id', client.id)
-        if (error) throw error
+      const result = await saveOwnershipService(deal, currentStaff, nextStaffId, deal.clients, bookingTargets)
+      if (result.updated) {
+        showToast('Ownership updated ✓')
+      } else {
+        showToast('Ownership already aligned')
       }
-
-      if (deal.staff_id !== nextStaffId) {
-        const { error } = await supabase.from('deals').update({ staff_id: nextStaffId }).eq('id', deal.id)
-        if (error) throw error
-      }
-
-      if (bookingTargets.length > 0) {
-        const { error } = await supabase.from('bookings').update({ staff_id: nextStaffId }).in('id', bookingTargets.map(booking => booking.id))
-        if (error) throw error
-      }
-
-      await logAuditEntries(auditEntries)
-      showToast('Ownership updated ✓')
       await loadDeal()
-    } catch (err: any) {
-      showToast(err.message || 'Failed to update ownership', 'error')
+    } catch (err: unknown) {
+      showToast(err instanceof Error ? err.message : 'Failed to update ownership', 'error')
     } finally {
       setSavingOwner(false)
     }
@@ -469,6 +241,12 @@ export default function DealDetailPage() {
   const assignedStaff = staffUsers.find(staff => staff.id === assignedStaffId) || null
   const clientOwnerMismatch = (client?.owner_staff_id ?? null) !== (deal.staff_id ?? null)
   const bookingOwnerMismatch = (deal.bookings || []).some(booking => booking.staff_id !== assignedStaffId)
+  const dealInfoRows: { label: string; val: string; color?: string }[] = [
+    { label:'Stage', val:STAGE_LABELS[deal.stage]||deal.stage, color:STAGE_COLORS[deal.stage] },
+    { label:'Departure', val:fmtDate(deal.departure_date) },
+    { label:'Source', val:deal.source||'—' },
+    { label:'Quotes', val:`${quotes.length} quote${quotes.length!==1?'s':''}` },
+  ]
 
   const TABS = [
     { key:'overview',  label:'Overview'                    },
@@ -879,8 +657,7 @@ export default function DealDetailPage() {
                       expanded={expandedQuote===q.id}
                       onToggle={()=>setExpandedQuote(expandedQuote===q.id?null:q.id)}
                       onMarkSent={()=>markQuoteSent(q.id)}
-                      onRefresh={loadDeal}
-                      showToast={showToast}
+                      onDelete={()=>deleteQuote(q.id)}
                     />
                   ))}
                 </div>
@@ -1002,15 +779,10 @@ export default function DealDetailPage() {
           <div className="card" style={{ padding:'18px' }}>
             <div style={{ fontFamily:'Instrument Serif, serif', fontSize:'16px', marginBottom:'14px' }}>Deal Info</div>
             <div style={{ display:'flex', flexDirection:'column', gap:'10px', fontSize:'13px' }}>
-              {[
-                { label:'Stage',     val:STAGE_LABELS[deal.stage]||deal.stage, color:STAGE_COLORS[deal.stage] },
-                { label:'Departure', val:fmtDate(deal.departure_date)                                          },
-                { label:'Source',    val:deal.source||'—'                                                      },
-                { label:'Quotes',    val:`${quotes.length} quote${quotes.length!==1?'s':''}`                   },
-              ].map(f=>(
+              {dealInfoRows.map(f=>(
                 <div key={f.label} style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
                   <span style={{ color:'var(--text-muted)' }}>{f.label}</span>
-                  <span style={{ fontWeight:'500', color:(f as any).color||'var(--text-primary)' }}>{f.val}</span>
+                  <span style={{ fontWeight:'500', color:f.color||'var(--text-primary)' }}>{f.val}</span>
                 </div>
               ))}
             </div>
@@ -1040,10 +812,9 @@ export default function DealDetailPage() {
 }
 
 // ── QUOTE CARD ────────────────────────────────────────────
-function QuoteCard({ quote, dealId, isBooked, isLost, expanded, onToggle, onMarkSent, onRefresh, showToast }:{
+function QuoteCard({ quote, dealId, isBooked, isLost, expanded, onToggle, onMarkSent, onDelete }:{
   quote:Quote; dealId:number; isBooked:boolean; isLost:boolean;
-  expanded:boolean; onToggle:()=>void; onMarkSent:()=>void;
-  onRefresh:()=>void; showToast:(m:string,t?:'success'|'error')=>void;
+  expanded:boolean; onToggle:()=>void; onMarkSent:()=>void; onDelete:()=>void;
 }) {
   const fmt = (n:number) => '£'+(n||0).toLocaleString('en-GB',{maximumFractionDigits:0})
   const marginColor = (quote.margin_percent||0)>=10?'var(--green)':(quote.margin_percent||0)>=7?'var(--amber)':'var(--red)'
@@ -1096,11 +867,11 @@ function QuoteCard({ quote, dealId, isBooked, isLost, expanded, onToggle, onMark
         <div style={{ borderTop:'1px solid var(--border)', padding:'16px 20px', background:'var(--bg-tertiary)' }}>
 
           {/* Flights */}
-          {allLegs.length>0 && allLegs.some((l:any)=>l.date||l.depart_time) && (
+          {allLegs.length>0 && allLegs.some(l=>l.date||l.depart_time) && (
             <div style={{ marginBottom:'16px' }}>
               <div style={{ fontSize:'12px', fontWeight:'600', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:'8px' }}>Flights</div>
               <div style={{ display:'flex', flexDirection:'column', gap:'6px' }}>
-                {allLegs.map((l:any,i:number)=>(
+                {allLegs.map((l, i)=>(
                   <div key={i} style={{ display:'flex', gap:'12px', fontSize:'12.5px', padding:'8px 12px', background:'var(--surface)', borderRadius:'6px', alignItems:'center' }}>
                     <span style={{ color:'var(--text-muted)', width:'16px' }}>{i<outLegs.length?'✈':'↩'}</span>
                     <span style={{ fontWeight:'600', color:'var(--text-primary)', minWidth:'80px' }}>{l.from} → {l.to}</span>
@@ -1133,7 +904,7 @@ function QuoteCard({ quote, dealId, isBooked, isLost, expanded, onToggle, onMark
               </div>
               {costs.extras?.length>0 && (
                 <div style={{ marginTop:'8px', fontSize:'12px', color:'var(--text-muted)' }}>
-                  Extras: {costs.extras.map((e:any)=>`${e.label} (£${e.net})`).join(' · ')}
+                  Extras: {costs.extras.map(e=>`${e.label} (£${e.net})`).join(' · ')}
                 </div>
               )}
             </div>
@@ -1159,6 +930,9 @@ function QuoteCard({ quote, dealId, isBooked, isLost, expanded, onToggle, onMark
             )}
             {quote.sent_to_client && (
               <span style={{ fontSize:'12px', color:'var(--green)', fontWeight:'500', alignSelf:'center' }}>✓ Sent to client</span>
+            )}
+            {!isBooked && (
+              <button className="btn btn-danger btn-sm" onClick={onDelete} style={{ marginLeft:'auto' }}>🗑 Delete</button>
             )}
           </div>
         </div>

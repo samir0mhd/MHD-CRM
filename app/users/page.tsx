@@ -64,11 +64,13 @@ export default function UsersPage() {
     setLoadingMfa(false)
     if (error) return
 
-    const existingTotp = factorsData?.totp?.[0]
-    if (!existingTotp) return
+    // Check for any existing factor with friendly name 'Authenticator'
+    const allFactors = [...(factorsData?.totp || []), ...(factorsData?.phone || [])]
+    const existingAuthenticator = allFactors.find(f => f.friendly_name === 'Authenticator')
+    if (!existingAuthenticator) return
 
     setEnrollData({
-      factorId: existingTotp.id,
+      factorId: existingAuthenticator.id,
       qrCode: '',
       secret: '',
       existing: true,
@@ -85,10 +87,12 @@ export default function UsersPage() {
       return
     }
 
-    const existingTotp = factorsData?.totp?.[0]
-    if (existingTotp) {
+    // Check for any existing factor with friendly name 'Authenticator'
+    const allFactors = [...(factorsData?.totp || []), ...(factorsData?.phone || [])]
+    const existingAuthenticator = allFactors.find(f => f.friendly_name === 'Authenticator')
+    if (existingAuthenticator) {
       setEnrollData({
-        factorId: existingTotp.id,
+        factorId: existingAuthenticator.id,
         qrCode: '',
         secret: '',
         existing: true,
@@ -120,9 +124,11 @@ export default function UsersPage() {
       return
     }
 
-    const existingTotp = factorsData?.totp?.[0]
-    if (existingTotp) {
-      const { error } = await supabase.auth.mfa.unenroll({ factorId: existingTotp.id })
+    // Find the factor with friendly name 'Authenticator'
+    const allFactors = [...(factorsData?.totp || []), ...(factorsData?.phone || [])]
+    const existingAuthenticator = allFactors.find(f => f.friendly_name === 'Authenticator')
+    if (existingAuthenticator) {
+      const { error } = await supabase.auth.mfa.unenroll({ factorId: existingAuthenticator.id })
       if (error) {
         setLoadingMfa(false)
         setMessage(error.message)
@@ -165,7 +171,8 @@ export default function UsersPage() {
 
   const qrSrc = useMemo(() => {
     if (!enrollData?.qrCode) return null
-    return `data:image/svg+xml;utf-8,${encodeURIComponent(enrollData.qrCode)}`
+    // enrollData.qrCode is the otpauth:// URI, generate QR image from it
+    return `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(enrollData.qrCode)}`
   }, [enrollData?.qrCode])
 
   useEffect(() => {

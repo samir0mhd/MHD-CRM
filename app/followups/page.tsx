@@ -1,7 +1,6 @@
 'use client'
 
 import { useEffect, useState, useRef } from 'react'
-import { supabase } from '@/lib/supabase'
 import Link from 'next/link'
 
 type FollowUp = {
@@ -41,7 +40,7 @@ const STATUS_COLORS: Record<string, string> = {
 }
 
 // ── DEFAULT EMAIL BODIES ──────────────────────────────────
-function defaultSubject(day: number, dealTitle: string, clientName: string): string {
+function defaultSubject(day: number, dealTitle: string): string {
   const subjects: Record<number, string> = {
     2:  `Following up — Your Mauritius Holiday Quote`,
     5:  `Still Available — Your Mauritius Quote`,
@@ -50,7 +49,7 @@ function defaultSubject(day: number, dealTitle: string, clientName: string): str
   return subjects[day] || `Following up — ${dealTitle}`
 }
 
-function defaultBody(day: number, clientName: string, dealTitle: string): string {
+function defaultBody(day: number, clientName: string): string {
   const first = clientName.split(' ')[0]
   if (day === 2) return `
 <p>Dear ${first},</p>
@@ -107,19 +106,22 @@ export default function FollowUpPage() {
   const [editSubject, setEditSubject] = useState('')
   const [editBody, setEditBody]       = useState('')
   const [toast, setToast]             = useState<{msg:string;type:'success'|'error'}|null>(null)
-  const toastTimer                    = useRef<any>(null)
-
-  useEffect(() => { load() }, [])
+  const toastTimer                    = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   async function load() {
     setLoading(true)
-    const { data } = await supabase
-      .from('follow_up_sequences')
-      .select('*, deals(id, title, stage, clients(first_name, last_name, email))')
-      .order('scheduled_for', { ascending: true })
-    setFollowUps(data || [])
+    const response = await fetch('/api/followups')
+    if (response.ok) {
+      const data = await response.json()
+      setFollowUps(data || [])
+    }
     setLoading(false)
   }
+
+  useEffect(() => {
+    const timeoutId = setTimeout(() => { void load() }, 0)
+    return () => clearTimeout(timeoutId)
+  }, [])
 
   function showToast(msg: string, type: 'success'|'error' = 'success') {
     setToast({ msg, type })
@@ -130,14 +132,18 @@ export default function FollowUpPage() {
   function openEdit(fu: FollowUp) {
     const client = fu.deals?.clients
     const clientName = client ? `${client.first_name} ${client.last_name}` : 'Valued Client'
-    setEditSubject(fu.email_subject || defaultSubject(fu.sequence_day, fu.deals?.title||'', clientName))
-    setEditBody(fu.email_body || defaultBody(fu.sequence_day, clientName, fu.deals?.title||''))
+    setEditSubject(fu.email_subject || defaultSubject(fu.sequence_day, fu.deals?.title||''))
+    setEditBody(fu.email_body || defaultBody(fu.sequence_day, clientName))
     setEditingId(fu.id)
   }
 
   async function saveEdit() {
     if (!editingId) return
-    await supabase.from('follow_up_sequences').update({ email_subject: editSubject, email_body: editBody }).eq('id', editingId)
+    await fetch(`/api/followups/${editingId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email_subject: editSubject, email_body: editBody }),
+    })
     setEditingId(null)
     showToast('Email saved ✓')
     load()
@@ -149,41 +155,43 @@ export default function FollowUpPage() {
 
     setSendingId(fu.id)
     const clientName = `${client.first_name} ${client.last_name}`
-    const subject = fu.email_subject || defaultSubject(fu.sequence_day, fu.deals?.title||'', clientName)
-    const body    = fu.email_body    || defaultBody(fu.sequence_day, clientName, fu.deals?.title||'')
+    const subject = fu.email_subject || defaultSubject(fu.sequence_day, fu.deals?.title||'')
+    const body    = fu.email_body    || defaultBody(fu.sequence_day, clientName)
 
     try {
       const res = await fetch('/api/send-followup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ follow_up_id: fu.id, to: client.email, subject, body }),
+        body: JSON.stringify({ follow_up_id: fu.id, to: client.email, subject, body, deal_id: fu.deal_id, sequence_day: fu.sequence_day }),
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error)
 
-      // Log activity on deal
-      await supabase.from('activities').insert({
-        deal_id: fu.deal_id,
-        activity_type: 'EMAIL',
-        notes: `Follow-up Day ${fu.sequence_day} sent — ${subject}`,
-      })
-
       showToast(`✓ Follow-up sent to ${client.email}`)
       load()
-    } catch (err: any) {
-      showToast('Failed to send: '+err.message, 'error')
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Unknown error'
+      showToast('Failed to send: '+message, 'error')
     }
     setSendingId(null)
   }
 
   async function skipFollowUp(id: number) {
-    await supabase.from('follow_up_sequences').update({ status: 'skipped' }).eq('id', id)
+    await fetch(`/api/followups/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'skip' }),
+    })
     showToast('Follow-up skipped')
     load()
   }
 
   async function resetToPending(id: number) {
-    await supabase.from('follow_up_sequences').update({ status: 'pending', sent_at: null }).eq('id', id)
+    await fetch(`/api/followups/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'reset' }),
+    })
     showToast('Reset to pending')
     load()
   }

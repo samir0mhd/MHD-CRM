@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { supabase } from '@/lib/supabase'
+import { fetchDeals, reopenDeal as reopenDealService } from '@/lib/modules/deals/deal.service'
 import Link from 'next/link'
 
 type Deal = {
@@ -64,26 +64,21 @@ export default function AllDealsPage() {
   const [reopening, setReopening]       = useState<number | null>(null)
   const [toast, setToast]               = useState<string | null>(null)
 
-  useEffect(() => { loadDeals() }, [])
-
   async function loadDeals() {
     setLoading(true)
-    const { data } = await supabase
-      .from('deals')
-      .select('*, clients(first_name, last_name, phone, email), quotes(id, price, profit, sent_to_client), bookings(id, booking_reference)')
-      .order('created_at', { ascending: false })
+    const data = await fetchDeals()
     setDeals(data || [])
     setLoading(false)
   }
 
+  useEffect(() => {
+    const timeoutId = setTimeout(() => { void loadDeals() }, 0)
+    return () => clearTimeout(timeoutId)
+  }, [])
+
   async function reopenDeal(deal: Deal) {
     setReopening(deal.id)
-    await supabase.from('deals').update({ stage: 'NEW_LEAD', lost_reason: null }).eq('id', deal.id)
-    await supabase.from('activities').insert({
-      deal_id: deal.id,
-      activity_type: 'STAGE_CHANGE',
-      notes: 'Deal reopened — moved back to New Lead',
-    })
+    await reopenDealService(deal)
     setToast(`${deal.title} reopened ✓`)
     setTimeout(() => setToast(null), 3000)
     setReopening(null)

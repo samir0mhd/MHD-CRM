@@ -1,7 +1,6 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { supabase } from '@/lib/supabase'
 import Link from 'next/link'
 
 type Target = {
@@ -29,10 +28,44 @@ type DashData = {
   rottenDeals: number
   yearRevenue: number
   yearProfit: number
-  recentDeals: any[]
-  recentBookings: any[]
+  recentDeals: RecentDeal[]
+  recentBookings: Array<{ id: number; profit: number }>
   lostReasons: { reason: string; count: number }[]
-  upcomingDepartures: any[]
+  upcomingDepartures: UpcomingDeparture[]
+}
+
+type ProfitTierProps = {
+  profit: number
+  bronze: number
+  silver: number
+  gold: number
+  bonusBronze: number
+  bonusSilver: number
+  bonusGold: number
+}
+
+type RecentDeal = {
+  id: number
+  title: string
+  deal_value: number | null
+  next_activity_at: string | null
+  clients?: {
+    first_name?: string | null
+    last_name?: string | null
+  } | null
+}
+
+type UpcomingDeparture = {
+  id: number
+  booking_reference: string
+  departure_date: string
+  deals?: {
+    title?: string | null
+    clients?: {
+      first_name?: string | null
+      last_name?: string | null
+    } | null
+  } | null
 }
 
 const fmt  = (n: number) => '£' + (n||0).toLocaleString('en-GB', { maximumFractionDigits: 0 })
@@ -48,13 +81,13 @@ function ProgressBar({ value, max, color = 'var(--accent-mid)' }: { value: numbe
   )
 }
 
-function ProfitTier({ profit, bronze, silver, gold, bonusBronze, bonusSilver, bonusGold }: any) {
+function ProfitTier({ profit, bronze, silver, gold, bonusBronze, bonusSilver, bonusGold }: ProfitTierProps) {
   const tier = profit >= gold ? 'gold' : profit >= silver ? 'silver' : profit >= bronze ? 'bronze' : null
   const next = profit < bronze ? { target: bronze, bonus: bonusBronze, label: 'Bronze', color: '#cd7f32' }
              : profit < silver ? { target: silver, bonus: bonusSilver, label: 'Silver', color: '#9e9e9e' }
              : profit < gold   ? { target: gold,   bonus: bonusGold,   label: 'Gold',   color: '#f59e0b' }
              : null
-  const tierConfig: Record<string,any> = {
+  const tierConfig: Record<string, { label: string; color: string; bg: string; bonus: number; emoji: string }> = {
     gold:   { label: 'Gold Tier',   color: '#f59e0b', bg: '#fdf3e3', bonus: bonusGold,   emoji: '🥇' },
     silver: { label: 'Silver Tier', color: '#9e9e9e', bg: '#f5f5f5', bonus: bonusSilver, emoji: '🥈' },
     bronze: { label: 'Bronze Tier', color: '#cd7f32', bg: '#fdf0e0', bonus: bonusBronze, emoji: '🥉' },
@@ -101,109 +134,22 @@ export default function DashboardPage() {
   const [data, setData]       = useState<DashData | null>(null)
   const [target, setTarget]   = useState<Target | null>(null)
   const [loading, setLoading] = useState(true)
+  const [renderNow] = useState(() => Date.now())
 
-  useEffect(() => { load() }, [])
+  useEffect(() => {
+    async function load() {
+      setLoading(true)
+      const response = await fetch('/api/dashboard')
+      if (response.ok) {
+        const result = await response.json()
+        setTarget(result.target || null)
+        setData(result.data || null)
+      }
+      setLoading(false)
+    }
 
-  async function load() {
-    setLoading(true)
-    const now        = new Date()
-    const month      = now.getMonth() + 1
-    const year       = now.getFullYear()
-    const monthStart = new Date(year, month - 1, 1).toISOString()
-    const monthEnd   = new Date(year, month, 0, 23, 59, 59).toISOString()
-    const yearStart  = new Date(year, 0, 1).toISOString()
-
-    const { data: tData } = await supabase.from('targets').select('*').eq('month', month).eq('year', year).single()
-    setTarget(tData)
-    const rd = tData?.rotten_days || 3
-
-    // Confirmed bookings this month
-    const { data: bookings } = await supabase.from('bookings')
-      .select('id, deal_id, booking_reference, departure_date, created_at, deals(id, title, deal_value, quotes(profit, sent_to_client, created_at))')
-      .eq('status', 'CONFIRMED')
-      .gte('created_at', monthStart)
-      .lte('created_at', monthEnd)
-
-    let confirmedRevenue = 0, confirmedProfit = 0
-    const recentBookings: any[] = []
-    ;(bookings || []).forEach((b: any) => {
-      const quotes     = b.deals?.quotes || []
-      const sentQuotes = quotes.filter((q: any) => q.sent_to_client).sort((a: any, z: any) => new Date(z.created_at).getTime() - new Date(a.created_at).getTime())
-      const bestQuote  = sentQuotes[0] || quotes.sort((a: any, z: any) => new Date(z.created_at).getTime() - new Date(a.created_at).getTime())[0]
-      confirmedRevenue += b.deals?.deal_value || 0
-      confirmedProfit  += bestQuote?.profit || 0
-      recentBookings.push({ ...b, profit: bestQuote?.profit || 0 })
-    })
-
-    // Year to date
-    const { data: yearBookings } = await supabase.from('bookings')
-      .select('id, deal_id, deals(deal_value, quotes(profit, sent_to_client, created_at))')
-      .eq('status', 'CONFIRMED')
-      .gte('created_at', yearStart)
-    let yearRevenue = 0, yearProfit = 0
-    ;(yearBookings || []).forEach((b: any) => {
-      const quotes     = b.deals?.quotes || []
-      const sentQuotes = quotes.filter((q: any) => q.sent_to_client).sort((a: any, z: any) => new Date(z.created_at).getTime() - new Date(a.created_at).getTime())
-      const bestQuote  = sentQuotes[0] || quotes[0]
-      yearRevenue += b.deals?.deal_value || 0
-      yearProfit  += bestQuote?.profit || 0
-    })
-
-    // Quotes sent this month
-    const { count: quotesCount } = await supabase.from('quotes')
-      .select('id', { count: 'exact', head: true })
-      .eq('sent_to_client', true)
-      .gte('created_at', monthStart)
-      .lte('created_at', monthEnd)
-
-    // New leads this month
-    const { count: leadsCount } = await supabase.from('deals')
-      .select('id', { count: 'exact', head: true })
-      .gte('created_at', monthStart)
-      .lte('created_at', monthEnd)
-
-    // Conversion rate
-    const { count: totalDeals  } = await supabase.from('deals').select('id', { count: 'exact', head: true })
-    const { count: totalBooked } = await supabase.from('deals').select('id', { count: 'exact', head: true }).eq('stage', 'BOOKED')
-    const conversionRate = totalDeals ? Math.round(((totalBooked||0) / totalDeals) * 100) : 0
-
-    // Active pipeline
-    const { data: pipeline } = await supabase.from('deals')
-      .select('id, title, stage, deal_value, next_activity_at, created_at, clients(first_name, last_name), quotes(profit, sent_to_client, created_at)')
-      .not('stage', 'in', '("BOOKED","LOST")')
-      .order('created_at', { ascending: false })
-
-    let pipelineValue = 0, expectedProfit = 0, rottenDeals = 0
-    ;(pipeline || []).forEach((d: any) => {
-      pipelineValue += d.deal_value || 0
-      const sentQuotes = (d.quotes||[]).filter((q: any) => q.sent_to_client).sort((a: any,z: any)=>new Date(z.created_at).getTime()-new Date(a.created_at).getTime())
-      const bestQuote  = sentQuotes[0] || (d.quotes||[]).sort((a: any,z: any)=>new Date(z.created_at).getTime()-new Date(a.created_at).getTime())[0]
-      expectedProfit  += bestQuote?.profit || 0
-      if (d.next_activity_at && Math.floor((Date.now()-new Date(d.next_activity_at).getTime())/86400000) >= rd) rottenDeals++
-    })
-
-    // Lost reasons
-    const { data: lostDeals } = await supabase.from('deals').select('lost_reason').eq('stage', 'LOST').not('lost_reason', 'is', null)
-    const reasonMap: Record<string, number> = {}
-    ;(lostDeals||[]).forEach((d: any) => {
-      const r = d.lost_reason?.trim()
-      if (r) reasonMap[r] = (reasonMap[r]||0) + 1
-    })
-    const lostReasons = Object.entries(reasonMap).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([reason,count])=>({reason,count}))
-
-    // Upcoming departures
-    const in30 = new Date(); in30.setDate(in30.getDate()+30)
-    const { data: upcoming } = await supabase.from('bookings')
-      .select('id, booking_reference, departure_date, deals(title, clients(first_name, last_name))')
-      .eq('status', 'CONFIRMED')
-      .gte('departure_date', new Date().toISOString().split('T')[0])
-      .lte('departure_date', in30.toISOString().split('T')[0])
-      .order('departure_date', { ascending: true })
-      .limit(5)
-
-    setData({ confirmedRevenue, confirmedProfit, quotesThisMonth: quotesCount||0, leadsThisMonth: leadsCount||0, conversionRate, pipelineValue, expectedProfit, activeDeals: pipeline?.length||0, rottenDeals, yearRevenue, yearProfit, recentDeals: (pipeline||[]).slice(0,5), recentBookings, lostReasons, upcomingDepartures: upcoming||[] })
-    setLoading(false)
-  }
+    void load()
+  }, [])
 
   if (loading) return (
     <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:'80vh' }}>
@@ -333,8 +279,8 @@ export default function DashboardPage() {
                 </div>
               ))}
             </div>
-            {d.recentDeals.slice(0,4).map((deal: any) => {
-              const isRotten = deal.next_activity_at && Math.floor((Date.now()-new Date(deal.next_activity_at).getTime())/86400000) >= (t.rotten_days||3)
+            {d.recentDeals.slice(0,4).map((deal: RecentDeal) => {
+              const isRotten = deal.next_activity_at && Math.floor((renderNow-new Date(deal.next_activity_at).getTime())/86400000) >= (t.rotten_days||3)
               return (
                 <Link key={deal.id} href={`/deals/${deal.id}`} style={{ textDecoration:'none' }}>
                   <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'8px 0', borderBottom:'1px solid var(--border)' }}>
@@ -363,8 +309,8 @@ export default function DashboardPage() {
               </div>
               {d.upcomingDepartures.length===0 ? (
                 <div style={{ fontSize:'13px', color:'var(--text-muted)', fontStyle:'italic' }}>No departures in next 30 days</div>
-              ) : d.upcomingDepartures.map((b: any) => {
-                const days = Math.ceil((new Date(b.departure_date).getTime()-Date.now())/86400000)
+              ) : d.upcomingDepartures.map((b: UpcomingDeparture) => {
+                const days = Math.ceil((new Date(b.departure_date).getTime()-renderNow)/86400000)
                 return (
                   <div key={b.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'7px 0', borderBottom:'1px solid var(--border)' }}>
                     <div>

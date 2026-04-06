@@ -2,10 +2,10 @@
 
 import { useEffect, useState, useRef } from 'react'
 import { useParams, useRouter } from 'next/navigation'
-import { supabase } from '@/lib/supabase'
-import { getAccessContext, isManager, type StaffUser } from '@/lib/access'
-import { buildFieldAuditEntries, logAuditEntries } from '@/lib/audit'
+import { isManager, type StaffUser } from '@/lib/access'
 import Link from 'next/link'
+import { authedFetch } from '@/lib/api-client'
+import DateInput from '@/app/components/DateInput'
 
 // ── TYPES ────────────────────────────────────────────────────
 type Booking = {
@@ -34,7 +34,14 @@ type Booking = {
   cancellation_actioned_by: string | null
   cancellation_checklist: Record<string, boolean> | null
   cancellation_notes: string | null
-  deals?: { id: number; title: string; deal_value: number; staff_id?: number | null; clients?: Client }
+  deals?: { id: number; title: string; deal_value: number; staff_id?: number | null; clients?: Client; activities?: Activity[] }
+}
+type Activity = {
+  id: number
+  deal_id: number
+  activity_type: string
+  notes: string | null
+  created_at: string
 }
 type Client = { id: number; first_name: string; last_name: string; phone: string; email: string; owner_staff_id?: number | null }
 type Passenger = {
@@ -69,7 +76,7 @@ type Transfer = {
 }
 type Extra = {
   id: number; booking_id: number; extra_type: string | null; description: string | null
-  supplier: string | null; net_cost: number | null; sell_price: number | null; notes: string | null
+  supplier: string | null; net_cost: number | null; notes: string | null
 }
 type Payment = {
   id: number; booking_id: number; amount: number; payment_date: string
@@ -141,12 +148,6 @@ const TASK_TEMPLATE = [
   { key:'review_requested',      name:'Post-trip review requested',     category:'Post-Trip',     sort:14 },
   { key:'rebook_conversation',   name:'Re-book conversation started',   category:'Post-Trip',     sort:15 },
 ]
-const CANCELLATION_FOLLOWUP_LABELS: Record<string, string> = {
-  flights: 'Cancel flights with supplier',
-  accommodation: 'Cancel accommodation with supplier',
-  transfers: 'Cancel transfers with supplier',
-  extras: 'Cancel extras / activities with supplier',
-}
 const CAT_COLORS: Record<string,string> = {
   Financial:'#10b981', Flights:'#3b82f6', Accommodation:'#8b5cf6',
   Transfers:'#f97316', Documents:'#f59e0b', 'Pre-Departure':'#ec4899', 'Post-Trip':'#14b8a6', Operations:'#6366f1',
@@ -189,6 +190,21 @@ function getFlightDerivedDates(flights: Flight[]) {
   }
 }
 
+async function apiRequest<T = any>(url: string, init?: RequestInit) {
+  const response = await authedFetch(url, {
+    ...init,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(init?.headers || {}),
+    },
+  })
+  const json = await response.json().catch(() => ({}))
+  if (!response.ok || json?.success === false || json?.error) {
+    throw new Error(json?.message || json?.error || 'Request failed')
+  }
+  return json as T
+}
+
 // ── PAGE ─────────────────────────────────────────────────────
 export default function BookingDetailPage() {
   const { id }    = useParams()
@@ -213,122 +229,73 @@ export default function BookingDetailPage() {
   const [cancelModal, setCancelModal]   = useState(false)
   const [ownerDraft, setOwnerDraft]     = useState('')
   const [savingOwner, setSavingOwner]   = useState(false)
-  const toastTimer                      = useRef<any>(null)
+  const [pendingClaims, setPendingClaims] = useState<any[]>([])
+  const [repeatFlag, setRepeatFlag]       = useState<any>(null)
+  const [myPendingClaim, setMyPendingClaim] = useState<any>(null)
+  const [claimReason, setClaimReason]     = useState('')
+  const [submittingClaim, setSubmittingClaim] = useState(false)
+  const [claimSplits, setClaimSplits]     = useState<Record<number, string>>({})
+  const [claimNotes, setClaimNotes]       = useState<Record<number, string>>({})
+  const [savingClaim, setSavingClaim]     = useState<number|null>(null)
+  const toastTimer                        = useRef<any>(null)
 
   useEffect(() => { loadAll() }, [id])
   useEffect(() => { void loadAccess() }, [])
+  useEffect(() => { if (id && currentStaff) void loadClaims() }, [id, currentStaff])
 
   async function loadAccess() {
-    const { staffUsers, currentStaff } = await getAccessContext()
+    const { data } = await apiRequest<{ data: { staffUsers: StaffUser[]; currentStaff: StaffUser | null } }>('/api/bookings/access')
+    const { staffUsers, currentStaff } = data
     setStaffUsers(staffUsers)
     setCurrentStaff(currentStaff)
   }
 
-  async function reconcileTasks(bk: Booking, fl: Flight[], ac: Accommodation[], tr: Transfer[], pay: Payment[], existingTasks: BookingTask[]) {
-    const templateMap = new Map(TASK_TEMPLATE.map(task => [task.key, task]))
-    let nextTasks = existingTasks.filter(
-      task =>
-        task.task_key.startsWith('ops_request_') ||
-        task.task_key.startsWith('cancel_followup_') ||
-        templateMap.has(task.task_key)
-    )
-
-    const missingTemplates = TASK_TEMPLATE.filter(task => !nextTasks.some(existing => existing.task_key === task.key))
-    if (missingTemplates.length > 0) {
-      const { data: inserted } = await supabase.from('booking_tasks').insert(
-        missingTemplates.map(task => ({
-          booking_id: Number(id),
-          task_name: task.name,
-          task_key: task.key,
-          category: task.category,
-          sort_order: task.sort,
-          is_done: false,
-        }))
-      ).select()
-      nextTasks = [...nextTasks, ...(inserted || [])]
-    }
-
-    const totalPaid = pay.reduce((sum, payment) => sum + (payment.amount || 0), 0)
-    const sell = bk.total_sell || bk.deals?.deal_value || 0
-    const derivedDone: Record<string, boolean> = {
-      deposit_received: totalPaid > 0 || !!bk.deposit_received,
-      balance_due_set: !!bk.balance_due_date,
-      balance_received: sell > 0 ? totalPaid >= sell : false,
-      final_costing: bk.total_net != null && (bk.final_profit != null || bk.gross_profit != null),
-      flights_ticketed: fl.length === 0 || fl.every(flight => !!flight.pnr),
-      hotel_confirmation: ac.length === 0 || ac.every(stay => !!stay.hotel_confirmation || ['confirmed', 'ref_received'].includes(stay.reservation_status)),
-      special_requests: ac.length === 0 || ac.every(stay => !stay.special_requests || ['confirmed', 'ref_received'].includes(stay.reservation_status)),
-      transfer_confirmation:
-        tr.length === 0 ||
-        tr.every(transfer => !!transfer.supplier_name && (!!transfer.arrival_flight || !!transfer.departure_flight || !!transfer.inter_hotel_dates || !!transfer.notes)),
-    }
-
-    const updates = nextTasks.flatMap(task => {
-      const template = templateMap.get(task.task_key)
-      if (!template) return []
-      const desiredDone = Object.prototype.hasOwnProperty.call(derivedDone, task.task_key) ? derivedDone[task.task_key] : task.is_done
-      const patch: Partial<BookingTask> & { id?: number } = {}
-      if (task.task_name !== template.name) patch.task_name = template.name
-      if (task.category !== template.category) patch.category = template.category
-      if (task.sort_order !== template.sort) patch.sort_order = template.sort
-      if (task.is_done !== desiredDone) {
-        patch.is_done = desiredDone
-        patch.completed_at = desiredDone ? (task.completed_at || new Date().toISOString()) : null
-      }
-      return Object.keys(patch).length > 0 ? [{ id: task.id, ...patch }] : []
-    })
-
-    if (updates.length > 0) {
-      await Promise.all(updates.map(update => {
-        const { id: taskId, ...patch } = update
-        return supabase.from('booking_tasks').update(patch).eq('id', taskId!)
-      }))
-      nextTasks = nextTasks.map(task => {
-        const update = updates.find(item => item.id === task.id)
-        return update ? { ...task, ...update } : task
-      })
-    }
-
-    return nextTasks.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))
+  async function loadClaims() {
+    try {
+      const data = await apiRequest<{ pendingClaims: any[]; repeatFlag: any; myPendingClaim: any }>(`/api/bookings/${id}/claims`)
+      setPendingClaims(data.pendingClaims || [])
+      setRepeatFlag(data.repeatFlag || null)
+      setMyPendingClaim(data.myPendingClaim || null)
+    } catch { /* non-fatal */ }
   }
 
   async function loadAll() {
     setLoading(true)
-    const [
-      { data: bk }, { data: pax }, { data: fl }, { data: ac },
-      { data: tr }, { data: ex }, { data: pay }, { data: tk },
-      { data: ht }, { data: sup },
-    ] = await Promise.all([
-      supabase.from('bookings').select('*, deals(id,title,deal_value,staff_id,clients(*))').eq('id', id).single(),
-      supabase.from('booking_passengers').select('*').eq('booking_id', id).order('is_lead', { ascending: false }),
-      supabase.from('booking_flights').select('*').eq('booking_id', id).order('direction').order('leg_order'),
-      supabase.from('booking_accommodations').select('*').eq('booking_id', id).order('stay_order'),
-      supabase.from('booking_transfers').select('*').eq('booking_id', id),
-      supabase.from('booking_extras').select('*').eq('booking_id', id),
-      supabase.from('booking_payments').select('*').eq('booking_id', id).order('payment_date'),
-      supabase.from('booking_tasks').select('*').eq('booking_id', id).order('sort_order'),
-      supabase.from('hotel_list').select('id,name,room_types,meal_plans,reservation_email,reservation_phone,reservation_address,reservation_contact').order('name'),
-      supabase.from('suppliers').select('id,name,type').order('name'),
-    ])
-    setBooking(bk)
-    setOwnerDraft(String(bk?.staff_id || bk?.deals?.clients?.owner_staff_id || ''))
-    setPassengers(pax || [])
-    setFlights(fl || [])
-    setAccoms(ac || [])
-    setTransfers(tr || [])
-    setExtras(ex || [])
-    setPayments(pay || [])
-    if (tk && tk.length > 0) {
-      setTasks(await reconcileTasks(bk, fl || [], ac || [], tr || [], pay || [], tk))
-    } else if (bk) {
-      // auto-init tasks for new bookings
-      const inserts = TASK_TEMPLATE.map(t => ({ booking_id: Number(id), task_name: t.name, task_key: t.key, category: t.category, sort_order: t.sort, is_done: false }))
-      const { data: newTasks } = await supabase.from('booking_tasks').insert(inserts).select()
-      setTasks(newTasks || [])
+    try {
+      const { data } = await apiRequest<{
+        data: {
+          booking: Booking | null
+          passengers: Passenger[]
+          flights: Flight[]
+          accommodations: Accommodation[]
+          transfers: Transfer[]
+          extras: Extra[]
+          payments: Payment[]
+          tasks: BookingTask[]
+          hotels: Hotel[]
+          suppliers: Supplier[]
+        }
+      }>(`/api/bookings/${id}?all=true`)
+
+      const { booking, passengers, flights, accommodations, transfers, extras, payments, tasks, hotels, suppliers } = data
+
+      setBooking(booking)
+      setOwnerDraft(String(booking?.staff_id || booking?.deals?.clients?.owner_staff_id || ''))
+      setPassengers(passengers || [])
+      setFlights(flights || [])
+      setAccoms(accommodations || [])
+      setTransfers(transfers || [])
+      setExtras(extras || [])
+      setPayments(payments || [])
+      setTasks(tasks || [])
+      setHotels(hotels || [])
+      setSuppliers(suppliers || [])
+    } catch (error: any) {
+      setBooking(null)
+      showToast(error.message || 'Failed to load booking', 'error')
+    } finally {
+      setLoading(false)
     }
-    setHotels(ht || [])
-    setSuppliers(sup || [])
-    setLoading(false)
   }
 
   function showToast(msg: string, type: 'success'|'error' = 'success') {
@@ -337,63 +304,84 @@ export default function BookingDetailPage() {
     toastTimer.current = setTimeout(() => setToast(null), 3000)
   }
 
+  async function submitClaim() {
+    if (!booking || !claimReason.trim() || claimReason.trim().length < 20) {
+      showToast('Reason must be at least 20 characters', 'error'); return
+    }
+    setSubmittingClaim(true)
+    try {
+      const result = await apiRequest<{ message?: string }>(`/api/bookings/${booking.id}/claims`, {
+        method: 'POST',
+        body: JSON.stringify({ reason: claimReason }),
+      })
+      showToast(result.message || 'Request submitted ✓')
+      setClaimReason('')
+      await loadClaims()
+    } catch (err: any) {
+      showToast(err.message || 'Failed to submit', 'error')
+    } finally {
+      setSubmittingClaim(false)
+    }
+  }
+
+  async function actOnClaim(claimId: number, action: 'approve_claim' | 'reject_claim') {
+    if (!booking) return
+    setSavingClaim(claimId)
+    try {
+      const result = await apiRequest<{ message?: string }>(`/api/bookings/${booking.id}/claims`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          action,
+          claimId,
+          claimantShare: Number(claimSplits[claimId] || 0),
+          reviewNotes: claimNotes[claimId] || '',
+        }),
+      })
+      showToast(result.message || 'Done ✓')
+      await loadClaims()
+      await loadAll()
+    } catch (err: any) {
+      showToast(err.message || 'Failed', 'error')
+    } finally {
+      setSavingClaim(null)
+    }
+  }
+
+  async function resolveRepeatFlag(resolution: string) {
+    if (!booking) return
+    setSavingOwner(true)
+    try {
+      const result = await apiRequest<{ message?: string }>(`/api/bookings/${booking.id}/claims`, {
+        method: 'PUT',
+        body: JSON.stringify({ action: 'resolve_repeat_flag', resolution }),
+      })
+      showToast(result.message || 'Done ✓')
+      await loadClaims()
+      await loadAll()
+    } catch (err: any) {
+      showToast(err.message || 'Failed', 'error')
+    } finally {
+      setSavingOwner(false)
+    }
+  }
+
   async function saveOwnership() {
     if (!booking || !isManager(currentStaff) || !ownerDraft) return
     const nextStaffId = Number(ownerDraft)
-    const auditEntries = [
-      ...(client
-        ? buildFieldAuditEntries({
-            entityType: 'client',
-            entityId: client.id,
-            performedBy: currentStaff,
-            action: 'ownership_reassigned',
-            before: { owner_staff_id: client.owner_staff_id ?? null },
-            after: { owner_staff_id: nextStaffId },
-            fields: ['owner_staff_id'],
-            notes: `Ownership reassigned from booking ${booking.id}`,
-          })
-        : []),
-      ...buildFieldAuditEntries({
-        entityType: 'deal',
-        entityId: booking.deal_id,
-        performedBy: currentStaff,
-        action: 'ownership_reassigned',
-        before: { staff_id: booking.deals?.id ? (booking.deals as { staff_id?: number | null }).staff_id ?? null : null },
-        after: { staff_id: nextStaffId },
-        fields: ['staff_id'],
-        notes: `Realigned from booking ${booking.id}`,
-      }),
-      ...buildFieldAuditEntries({
-        entityType: 'booking',
-        entityId: booking.id,
-        performedBy: currentStaff,
-        action: 'ownership_reassigned',
-        before: { staff_id: booking.staff_id ?? null },
-        after: { staff_id: nextStaffId },
-        fields: ['staff_id'],
-        notes: 'Booking consultant updated',
-      }),
-    ]
-
-    if (auditEntries.length === 0) {
-      showToast('Ownership already aligned')
-      return
-    }
 
     setSavingOwner(true)
     try {
-      if (client && client.owner_staff_id !== nextStaffId) {
-        const { error } = await supabase.from('clients').update({ owner_staff_id: nextStaffId }).eq('id', client.id)
-        if (error) throw error
-      }
+      const response = await authedFetch(`/api/bookings/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'save_ownership',
+          staffId: nextStaffId,
+        }),
+      })
+      const result = await response.json()
+      if (!result.success) throw new Error(result.message)
 
-      const { error: dealError } = await supabase.from('deals').update({ staff_id: nextStaffId }).eq('id', booking.deal_id)
-      if (dealError) throw dealError
-
-      const { error: bookingError } = await supabase.from('bookings').update({ staff_id: nextStaffId }).eq('id', booking.id)
-      if (bookingError) throw bookingError
-
-      await logAuditEntries(auditEntries)
       showToast('Ownership updated ✓')
       await loadAll()
     } catch (err: any) {
@@ -509,14 +497,33 @@ export default function BookingDetailPage() {
             </div>
           </div>
 
-          <div style={{ minWidth:'280px', display:'flex', flexDirection:'column', gap:'10px' }}>
-            {ownershipMismatch && (
-              <div style={{ background:'#fff7ed', border:'1px solid #fdba74', borderRadius:'10px', padding:'10px 12px', fontSize:'12px', color:'#9a3412', lineHeight:1.5 }}>
-                Client ownership and booking consultant are not aligned. Updating here will realign client, deal and booking together.
+          <div style={{ minWidth:'300px', display:'flex', flexDirection:'column', gap:'10px' }}>
+
+            {/* ── Repeat-client flag — manager only ── */}
+            {isManager(currentStaff) && repeatFlag && (
+              <div style={{ background:'#fef3c7', border:'1px solid #fcd34d', borderRadius:'10px', padding:'12px 14px' }}>
+                <div style={{ fontSize:'12.5px', fontWeight:'600', color:'#92400e', marginBottom:'6px' }}>
+                  ⚠ Repeat client — originally with {repeatFlag.original_staff?.name || `Staff #${repeatFlag.original_staff_id}`}
+                </div>
+                <div style={{ fontSize:'12px', color:'#78350f', marginBottom:'10px' }}>
+                  This booking is assigned to {repeatFlag.handling_staff?.name || `Staff #${repeatFlag.handling_staff_id}`}
+                </div>
+                <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
+                  <button className="btn btn-secondary btn-xs" onClick={() => resolveRepeatFlag('enforced_50_50')} disabled={savingOwner}>Enforce 50/50</button>
+                  <button className="btn btn-secondary btn-xs" onClick={() => resolveRepeatFlag('reassigned_to_original')} disabled={savingOwner}>Reassign to original</button>
+                  <button className="btn btn-ghost btn-xs" onClick={() => resolveRepeatFlag('dismissed')} disabled={savingOwner}>Dismiss</button>
+                </div>
               </div>
             )}
-            {isManager(currentStaff) ? (
+
+            {/* ── Manager: ownership reassignment ── */}
+            {isManager(currentStaff) && (
               <>
+                {ownershipMismatch && (
+                  <div style={{ background:'#fff7ed', border:'1px solid #fdba74', borderRadius:'10px', padding:'10px 12px', fontSize:'12px', color:'#9a3412', lineHeight:1.5 }}>
+                    Client ownership and booking consultant are not aligned. Updating here will realign client, deal and booking together.
+                  </div>
+                )}
                 <select className="input" value={ownerDraft} onChange={e => setOwnerDraft(e.target.value)}>
                   <option value="">Select consultant…</option>
                   {staffUsers.map(staff => <option key={staff.id} value={String(staff.id)}>{staff.name} · {staff.role || 'staff'}</option>)}
@@ -527,11 +534,84 @@ export default function BookingDetailPage() {
                   </button>
                 </div>
               </>
-            ) : (
+            )}
+
+            {/* ── Manager: pending claims ── */}
+            {isManager(currentStaff) && pendingClaims.length > 0 && (
+              <div style={{ borderTop:'1px solid var(--border)', paddingTop:'12px', display:'flex', flexDirection:'column', gap:'10px' }}>
+                <div style={{ fontSize:'11px', fontWeight:'700', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.06em' }}>Pending Share Requests</div>
+                {pendingClaims.map((claim: any) => (
+                  <div key={claim.id} style={{ background:'var(--bg-secondary)', borderRadius:'8px', padding:'12px 14px', border:'1px solid var(--border)' }}>
+                    <div style={{ fontSize:'13px', fontWeight:'600', marginBottom:'2px' }}>{claim.claimant?.name || `Staff #${claim.claimant_id}`}</div>
+                    <div style={{ fontSize:'11.5px', color:'var(--text-muted)', marginBottom:'6px' }}>{fmtDate(claim.created_at)}</div>
+                    <div style={{ fontSize:'12.5px', color:'var(--text-primary)', marginBottom:'10px', fontStyle:'italic' }}>"{claim.reason}"</div>
+                    <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px', marginBottom:'10px' }}>
+                      <div>
+                        <label className="label">Claimant share %</label>
+                        <input className="input" type="number" min="1" max="99" placeholder="e.g. 30"
+                          value={claimSplits[claim.id] || ''}
+                          onChange={e => setClaimSplits(p => ({ ...p, [claim.id]: e.target.value }))} />
+                      </div>
+                      <div>
+                        <label className="label">Review note (optional)</label>
+                        <input className="input" placeholder="Optional note"
+                          value={claimNotes[claim.id] || ''}
+                          onChange={e => setClaimNotes(p => ({ ...p, [claim.id]: e.target.value }))} />
+                      </div>
+                    </div>
+                    <div style={{ display:'flex', gap:'6px', justifyContent:'flex-end' }}>
+                      <button className="btn btn-ghost btn-xs" style={{ color:'var(--red)' }}
+                        onClick={() => actOnClaim(claim.id, 'reject_claim')}
+                        disabled={savingClaim === claim.id}>
+                        {savingClaim === claim.id ? '…' : 'Reject'}
+                      </button>
+                      <button className="btn btn-cta btn-xs"
+                        onClick={() => actOnClaim(claim.id, 'approve_claim')}
+                        disabled={savingClaim === claim.id || !claimSplits[claim.id]}>
+                        {savingClaim === claim.id ? 'Saving…' : 'Approve with split'}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* ── Sales: not the owner ── */}
+            {!isManager(currentStaff) && booking.staff_id !== currentStaff?.id && (
+              <div style={{ display:'flex', flexDirection:'column', gap:'8px' }}>
+                {myPendingClaim ? (
+                  <div style={{ background:'#eff6ff', border:'1px solid #93c5fd', borderRadius:'8px', padding:'10px 12px', fontSize:'12.5px', color:'#1d4ed8' }}>
+                    Share request pending manager review.
+                  </div>
+                ) : (
+                  <>
+                    <textarea
+                      className="input"
+                      rows={3}
+                      placeholder="Reason for share request (min 20 characters)…"
+                      value={claimReason}
+                      onChange={e => setClaimReason(e.target.value)}
+                      style={{ resize:'vertical', fontSize:'13px' }}
+                    />
+                    <div style={{ display:'flex', justifyContent:'flex-end' }}>
+                      <button className="btn btn-secondary btn-xs"
+                        onClick={submitClaim}
+                        disabled={submittingClaim || claimReason.trim().length < 20}>
+                        {submittingClaim ? 'Submitting…' : 'Request Share on This Booking'}
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* ── Sales: is the owner ── */}
+            {!isManager(currentStaff) && booking.staff_id === currentStaff?.id && (
               <div style={{ fontSize:'12px', color:'var(--text-muted)' }}>
                 Ownership stays manager-controlled so commission and client ownership remain clean.
               </div>
             )}
+
           </div>
         </div>
       </div>
@@ -606,7 +686,7 @@ export default function BookingDetailPage() {
 
         {/* ── TASKS TAB ────────────────────────────────── */}
         {tab === 'tasks' && (
-          <TasksTab tasks={tasks} onUpdate={loadAll} showToast={showToast} />
+          <TasksTab tasks={tasks} activities={booking.deals?.activities || []} bookingReference={booking.booking_reference} onUpdate={loadAll} showToast={showToast} />
         )}
 
         {/* ── DOCUMENTS TAB ────────────────────────────── */}
@@ -630,70 +710,24 @@ export default function BookingDetailPage() {
           defaultActionedBy={currentStaff?.name || ''}
           onClose={() => setCancelModal(false)}
           onConfirm={async (type, checklist, notes, actionedBy) => {
-            const today = new Date().toISOString().split('T')[0]
-            const pendingFollowUps = Object.entries(checklist)
-              .filter(([, done]) => !done)
-              .map(([key]) => key)
-            const { error } = await supabase.from('bookings').update({
-              booking_status: 'cancelled',
-              status: 'CANCELLED',
-              cancellation_type: type,
-              cancellation_date: today,
-              cancellation_actioned_by: actionedBy,
-              cancellation_checklist: checklist,
-              cancellation_notes: notes || null,
-            }).eq('id', booking.id)
-            if (error) {
+            try {
+              const result = await apiRequest<{ message?: string }>(`/api/bookings/${booking.id}`, {
+                method: 'PUT',
+                body: JSON.stringify({
+                  action: 'cancel_booking',
+                  type,
+                  checklist,
+                  notes: notes || null,
+                  actionedBy,
+                  totalPaid,
+                }),
+              })
+              setCancelModal(false)
+              showToast(result.message || 'Booking cancelled')
+              loadAll()
+            } catch (error: any) {
               showToast(error.message || 'Failed to cancel booking', 'error')
-              return
             }
-            if (pendingFollowUps.length > 0) {
-              const nextSort = Math.max(0, ...tasks.map(task => task.sort_order || 0)) + 1
-              await supabase.from('booking_tasks').insert(
-                pendingFollowUps.map((key, index) => ({
-                  booking_id: booking.id,
-                  task_name: CANCELLATION_FOLLOWUP_LABELS[key] || 'Cancellation follow-up',
-                  task_key: `cancel_followup_${key}_${Date.now()}_${index}`,
-                  category: 'Operations',
-                  sort_order: nextSort + index,
-                  is_done: false,
-                  due_date: today,
-                  notes: notes ? `Cancellation follow-up: ${notes}` : 'Created from booking cancellation checklist.',
-                }))
-              )
-            }
-            await logAuditEntries([{
-              entity_type: 'booking',
-              entity_id: booking.id,
-              action: 'booking_cancelled',
-              field_name: 'booking_status',
-              old_value: {
-                booking_status: booking.booking_status ?? null,
-                status: booking.status,
-              },
-              new_value: {
-                booking_status: 'cancelled',
-                status: 'CANCELLED',
-                cancellation_type: type,
-                cancellation_date: today,
-                cancellation_actioned_by: actionedBy,
-                cancellation_checklist: checklist,
-                cancellation_notes: notes || null,
-              },
-              performed_by_staff_id: currentStaff?.id ?? null,
-              performed_by_role: currentStaff?.role ?? null,
-              notes: pendingFollowUps.length > 0
-                ? `Booking cancelled with ${pendingFollowUps.length} supplier follow-up task${pendingFollowUps.length === 1 ? '' : 's'} created`
-                : 'Booking cancelled',
-            }])
-            setCancelModal(false)
-            showToast(
-              pendingFollowUps.length > 0
-                ? `Booking cancelled · ${pendingFollowUps.length} follow-up task${pendingFollowUps.length === 1 ? '' : 's'} sent to Today`
-                : 'Booking cancelled',
-              'success'
-            )
-            loadAll()
           }}
         />
       )}
@@ -723,20 +757,43 @@ function OverviewTab({ booking, client, balance, taskPct, tasksDone, tasksTotal,
   const commission = profit > 0 ? (profit - 10) * 0.1 : 0
 
   async function saveBalDue() {
-    const { error } = await supabase.from('bookings').update({ balance_due_date: balDueDraft || null }).eq('id', booking.id)
-    if (error) { showToast('Failed: ' + error.message, 'error'); return }
-    showToast('Balance due date updated ✓'); setEditingBalDue(false); onUpdate()
+    const response = await authedFetch(`/api/bookings/${booking.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'update_balance_due',
+        balance_due_date: balDueDraft || null,
+      }),
+    })
+    const result = await response.json()
+    if (result.success) {
+      showToast('Balance due date updated ✓')
+      setEditingBalDue(false)
+      onUpdate()
+    } else {
+      showToast('Failed: ' + result.message, 'error')
+    }
   }
 
   async function save() {
     setSaving(true)
-    const { error } = await supabase.from('bookings').update({
-      destination:      form.destination || null,
-      booking_notes:    form.booking_notes || null,
-    }).eq('id', booking.id)
+    const response = await authedFetch(`/api/bookings/${booking.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'save_notes',
+        destination: form.destination,
+        booking_notes: form.booking_notes,
+      }),
+    })
+    const result = await response.json()
     setSaving(false)
-    if (error) { showToast('Save failed: ' + error.message, 'error'); return }
-    showToast('Overview details updated ✓'); onUpdate()
+    if (result.success) {
+      showToast('Overview details updated ✓')
+      onUpdate()
+    } else {
+      showToast('Save failed: ' + result.message, 'error')
+    }
   }
 
   const firstFlight    = outbound[0]
@@ -752,16 +809,38 @@ function OverviewTab({ booking, client, balance, taskPct, tasksDone, tasksTotal,
 
   async function syncDepartureFromFlight() {
     if (!flightDepDate) return
-    const { error } = await supabase.from('bookings').update({ departure_date: flightDepDate }).eq('id', booking.id)
-    if (error) { showToast('Failed: ' + error.message, 'error'); return }
-    showToast('Departure date synced from flight ✓'); onUpdate()
+    const response = await authedFetch(`/api/bookings/${booking.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'sync_departure_from_flight',
+      }),
+    })
+    const result = await response.json()
+    if (result.success) {
+      showToast('Departure date synced from flight ✓')
+      onUpdate()
+    } else {
+      showToast('Failed: ' + result.message, 'error')
+    }
   }
 
   async function syncReturnFromFlight() {
     if (!flightReturnDate) return
-    const { error } = await supabase.from('bookings').update({ return_date: flightReturnDate }).eq('id', booking.id)
-    if (error) { showToast('Failed: ' + error.message, 'error'); return }
-    showToast('Return date synced from flights ✓'); onUpdate()
+    const response = await authedFetch(`/api/bookings/${booking.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'sync_return_from_flight',
+      }),
+    })
+    const result = await response.json()
+    if (result.success) {
+      showToast('Return date synced from flights ✓')
+      onUpdate()
+    } else {
+      showToast('Failed: ' + result.message, 'error')
+    }
   }
 
   async function addClientRequest() {
@@ -770,27 +849,31 @@ function OverviewTab({ booking, client, balance, taskPct, tasksDone, tasksTotal,
     if (!taskName && !notes) { showToast('Add the request or reminder first', 'error'); return }
     if (!requestForm.due_date) { showToast('Choose a due date', 'error'); return }
     setSavingRequest(true)
-    const nextSort = Math.max(0, ...(tasks || []).map((task: BookingTask) => task.sort_order || 0)) + 1
-    const { error } = await supabase.from('booking_tasks').insert({
-      booking_id: booking.id,
-      task_name: taskName || notes.slice(0, 80),
-      task_key: `ops_request_${Date.now()}`,
-      category: requestForm.category,
-      sort_order: nextSort,
-      is_done: false,
-      due_date: requestForm.due_date,
-      notes: notes || null,
+    const response = await authedFetch(`/api/bookings/${booking.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'add_operational_request',
+        task_name: taskName,
+        notes: notes,
+        due_date: requestForm.due_date,
+        category: requestForm.category,
+      }),
     })
+    const result = await response.json()
     setSavingRequest(false)
-    if (error) { showToast('Failed: ' + error.message, 'error'); return }
-    setRequestForm({
-      task_name: '',
-      notes: '',
-      due_date: new Date().toISOString().split('T')[0],
-      category: 'Operations',
-    })
-    showToast('Request added to Today work ✓')
-    onUpdate()
+    if (result.success) {
+      setRequestForm({
+        task_name: '',
+        notes: '',
+        due_date: new Date().toISOString().split('T')[0],
+        category: 'Operations',
+      })
+      showToast('Request added to Today work ✓')
+      onUpdate()
+    } else {
+      showToast('Failed: ' + result.message, 'error')
+    }
   }
 
   return (
@@ -935,7 +1018,7 @@ function OverviewTab({ booking, client, balance, taskPct, tasksDone, tasksTotal,
               </div>
               <div>
                 <label className="label">Due Date</label>
-                <input className="input" type="date" value={requestForm.due_date} onChange={e => setRequestForm(p => ({ ...p, due_date: e.target.value }))} />
+                <DateInput value={requestForm.due_date} onChange={v => setRequestForm(p => ({ ...p, due_date: v }))} />
               </div>
               <div style={{ display:'flex', alignItems:'end' }}>
                 <button className="btn btn-cta" onClick={addClientRequest} disabled={savingRequest}>{savingRequest ? 'Saving…' : 'Add to Today'}</button>
@@ -1042,9 +1125,8 @@ function OverviewTab({ booking, client, balance, taskPct, tasksDone, tasksTotal,
               <span style={{ fontSize:'12px', color:'var(--text-muted)' }}>Balance Due</span>
               {editingBalDue ? (
                 <div style={{ display:'flex', gap:'5px', alignItems:'center' }}>
-                  <input className="input" type="date" value={balDueDraft}
-                    onChange={e => setBalDueDraft(e.target.value)}
-                    style={{ fontSize:'12px', padding:'3px 6px', width:'130px' }} />
+                  <DateInput value={balDueDraft} onChange={setBalDueDraft}
+                    style={{ fontSize:'12px', width:'130px' }} />
                   <button className="btn btn-cta btn-xs" onClick={saveBalDue}>✓</button>
                   <button className="btn btn-ghost btn-xs" onClick={() => setEditingBalDue(false)}>✕</button>
                 </div>
@@ -1089,37 +1171,79 @@ function PassengersTab({ bookingId, passengers, onUpdate, showToast }: any) {
   const [saving, setSaving]   = useState(false)
   const [editing, setEditing] = useState<number | null>(null)
   const [editForm, setEditForm] = useState<any>({})
+  const passengerFormGridStyle = {
+    display: 'grid',
+    gridTemplateColumns: '80px minmax(150px, 1fr) minmax(150px, 1fr) 130px 170px',
+    gap: '10px',
+    alignItems: 'end',
+  } as const
 
   async function addPassenger() {
     if (!form.first_name.trim() || !form.last_name.trim()) { showToast('Name required', 'error'); return }
     setSaving(true)
-    const { error } = await supabase.from('booking_passengers').insert({
-      booking_id: bookingId, title: form.title, first_name: form.first_name.trim(),
-      last_name: form.last_name.trim(), date_of_birth: form.date_of_birth || null,
-      passenger_type: form.passenger_type, is_lead: passengers.length === 0 ? true : form.is_lead,
-      passport_number: form.passport_number || null, passport_expiry: form.passport_expiry || null,
+    const response = await authedFetch(`/api/bookings/${bookingId}/passengers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: form.title,
+        first_name: form.first_name.trim(),
+        last_name: form.last_name.trim(),
+        date_of_birth: form.date_of_birth || null,
+        passenger_type: form.passenger_type,
+        is_lead: passengers.length === 0 ? true : form.is_lead,
+        passport_number: form.passport_number || null,
+        passport_expiry: form.passport_expiry || null,
+      }),
     })
+    const result = await response.json()
     setSaving(false)
-    if (error) { showToast('Failed: ' + error.message, 'error'); return }
-    showToast('Passenger added ✓')
-    setAdding(false); setForm({ ...blank }); onUpdate()
+    if (result.success) {
+      showToast('Passenger added ✓')
+      setAdding(false)
+      setForm({ ...blank })
+      onUpdate()
+    } else {
+      showToast('Failed: ' + result.message, 'error')
+    }
   }
 
   async function saveEdit(id: number) {
-    await supabase.from('booking_passengers').update({
-      title: editForm.title, first_name: editForm.first_name, last_name: editForm.last_name,
-      date_of_birth: editForm.date_of_birth || null, passenger_type: editForm.passenger_type,
-      is_lead: editForm.is_lead, passport_number: editForm.passport_number || null,
-      passport_expiry: editForm.passport_expiry || null,
-    }).eq('id', id)
-    showToast('Passenger updated ✓')
-    setEditing(null); onUpdate()
+    const response = await authedFetch(`/api/bookings/${bookingId}/passengers`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        passengerId: id,
+        title: editForm.title,
+        first_name: editForm.first_name,
+        last_name: editForm.last_name,
+        date_of_birth: editForm.date_of_birth || null,
+        passenger_type: editForm.passenger_type,
+        is_lead: editForm.is_lead,
+        passport_number: editForm.passport_number || null,
+        passport_expiry: editForm.passport_expiry || null,
+      }),
+    })
+    const result = await response.json()
+    if (result.success) {
+      showToast('Passenger updated ✓')
+      setEditing(null)
+      onUpdate()
+    } else {
+      showToast('Failed: ' + result.message, 'error')
+    }
   }
 
   async function deletePax(id: number) {
-    await supabase.from('booking_passengers').delete().eq('id', id)
-    showToast('Passenger removed')
-    onUpdate()
+    const response = await authedFetch(`/api/bookings/${bookingId}/passengers?passengerId=${id}`, {
+      method: 'DELETE',
+    })
+    const result = await response.json()
+    if (result.success) {
+      showToast('Passenger removed')
+      onUpdate()
+    } else {
+      showToast('Failed: ' + result.message, 'error')
+    }
   }
 
   return (
@@ -1133,12 +1257,12 @@ function PassengersTab({ bookingId, passengers, onUpdate, showToast }: any) {
         {passengers.map((p: Passenger) => (
           <div key={p.id} className="card" style={{ padding:'16px 18px', borderLeft:`3px solid ${p.is_lead ? 'var(--gold,#f59e0b)' : 'var(--border)'}` }}>
             {editing === p.id ? (
-              <div style={{ display:'grid', gridTemplateColumns:'80px 1fr 1fr', gap:'10px' }}>
+              <div style={passengerFormGridStyle}>
                 <div><label className="label">Title</label><select className="input" value={editForm.title} onChange={e=>setEditForm((f:any)=>({...f,title:e.target.value}))}>{TITLES.map(t=><option key={t}>{t}</option>)}</select></div>
                 <div><label className="label">First Name</label><input className="input" value={editForm.first_name} onChange={e=>setEditForm((f:any)=>({...f,first_name:e.target.value}))}/></div>
                 <div><label className="label">Last Name</label><input className="input" value={editForm.last_name} onChange={e=>setEditForm((f:any)=>({...f,last_name:e.target.value}))}/></div>
-                <div><label className="label">DOB</label><input className="input" type="date" value={editForm.date_of_birth||''} onChange={e=>setEditForm((f:any)=>({...f,date_of_birth:e.target.value}))}/></div>
                 <div><label className="label">Type</label><select className="input" value={editForm.passenger_type} onChange={e=>setEditForm((f:any)=>({...f,passenger_type:e.target.value}))}>{PAX_TYPES.map(t=><option key={t}>{t}</option>)}</select></div>
+                <div><label className="label">DOB</label><DateInput value={editForm.date_of_birth||''} onChange={v=>setEditForm((f:any)=>({...f,date_of_birth:v}))}/></div>
                 <div style={{ display:'flex', alignItems:'center', gap:'8px', paddingTop:'18px' }}>
                   <input type="checkbox" checked={editForm.is_lead} onChange={e=>setEditForm((f:any)=>({...f,is_lead:e.target.checked}))}/> <span style={{ fontSize:'13px' }}>Lead passenger</span>
                 </div>
@@ -1161,7 +1285,7 @@ function PassengersTab({ bookingId, passengers, onUpdate, showToast }: any) {
                   </div>
                 </div>
                 <div style={{ display:'flex', gap:'6px' }}>
-                  <button className="btn btn-secondary btn-xs" onClick={()=>{ setEditing(p.id); setEditForm({...p, date_of_birth: p.date_of_birth?.split('T')[0]||'', passport_expiry: p.passport_expiry?.split('T')[0]||'' }) }}>Edit</button>
+                  <button className="btn btn-secondary btn-xs" onClick={()=>{ setEditing(p.id); setEditForm({...p, title: TITLES.includes(p.title) ? p.title : TITLES[0], date_of_birth: p.date_of_birth?.split('T')[0]||'', passport_expiry: p.passport_expiry?.split('T')[0]||'' }) }}>Edit</button>
                   <button className="btn btn-ghost btn-xs" style={{ color:'var(--red)' }} onClick={()=>deletePax(p.id)}>✕</button>
                 </div>
               </div>
@@ -1172,12 +1296,12 @@ function PassengersTab({ bookingId, passengers, onUpdate, showToast }: any) {
         {adding && (
           <div className="card" style={{ padding:'18px 20px', border:'1.5px solid var(--accent)' }}>
             <div style={{ fontFamily:'Fraunces,serif', fontSize:'15px', fontWeight:'300', marginBottom:'14px' }}>New Passenger</div>
-            <div style={{ display:'grid', gridTemplateColumns:'80px 1fr 1fr 130px', gap:'10px', marginBottom:'10px' }}>
+            <div style={{ ...passengerFormGridStyle, marginBottom:'10px' }}>
               <div><label className="label">Title</label><select className="input" value={form.title} onChange={e=>setForm(p=>({...p,title:e.target.value}))}>{TITLES.map(t=><option key={t}>{t}</option>)}</select></div>
               <div><label className="label">First Name *</label><input className="input" autoFocus value={form.first_name} onChange={e=>setForm(p=>({...p,first_name:e.target.value}))}/></div>
               <div><label className="label">Last Name *</label><input className="input" value={form.last_name} onChange={e=>setForm(p=>({...p,last_name:e.target.value}))}/></div>
               <div><label className="label">Type</label><select className="input" value={form.passenger_type} onChange={e=>setForm(p=>({...p,passenger_type:e.target.value}))}>{PAX_TYPES.map(t=><option key={t}>{t}</option>)}</select></div>
-              <div><label className="label">Date of Birth</label><input className="input" type="date" value={form.date_of_birth} onChange={e=>setForm(p=>({...p,date_of_birth:e.target.value}))}/></div>
+              <div><label className="label">DOB</label><DateInput value={form.date_of_birth} onChange={v=>setForm(p=>({...p,date_of_birth:v}))}/></div>
             </div>
             <div style={{ display:'flex', gap:'8px', justifyContent:'flex-end' }}>
               <button className="btn btn-secondary" onClick={()=>setAdding(false)}>Cancel</button>
@@ -1203,7 +1327,7 @@ function LegForm({ leg, onChange, onRemove, idx, canRemove, idSuffix }: any) {
 
   async function lookupFlight(fn: string) {
     if (!fn || fn.length < 4) return
-    const { data } = await supabase.from('known_flights').select('*').eq('flight_number', fn.toUpperCase()).maybeSingle()
+    const { data } = await apiRequest<{ data: Record<string, any> | null }>(`/api/bookings/0/flights?flightNumber=${encodeURIComponent(fn.toUpperCase())}`)
     if (!data) return
     const filled: string[] = []
     if (data.airline && !leg.airline) { onChange('airline', data.airline); filled.push('airline') }
@@ -1248,7 +1372,7 @@ function LegForm({ leg, onChange, onRemove, idx, canRemove, idSuffix }: any) {
           <input className="input" list={`ap-${idSuffix}-${idx}`} placeholder="MRU" value={leg.destination} onChange={e=>onChange('destination', e.target.value.toUpperCase())}/>
         </div>
         <div><label className="label">Terminal</label><input className="input" placeholder="e.g. N, S, 2, 5" value={leg.terminal||''} onChange={e=>onChange('terminal', e.target.value)}/></div>
-        <div><label className="label">Departure Date</label><input className="input" type="date" value={leg.departure_date} onChange={e=>onChange('departure_date', e.target.value)}/></div>
+        <div><label className="label">Departure Date</label><DateInput value={leg.departure_date} onChange={v=>onChange('departure_date', v)}/></div>
         <div><label className="label">Depart Time</label><input className="input" placeholder="21:00" value={leg.departure_time} onChange={e=>onChange('departure_time', e.target.value)}/></div>
         <div><label className="label">Arrive Time</label><input className="input" placeholder="11:55" value={leg.arrival_time} onChange={e=>onChange('arrival_time', e.target.value)}/></div>
         <div style={{ display:'flex', flexDirection:'column', justifyContent:'flex-end', paddingBottom:'6px' }}>
@@ -1257,12 +1381,22 @@ function LegForm({ leg, onChange, onRemove, idx, canRemove, idSuffix }: any) {
           </label>
         </div>
         <div style={{ gridColumn:'1/-1' }}><label className="label">Cabin Class Notes <span style={{ textTransform:'none', fontWeight:'400', letterSpacing:'0' }}>(mixed cabin only)</span></label><input className="input" placeholder="e.g. Mr Smith travelling Business Class on this leg" value={leg.cabin_notes} onChange={e=>onChange('cabin_notes', e.target.value)}/></div>
+        {idx > 0 && (
+          <div style={{ gridColumn:'1/-1', display:'flex', flexDirection:'column', gap:'6px' }}>
+            <label style={{ display:'flex', gap:'8px', alignItems:'center', fontSize:'13px', cursor:'pointer' }}>
+              <input type="checkbox" checked={leg.use_segment_deadline ?? true} onChange={e=>{ onChange('use_segment_deadline', e.target.checked); if (e.target.checked) onChange('ticketing_deadline', '') }}/> Use segment ticketing deadline
+            </label>
+            {!leg.use_segment_deadline && (
+              <div style={{ maxWidth:'200px' }}><label className="label">Custom deadline for this leg</label><DateInput value={leg.ticketing_deadline||''} onChange={v=>onChange('ticketing_deadline', v)}/></div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   )
 }
 
-const blankLeg = () => ({ flight_number:'', airline:'', origin:'', destination:'', terminal:'', departure_date:'', departure_time:'', arrival_time:'', next_day:false, cabin_notes:'' })
+const blankLeg = () => ({ flight_number:'', airline:'', origin:'', destination:'', terminal:'', departure_date:'', departure_time:'', arrival_time:'', next_day:false, cabin_notes:'', ticketing_deadline:'', use_segment_deadline:true })
 
 // ── FLIGHTS TAB ──────────────────────────────────────────────
 function FlightsTab({ bookingId, outbound, returnFlts, suppliers, onUpdate, showToast }: any) {
@@ -1277,6 +1411,8 @@ function FlightsTab({ bookingId, outbound, returnFlts, suppliers, onUpdate, show
   const [saving, setSaving]     = useState(false)
   const [editingLeg, setEditingLeg] = useState<number|null>(null)
   const [editForm, setEditForm] = useState<any>({})
+  const [addingLegSeg, setAddingLegSeg] = useState<{ segmentId: number; direction: 'outbound'|'return'; firstLeg: Flight } | null>(null)
+  const [newLegForm, setNewLegForm] = useState<any>(blankLeg())
 
   function updateLeg(idx: number, key: string, val: any) {
     setSeg((p: any) => { const legs = [...p.legs]; legs[idx] = { ...legs[idx], [key]: val }; return { ...p, legs } })
@@ -1284,99 +1420,73 @@ function FlightsTab({ bookingId, outbound, returnFlts, suppliers, onUpdate, show
   function addLeg() { setSeg((p: any) => ({ ...p, legs: [...p.legs, blankLeg()] })) }
   function removeLeg(idx: number) { setSeg((p: any) => ({ ...p, legs: p.legs.filter((_: any, i: number) => i !== idx) })) }
 
-  async function syncBookingDatesFromFlights() {
-    const { data: allFlights } = await supabase.from('booking_flights').select('direction,departure_date,arrival_date').eq('booking_id', bookingId)
-    const derived = getFlightDerivedDates((allFlights || []) as Flight[])
-    await supabase.from('bookings').update({
-      departure_date: derived.departure_date,
-      return_date: derived.return_date,
-    }).eq('id', bookingId)
-  }
-
   async function saveSegment() {
     if (seg.legs.some((l: any) => !l.flight_number.trim())) { showToast('All legs need a flight number', 'error'); return }
     setSaving(true)
-    const existingLegs = seg.direction === 'outbound' ? outbound : returnFlts
-    // segment_id = max existing segment_id for this direction + 1
-    const segIds = existingLegs.map((f: Flight) => f.segment_id || 1)
-    const nextSegId = segIds.length ? Math.max(...segIds) + 1 : 1
-    const rows = seg.legs.map((l: any, i: number) => ({
-      booking_id:      bookingId,
-      direction:       seg.direction,
-      segment_id:      nextSegId,
-      leg_order:       existingLegs.length + i + 1,
-      pnr:             seg.pnr || null,
-      flight_supplier: seg.flight_supplier || null,
-      net_cost:          i === 0 && seg.net_cost ? Number(seg.net_cost) : null,
-      ticketing_deadline: i === 0 && seg.ticketing_deadline ? seg.ticketing_deadline : null,
-      cabin_class:     seg.cabin_class,
-      baggage_notes:   seg.baggage_notes || null,
-      flight_number:   l.flight_number,
-      airline:         l.airline || null,
-      origin:          l.origin || null,
-      destination:     l.destination || null,
-      terminal:        l.terminal || null,
-      departure_date:  l.departure_date || null,
-      departure_time:  l.departure_time || null,
-      arrival_time:    l.arrival_time || null,
-      next_day:        l.next_day,
-      cabin_notes:     l.cabin_notes || null,
-    }))
-    const { error } = await supabase.from('booking_flights').insert(rows)
-    setSaving(false)
-    if (error) { showToast('Failed: ' + error.message, 'error'); return }
-
-    // Upsert known_flights for each leg (saves scheduling for future use)
-    for (const l of seg.legs) {
-      if (l.flight_number) {
-        await supabase.from('known_flights').upsert({
-          flight_number:  l.flight_number.toUpperCase(),
-          airline:        l.airline || null,
-          origin:         l.origin || null,
-          destination:    l.destination || null,
-          departure_time: l.departure_time || null,
-          arrival_time:   l.arrival_time || null,
-          next_day:       l.next_day,
-          updated_at:     new Date().toISOString(),
-        }, { onConflict: 'flight_number' })
-      }
+    try {
+      const result = await apiRequest<{ message?: string }>(`/api/bookings/${bookingId}/flights`, {
+        method: 'POST',
+        body: JSON.stringify(seg),
+      })
+      showToast(result.message || `${seg.direction === 'outbound' ? 'Outbound' : 'Return'} segment added ✓`)
+      setAdding(false)
+      setSeg({ ...blankSeg })
+      onUpdate()
+    } catch (error: any) {
+      showToast(`Failed: ${error.message}`, 'error')
+    } finally {
+      setSaving(false)
     }
-    await syncBookingDatesFromFlights()
-
-    showToast(`${seg.direction === 'outbound' ? 'Outbound' : 'Return'} segment added ✓`)
-    setAdding(false); setSeg({ ...blankSeg }); onUpdate()
   }
 
   async function saveEditLeg(id: number) {
     setSaving(true)
-    const { error } = await supabase.from('booking_flights').update({
-      flight_number:   editForm.flight_number,
-      airline:         editForm.airline || null,
-      origin:          editForm.origin || null,
-      destination:     editForm.destination || null,
-      departure_date:  editForm.departure_date || null,
-      departure_time:  editForm.departure_time || null,
-      arrival_time:    editForm.arrival_time || null,
-      next_day:        editForm.next_day,
-      cabin_class:     editForm.cabin_class,
-      pnr:             editForm.pnr || null,
-      flight_supplier: editForm.flight_supplier || null,
-      net_cost:        editForm.net_cost ? Number(editForm.net_cost) : null,
-      terminal:           editForm.terminal || null,
-      ticketing_deadline: editForm.ticketing_deadline || null,
-      baggage_notes:      editForm.baggage_notes || null,
-      cabin_notes:        editForm.cabin_notes || null,
-    }).eq('id', id)
-    setSaving(false)
-    if (error) { showToast('Failed: ' + error.message, 'error'); return }
-    await syncBookingDatesFromFlights()
-    showToast('Leg updated ✓'); setEditingLeg(null); onUpdate()
+    const { use_segment_deadline, ...editPayload } = editForm
+    if (use_segment_deadline) editPayload.ticketing_deadline = null
+    try {
+      const result = await apiRequest<{ message?: string }>(`/api/bookings/${bookingId}/flights`, {
+        method: 'PUT',
+        body: JSON.stringify({ legId: id, ...editPayload }),
+      })
+      showToast(result.message || 'Leg updated ✓')
+      setEditingLeg(null)
+      onUpdate()
+    } catch (error: any) {
+      showToast(`Failed: ${error.message}`, 'error')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function saveNewLegToSegment(segmentId: number, dir: 'outbound'|'return', firstLeg: Flight) {
+    if (!newLegForm.flight_number.trim()) { showToast('Flight number required', 'error'); return }
+    setSaving(true)
+    try {
+      const result = await apiRequest<{ message?: string }>(`/api/bookings/${bookingId}/flights`, {
+        method: 'POST',
+        body: JSON.stringify({ segmentId, direction: dir, leg: newLegForm, firstLeg }),
+      })
+      showToast(result.message || 'Connecting leg added ✓')
+      setAddingLegSeg(null)
+      setNewLegForm(blankLeg())
+      onUpdate()
+    } catch (error: any) {
+      showToast(`Failed: ${error.message}`, 'error')
+    } finally {
+      setSaving(false)
+    }
   }
 
   async function deleteLeg(id: number) {
-    await supabase.from('booking_flights').delete().eq('id', id)
-    await syncBookingDatesFromFlights()
-    showToast('Leg removed'); onUpdate()
+    try {
+      const result = await apiRequest<{ message?: string }>(`/api/bookings/${bookingId}/flights?legId=${id}`, {
+        method: 'DELETE',
+      })
+      showToast(result.message || 'Leg removed')
+      onUpdate()
+    } catch (error: any) {
+      showToast(error.message || 'Failed to delete leg', 'error')
+    }
   }
 
   // Group legs into segments for display
@@ -1449,7 +1559,7 @@ function FlightsTab({ bookingId, outbound, returnFlts, suppliers, onUpdate, show
                               <div><label className="label">Airline</label><input className="input" value={editForm.airline||''} onChange={e=>setEditForm((p:any)=>({...p,airline:e.target.value}))}/></div>
                               <div><label className="label">Origin</label><input className="input" value={editForm.origin||''} onChange={e=>setEditForm((p:any)=>({...p,origin:e.target.value.toUpperCase()}))}/></div>
                               <div><label className="label">Destination</label><input className="input" value={editForm.destination||''} onChange={e=>setEditForm((p:any)=>({...p,destination:e.target.value.toUpperCase()}))}/></div>
-                              <div><label className="label">Depart Date</label><input className="input" type="date" value={editForm.departure_date||''} onChange={e=>setEditForm((p:any)=>({...p,departure_date:e.target.value}))}/></div>
+                              <div><label className="label">Depart Date</label><DateInput value={editForm.departure_date||''} onChange={v=>setEditForm((p:any)=>({...p,departure_date:v}))}/></div>
                               <div><label className="label">Depart Time</label><input className="input" value={editForm.departure_time||''} onChange={e=>setEditForm((p:any)=>({...p,departure_time:e.target.value}))}/></div>
                               <div><label className="label">Arrive Time</label><input className="input" value={editForm.arrival_time||''} onChange={e=>setEditForm((p:any)=>({...p,arrival_time:e.target.value}))}/></div>
                               <div><label className="label">Cabin Class</label><select className="input" value={editForm.cabin_class||'Economy'} onChange={e=>setEditForm((p:any)=>({...p,cabin_class:e.target.value}))}>{CABIN_CLASSES.map(c=><option key={c}>{c}</option>)}</select></div>
@@ -1462,7 +1572,17 @@ function FlightsTab({ bookingId, outbound, returnFlts, suppliers, onUpdate, show
                               </div>
                               <div><label className="label">Net Cost (£)</label><input className="input" type="number" value={editForm.net_cost||''} onChange={e=>setEditForm((p:any)=>({...p,net_cost:e.target.value}))}/></div>
                               <div><label className="label">Terminal</label><input className="input" placeholder="e.g. N, S, 2" value={editForm.terminal||''} onChange={e=>setEditForm((p:any)=>({...p,terminal:e.target.value}))}/></div>
-                              <div><label className="label">Ticketing Deadline</label><input className="input" type="date" value={editForm.ticketing_deadline||''} onChange={e=>setEditForm((p:any)=>({...p,ticketing_deadline:e.target.value}))}/></div>
+                              {i === 0
+                                ? <div><label className="label">Ticketing Deadline</label><DateInput value={editForm.ticketing_deadline||''} onChange={v=>setEditForm((p:any)=>({...p,ticketing_deadline:v}))}/></div>
+                                : <div style={{ gridColumn:'1/-1', display:'flex', flexDirection:'column', gap:'6px', paddingTop:'2px' }}>
+                                    <label style={{ display:'flex', gap:'8px', alignItems:'center', fontSize:'13px', cursor:'pointer' }}>
+                                      <input type="checkbox" checked={editForm.use_segment_deadline ?? true} onChange={e=>setEditForm((p:any)=>({ ...p, use_segment_deadline: e.target.checked, ticketing_deadline: e.target.checked ? null : p.ticketing_deadline }))}/> Use segment ticketing deadline
+                                    </label>
+                                    {!editForm.use_segment_deadline && (
+                                      <div style={{ maxWidth:'200px' }}><label className="label">Custom deadline for this leg</label><DateInput value={editForm.ticketing_deadline||''} onChange={v=>setEditForm((p:any)=>({...p,ticketing_deadline:v}))}/></div>
+                                    )}
+                                  </div>
+                              }
                               <div><label className="label">Baggage</label><input className="input" value={editForm.baggage_notes||''} onChange={e=>setEditForm((p:any)=>({...p,baggage_notes:e.target.value}))}/></div>
                               <div style={{ gridColumn:'1/-1' }}><label className="label">Cabin Notes</label><input className="input" value={editForm.cabin_notes||''} onChange={e=>setEditForm((p:any)=>({...p,cabin_notes:e.target.value}))}/></div>
                             </div>
@@ -1485,15 +1605,30 @@ function FlightsTab({ bookingId, outbound, returnFlts, suppliers, onUpdate, show
                                 <span style={{ color:'var(--text-muted)', fontSize:'12px', marginLeft:'8px' }}>{fmtDate(f.departure_date)}</span>
                               </div>
                               {f.cabin_notes && <div style={{ fontSize:'11.5px', color:'var(--amber)', marginTop:'2px' }}>ℹ {f.cabin_notes}</div>}
+                              {i > 0 && f.ticketing_deadline && <div style={{ fontSize:'11px', color:'var(--text-muted)', marginTop:'2px' }}>🎫 Custom deadline: {fmtDate(f.ticketing_deadline)}</div>}
                             </div>
                             <div style={{ display:'flex', gap:'5px' }}>
-                              <button className="btn btn-secondary btn-xs" onClick={()=>{ setEditingLeg(f.id); setEditForm({ ...f, departure_date: f.departure_date?.split('T')[0]||'', net_cost: f.net_cost ?? '' }) }}>Edit</button>
+                              <button className="btn btn-secondary btn-xs" onClick={()=>{ setEditingLeg(f.id); setEditForm({ ...f, departure_date: f.departure_date?.split('T')[0]||'', net_cost: f.net_cost ?? '', use_segment_deadline: i === 0 || !f.ticketing_deadline }) }}>Edit</button>
                               <button className="btn btn-ghost btn-xs" style={{ color:'var(--red)' }} onClick={()=>deleteLeg(f.id)}>✕</button>
                             </div>
                           </div>
                         )}
                       </div>
                     ))}
+                    {/* Add connecting leg to existing segment */}
+                    {addingLegSeg?.segmentId === Number(sid) ? (
+                      <div style={{ borderTop:'1px solid var(--border)', paddingTop:'10px', marginTop:'4px' }}>
+                        <LegForm leg={newLegForm} onChange={(k:string,v:any)=>setNewLegForm((p:any)=>({...p,[k]:v}))} onRemove={()=>{}} idx={segLegs.length} canRemove={false} idSuffix={`add-${sid}`} />
+                        <div style={{ display:'flex', gap:'8px', justifyContent:'flex-end', marginTop:'10px' }}>
+                          <button className="btn btn-secondary btn-xs" onClick={()=>{ setAddingLegSeg(null); setNewLegForm(blankLeg()) }}>Cancel</button>
+                          <button className="btn btn-cta btn-xs" onClick={()=>saveNewLegToSegment(Number(sid), direction, first)} disabled={saving}>{saving?'Saving…':'Add Leg'}</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{ paddingTop:'4px' }}>
+                        <button className="btn btn-secondary btn-xs" onClick={()=>{ setAddingLegSeg({ segmentId:Number(sid), direction, firstLeg:first }); setNewLegForm(blankLeg()) }}>+ Add Connecting Leg</button>
+                      </div>
+                    )}
                   </div>
                 </div>
               )
@@ -1549,7 +1684,7 @@ function FlightsTab({ bookingId, outbound, returnFlts, suppliers, onUpdate, show
               <div><label className="label">Baggage</label><input className="input" placeholder="2 × 23kg" value={seg.baggage_notes} onChange={e=>setSeg((p:any)=>({...p,baggage_notes:e.target.value}))}/></div>
               <div>
                 <label className="label">Ticketing Deadline <span style={{ color:'var(--text-muted)', fontWeight:'400' }}>(auto: −12wk)</span></label>
-                <input className="input" type="date" value={seg.ticketing_deadline} onChange={e=>setSeg((p:any)=>({...p,ticketing_deadline:e.target.value}))}/>
+                <DateInput value={seg.ticketing_deadline} onChange={v=>setSeg((p:any)=>({...p,ticketing_deadline:v}))}/>
               </div>
             </div>
           </div>
@@ -1609,57 +1744,101 @@ function AccommodationTab({ bookingId, accommodations, hotels, suppliers, passen
     if (!form.hotel_name.trim()) { showToast('Hotel name required', 'error'); return }
     setSaving(true)
     const nights = form.nights ? Number(form.nights) : calcNights(form.checkin_date, form.checkout_date)
-    const { error } = await supabase.from('booking_accommodations').insert({
-      booking_id: bookingId, stay_order: accommodations.length + 1,
-      hotel_id: form.hotel_id ? Number(form.hotel_id) : null,
-      hotel_name: form.hotel_name.trim(),
-      supplier_id: form.supplier_id ? Number(form.supplier_id) : null,
-      hotel_confirmation: form.hotel_confirmation || null,
-      checkin_date: form.checkin_date || null, checkout_date: form.checkout_date || null,
-      nights: nights || null, room_type: form.room_type || null,
-      room_quantity: Number(form.room_quantity) || 1, board_basis: form.board_basis || null,
-      adults: Number(form.adults) || 2, children: Number(form.children) || 0, infants: Number(form.infants) || 0,
-      net_cost: form.net_cost ? Number(form.net_cost) : null,
-      special_occasion: form.special_occasion || null, special_requests: form.special_requests || null,
-      reservation_status: form.reservation_status,
-      reservation_email_to: form.reservation_email_to || null,
-    })
-    setSaving(false)
-    if (error) { showToast('Failed: ' + error.message, 'error'); return }
-    showToast('Stay added ✓')
-    setAdding(false); onUpdate()
+    try {
+      const result = await apiRequest<{ message?: string }>(`/api/bookings/${bookingId}/accommodations`, {
+        method: 'POST',
+        body: JSON.stringify({
+          stayOrder: accommodations.length + 1,
+          hotel_id: form.hotel_id ? Number(form.hotel_id) : null,
+          hotel_name: form.hotel_name.trim(),
+          supplier_id: form.supplier_id ? Number(form.supplier_id) : null,
+          hotel_confirmation: form.hotel_confirmation || null,
+          checkin_date: form.checkin_date || null,
+          checkout_date: form.checkout_date || null,
+          nights: nights || null,
+          room_type: form.room_type || null,
+          room_quantity: Number(form.room_quantity) || 1,
+          board_basis: form.board_basis || null,
+          adults: Number(form.adults) || 2,
+          children: Number(form.children) || 0,
+          infants: Number(form.infants) || 0,
+          net_cost: form.net_cost ? Number(form.net_cost) : null,
+          special_occasion: form.special_occasion || null,
+          special_requests: form.special_requests || null,
+          reservation_status: form.reservation_status,
+          reservation_email_to: form.reservation_email_to || null,
+        }),
+      })
+      showToast(result.message || 'Stay added ✓')
+      setAdding(false)
+      onUpdate()
+    } catch (error: any) {
+      showToast(`Failed: ${error.message}`, 'error')
+    } finally {
+      setSaving(false)
+    }
   }
 
   async function saveAccomEdit(id: number) {
     setSaving(true)
     const nights = editForm.nights ? Number(editForm.nights) : calcNights(editForm.checkin_date, editForm.checkout_date)
-    const { error } = await supabase.from('booking_accommodations').update({
-      hotel_id: editForm.hotel_id ? Number(editForm.hotel_id) : null,
-      hotel_name: editForm.hotel_name?.trim() || null,
-      supplier_id: editForm.supplier_id ? Number(editForm.supplier_id) : null,
-      hotel_confirmation: editForm.hotel_confirmation || null,
-      checkin_date: editForm.checkin_date || null, checkout_date: editForm.checkout_date || null,
-      nights: nights || null, room_type: editForm.room_type || null,
-      room_quantity: Number(editForm.room_quantity) || 1, board_basis: editForm.board_basis || null,
-      adults: Number(editForm.adults) || 2, children: Number(editForm.children) || 0, infants: Number(editForm.infants) || 0,
-      net_cost: editForm.net_cost ? Number(editForm.net_cost) : null,
-      special_occasion: editForm.special_occasion || null, special_requests: editForm.special_requests || null,
-      reservation_email_to: editForm.reservation_email_to || null,
-    }).eq('id', id)
-    setSaving(false)
-    if (error) { showToast('Failed: ' + error.message, 'error'); return }
-    showToast('Stay updated ✓'); setEditing(null); onUpdate()
+    try {
+      const result = await apiRequest<{ message?: string }>(`/api/bookings/${bookingId}/accommodations`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          accommodationId: id,
+          hotel_id: editForm.hotel_id ? Number(editForm.hotel_id) : null,
+          hotel_name: editForm.hotel_name?.trim() || null,
+          supplier_id: editForm.supplier_id ? Number(editForm.supplier_id) : null,
+          hotel_confirmation: editForm.hotel_confirmation || null,
+          checkin_date: editForm.checkin_date || null,
+          checkout_date: editForm.checkout_date || null,
+          nights: nights || null,
+          room_type: editForm.room_type || null,
+          room_quantity: Number(editForm.room_quantity) || 1,
+          board_basis: editForm.board_basis || null,
+          adults: Number(editForm.adults) || 2,
+          children: Number(editForm.children) || 0,
+          infants: Number(editForm.infants) || 0,
+          net_cost: editForm.net_cost ? Number(editForm.net_cost) : null,
+          special_occasion: editForm.special_occasion || null,
+          special_requests: editForm.special_requests || null,
+          reservation_email_to: editForm.reservation_email_to || null,
+        }),
+      })
+      showToast(result.message || 'Stay updated ✓')
+      setEditing(null)
+      onUpdate()
+    } catch (error: any) {
+      showToast(`Failed: ${error.message}`, 'error')
+    } finally {
+      setSaving(false)
+    }
   }
 
   async function updateResStatus(id: number, status: string) {
-    await supabase.from('booking_accommodations').update({ reservation_status: status, ...(status === 'sent' ? { reservation_sent_at: new Date().toISOString() } : {}) }).eq('id', id)
-    showToast('Status updated')
-    onUpdate()
+    try {
+      const result = await apiRequest<{ message?: string }>(`/api/bookings/${bookingId}/accommodations`, {
+        method: 'PUT',
+        body: JSON.stringify({ action: 'reservation_status', accommodationId: id, status }),
+      })
+      showToast(result.message || 'Status updated')
+      onUpdate()
+    } catch (error: any) {
+      showToast(error.message || 'Failed to update status', 'error')
+    }
   }
 
   async function deleteAccom(id: number) {
-    await supabase.from('booking_accommodations').delete().eq('id', id)
-    showToast('Stay removed'); onUpdate()
+    try {
+      const result = await apiRequest<{ message?: string }>(`/api/bookings/${bookingId}/accommodations?accommodationId=${id}`, {
+        method: 'DELETE',
+      })
+      showToast(result.message || 'Stay removed')
+      onUpdate()
+    } catch (error: any) {
+      showToast(error.message || 'Failed to delete stay', 'error')
+    }
   }
 
   const selectedHotel = form.hotel_id ? hotels.find((h: Hotel) => h.id === Number(form.hotel_id)) : null
@@ -1691,8 +1870,8 @@ function AccommodationTab({ bookingId, accommodations, hotels, suppliers, passen
                     {!editForm.hotel_id && <div style={{ gridColumn:'1/-1' }}><label className="label">Hotel Name</label><input className="input" value={editForm.hotel_name||''} onChange={e=>setEditForm((p:any)=>({...p,hotel_name:e.target.value}))}/></div>}
                     <div><label className="label">Supplier</label><select className="input" value={editForm.supplier_id||''} onChange={e=>setEditForm((p:any)=>({...p,supplier_id:e.target.value}))}><option value="">No supplier</option>{suppliers.filter((s:Supplier)=>s.type==='hotel'||s.type==='dmc').map((s:Supplier)=><option key={s.id} value={s.id}>{s.name}</option>)}</select></div>
                     <div><label className="label">Confirmation Ref</label><input className="input" value={editForm.hotel_confirmation||''} onChange={e=>setEditForm((p:any)=>({...p,hotel_confirmation:e.target.value}))}/></div>
-                    <div><label className="label">Check In</label><input className="input" type="date" value={editForm.checkin_date||''} onChange={e=>setEditForm((p:any)=>({...p,checkin_date:e.target.value}))}/></div>
-                    <div><label className="label">Check Out</label><input className="input" type="date" value={editForm.checkout_date||''} onChange={e=>setEditForm((p:any)=>({...p,checkout_date:e.target.value}))}/></div>
+                    <div><label className="label">Check In</label><DateInput value={editForm.checkin_date||''} onChange={v=>setEditForm((p:any)=>({...p,checkin_date:v}))}/></div>
+                    <div><label className="label">Check Out</label><DateInput value={editForm.checkout_date||''} onChange={v=>setEditForm((p:any)=>({...p,checkout_date:v}))}/></div>
                     <div><label className="label">Room Type</label><input className="input" list="edit-room-types" value={editForm.room_type||''} onChange={e=>setEditForm((p:any)=>({...p,room_type:e.target.value}))}/>{editHotel?.room_types?.length&&<datalist id="edit-room-types">{editHotel.room_types.map((r:string)=><option key={r} value={r}/>)}</datalist>}</div>
                     <div><label className="label">Rooms</label><input className="input" type="number" min="1" value={editForm.room_quantity||'1'} onChange={e=>setEditForm((p:any)=>({...p,room_quantity:e.target.value}))}/></div>
                     <div><label className="label">Board Basis</label><select className="input" value={editForm.board_basis||''} onChange={e=>setEditForm((p:any)=>({...p,board_basis:e.target.value}))}>{BOARD_BASIS.map(b=><option key={b}>{b}</option>)}</select></div>
@@ -1776,8 +1955,8 @@ function AccommodationTab({ bookingId, accommodations, hotels, suppliers, passen
                 </select>
               </div>
               <div><label className="label">Hotel Confirmation Ref</label><input className="input" placeholder="Optional" value={form.hotel_confirmation} onChange={e=>setForm((p:any)=>({...p,hotel_confirmation:e.target.value}))}/></div>
-              <div><label className="label">Check In</label><input className="input" type="date" value={form.checkin_date} onChange={e=>setForm((p:any)=>({...p,checkin_date:e.target.value}))}/></div>
-              <div><label className="label">Check Out</label><input className="input" type="date" value={form.checkout_date} onChange={e=>setForm((p:any)=>({...p,checkout_date:e.target.value}))}/></div>
+              <div><label className="label">Check In</label><DateInput value={form.checkin_date} onChange={v=>setForm((p:any)=>({...p,checkin_date:v}))}/></div>
+              <div><label className="label">Check Out</label><DateInput value={form.checkout_date} onChange={v=>setForm((p:any)=>({...p,checkout_date:v}))}/></div>
               <div>
                 <label className="label">Room Type</label>
                 <input className="input" list="room-types-list" placeholder="e.g. Prestige Room" value={form.room_type} onChange={e=>setForm((p:any)=>({...p,room_type:e.target.value}))}/>
@@ -1845,49 +2024,79 @@ function TransfersTab({ bookingId, transfers, suppliers, flights, onUpdate, show
 
   async function addTransfer() {
     setSaving(true)
-    const { error } = await supabase.from('booking_transfers').insert({
-      booking_id: bookingId,
-      supplier_id: form.supplier_id ? Number(form.supplier_id) : null,
-      supplier_name: form.supplier_name || null,
-      transfer_type: form.transfer_type,
-      meet_greet: form.meet_greet, local_rep: form.local_rep,
-      arrival_date: form.arrival_date || null, arrival_time: form.arrival_time || null,
-      arrival_flight: form.arrival_flight || null,
-      departure_date: form.departure_date || null, departure_time: form.departure_time || null,
-      departure_flight: form.departure_flight || null,
-      inter_hotel_dates: form.inter_hotel_dates || null,
-      net_cost: form.net_cost ? Number(form.net_cost) : null,
-      notes: form.notes || null,
-    })
-    setSaving(false)
-    if (error) { showToast('Failed: ' + error.message, 'error'); return }
-    showToast('Transfer added ✓')
-    setAdding(false); onUpdate()
+    try {
+      const result = await apiRequest<{ message?: string }>(`/api/bookings/${bookingId}/transfers`, {
+        method: 'POST',
+        body: JSON.stringify({
+          supplier_id: form.supplier_id ? Number(form.supplier_id) : null,
+          supplier_name: form.supplier_name || null,
+          transfer_type: form.transfer_type,
+          meet_greet: form.meet_greet,
+          local_rep: form.local_rep,
+          arrival_date: form.arrival_date || null,
+          arrival_time: form.arrival_time || null,
+          arrival_flight: form.arrival_flight || null,
+          departure_date: form.departure_date || null,
+          departure_time: form.departure_time || null,
+          departure_flight: form.departure_flight || null,
+          inter_hotel_dates: form.inter_hotel_dates || null,
+          net_cost: form.net_cost ? Number(form.net_cost) : null,
+          notes: form.notes || null,
+        }),
+      })
+      showToast(result.message || 'Transfer added ✓')
+      setAdding(false)
+      onUpdate()
+    } catch (error: any) {
+      showToast(`Failed: ${error.message}`, 'error')
+    } finally {
+      setSaving(false)
+    }
   }
 
   async function saveTransferEdit(id: number) {
     setSaving(true)
-    const { error } = await supabase.from('booking_transfers').update({
-      supplier_id: editForm.supplier_id ? Number(editForm.supplier_id) : null,
-      supplier_name: editForm.supplier_name || null,
-      transfer_type: editForm.transfer_type,
-      meet_greet: editForm.meet_greet, local_rep: editForm.local_rep,
-      arrival_date: editForm.arrival_date || null, arrival_time: editForm.arrival_time || null,
-      arrival_flight: editForm.arrival_flight || null,
-      departure_date: editForm.departure_date || null, departure_time: editForm.departure_time || null,
-      departure_flight: editForm.departure_flight || null,
-      inter_hotel_dates: editForm.inter_hotel_dates || null,
-      net_cost: editForm.net_cost ? Number(editForm.net_cost) : null,
-      notes: editForm.notes || null,
-    }).eq('id', id)
-    setSaving(false)
-    if (error) { showToast('Failed: ' + error.message, 'error'); return }
-    showToast('Transfer updated ✓'); setEditing(null); onUpdate()
+    try {
+      const result = await apiRequest<{ message?: string }>(`/api/bookings/${bookingId}/transfers`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          transferId: id,
+          supplier_id: editForm.supplier_id ? Number(editForm.supplier_id) : null,
+          supplier_name: editForm.supplier_name || null,
+          transfer_type: editForm.transfer_type,
+          meet_greet: editForm.meet_greet,
+          local_rep: editForm.local_rep,
+          arrival_date: editForm.arrival_date || null,
+          arrival_time: editForm.arrival_time || null,
+          arrival_flight: editForm.arrival_flight || null,
+          departure_date: editForm.departure_date || null,
+          departure_time: editForm.departure_time || null,
+          departure_flight: editForm.departure_flight || null,
+          inter_hotel_dates: editForm.inter_hotel_dates || null,
+          net_cost: editForm.net_cost ? Number(editForm.net_cost) : null,
+          notes: editForm.notes || null,
+        }),
+      })
+      showToast(result.message || 'Transfer updated ✓')
+      setEditing(null)
+      onUpdate()
+    } catch (error: any) {
+      showToast(`Failed: ${error.message}`, 'error')
+    } finally {
+      setSaving(false)
+    }
   }
 
   async function deleteTransfer(id: number) {
-    await supabase.from('booking_transfers').delete().eq('id', id)
-    showToast('Transfer removed'); onUpdate()
+    try {
+      const result = await apiRequest<{ message?: string }>(`/api/bookings/${bookingId}/transfers?transferId=${id}`, {
+        method: 'DELETE',
+      })
+      showToast(result.message || 'Transfer removed')
+      onUpdate()
+    } catch (error: any) {
+      showToast(error.message || 'Failed to delete transfer', 'error')
+    }
   }
 
   return (
@@ -1922,9 +2131,9 @@ function TransfersTab({ bookingId, transfers, suppliers, flights, onUpdate, show
                 </div>
                 <div><label className="label">Net Cost (£)</label><input className="input" type="number" value={editForm.net_cost||''} onChange={e=>setEditForm((p:any)=>({...p,net_cost:e.target.value}))}/></div>
                 <div><label className="label">Arrival Flight</label><input className="input" value={editForm.arrival_flight||''} onChange={e=>setEditForm((p:any)=>({...p,arrival_flight:e.target.value.toUpperCase()}))}/></div>
-                <div><label className="label">Arrival Date & Time</label><div style={{ display:'flex', gap:'8px' }}><input className="input" type="date" value={editForm.arrival_date||''} onChange={e=>setEditForm((p:any)=>({...p,arrival_date:e.target.value}))}/><input className="input" style={{ width:'100px' }} value={editForm.arrival_time||''} onChange={e=>setEditForm((p:any)=>({...p,arrival_time:e.target.value}))}/></div></div>
+                <div><label className="label">Arrival Date & Time</label><div style={{ display:'flex', gap:'8px' }}><DateInput value={editForm.arrival_date||''} onChange={v=>setEditForm((p:any)=>({...p,arrival_date:v}))}/><input className="input" style={{ width:'100px' }} value={editForm.arrival_time||''} onChange={e=>setEditForm((p:any)=>({...p,arrival_time:e.target.value}))}/></div></div>
                 <div><label className="label">Departure Flight</label><input className="input" value={editForm.departure_flight||''} onChange={e=>setEditForm((p:any)=>({...p,departure_flight:e.target.value.toUpperCase()}))}/></div>
-                <div><label className="label">Departure Date & Time</label><div style={{ display:'flex', gap:'8px' }}><input className="input" type="date" value={editForm.departure_date||''} onChange={e=>setEditForm((p:any)=>({...p,departure_date:e.target.value}))}/><input className="input" style={{ width:'100px' }} value={editForm.departure_time||''} onChange={e=>setEditForm((p:any)=>({...p,departure_time:e.target.value}))}/></div></div>
+                <div><label className="label">Departure Date & Time</label><div style={{ display:'flex', gap:'8px' }}><DateInput value={editForm.departure_date||''} onChange={v=>setEditForm((p:any)=>({...p,departure_date:v}))}/><input className="input" style={{ width:'100px' }} value={editForm.departure_time||''} onChange={e=>setEditForm((p:any)=>({...p,departure_time:e.target.value}))}/></div></div>
                 <div style={{ gridColumn:'1/-1' }}><label className="label">Inter-Hotel Transfer Dates</label><input className="input" value={editForm.inter_hotel_dates||''} onChange={e=>setEditForm((p:any)=>({...p,inter_hotel_dates:e.target.value}))}/></div>
                 <div style={{ gridColumn:'1/-1' }}><label className="label">Notes</label><textarea className="input" style={{ minHeight:'60px', resize:'vertical', fontSize:'13px' }} value={editForm.notes||''} onChange={e=>setEditForm((p:any)=>({...p,notes:e.target.value}))}/></div>
               </div>
@@ -1994,9 +2203,9 @@ function TransfersTab({ bookingId, transfers, suppliers, flights, onUpdate, show
             </div>
             <div><label className="label">Net Cost (£)</label><input className="input" type="number" value={form.net_cost} onChange={e=>setForm((p:any)=>({...p,net_cost:e.target.value}))}/></div>
             <div><label className="label">Arrival Flight</label><input className="input" placeholder="e.g. BA2065" value={form.arrival_flight} onChange={e=>setForm((p:any)=>({...p,arrival_flight:e.target.value.toUpperCase()}))}/></div>
-            <div><label className="label">Arrival Date & Time</label><div style={{ display:'flex', gap:'8px' }}><input className="input" type="date" value={form.arrival_date} onChange={e=>setForm((p:any)=>({...p,arrival_date:e.target.value}))}/><input className="input" style={{ width:'100px' }} placeholder="09:25" value={form.arrival_time} onChange={e=>setForm((p:any)=>({...p,arrival_time:e.target.value}))}/></div></div>
+            <div><label className="label">Arrival Date & Time</label><div style={{ display:'flex', gap:'8px' }}><DateInput value={form.arrival_date} onChange={v=>setForm((p:any)=>({...p,arrival_date:v}))}/><input className="input" style={{ width:'100px' }} placeholder="09:25" value={form.arrival_time} onChange={e=>setForm((p:any)=>({...p,arrival_time:e.target.value}))}/></div></div>
             <div><label className="label">Departure Flight</label><input className="input" placeholder="e.g. BA2064" value={form.departure_flight} onChange={e=>setForm((p:any)=>({...p,departure_flight:e.target.value.toUpperCase()}))}/></div>
-            <div><label className="label">Departure Date & Time</label><div style={{ display:'flex', gap:'8px' }}><input className="input" type="date" value={form.departure_date} onChange={e=>setForm((p:any)=>({...p,departure_date:e.target.value}))}/><input className="input" style={{ width:'100px' }} placeholder="20:45" value={form.departure_time} onChange={e=>setForm((p:any)=>({...p,departure_time:e.target.value}))}/></div></div>
+            <div><label className="label">Departure Date & Time</label><div style={{ display:'flex', gap:'8px' }}><DateInput value={form.departure_date} onChange={v=>setForm((p:any)=>({...p,departure_date:v}))}/><input className="input" style={{ width:'100px' }} placeholder="20:45" value={form.departure_time} onChange={e=>setForm((p:any)=>({...p,departure_time:e.target.value}))}/></div></div>
             <div style={{ gridColumn:'1/-1' }}><label className="label">Inter-Hotel Transfer Dates</label><input className="input" placeholder="e.g. 17-05-2026" value={form.inter_hotel_dates} onChange={e=>setForm((p:any)=>({...p,inter_hotel_dates:e.target.value}))}/></div>
             <div style={{ gridColumn:'1/-1' }}><label className="label">Notes</label><textarea className="input" style={{ minHeight:'60px', resize:'vertical', fontSize:'13px' }} value={form.notes} onChange={e=>setForm((p:any)=>({...p,notes:e.target.value}))}/></div>
           </div>
@@ -2019,7 +2228,7 @@ function TransfersTab({ bookingId, transfers, suppliers, flights, onUpdate, show
 
 // ── EXTRAS TAB ───────────────────────────────────────────────
 function ExtrasTab({ bookingId, extras, onUpdate, showToast }: any) {
-  const blank = { extra_type:'lounge', description:'', supplier:'', net_cost:'', sell_price:'', notes:'' }
+  const blank = { extra_type:'lounge', description:'', supplier:'', net_cost:'', notes:'' }
   const EXTRA_TYPES = ['lounge', 'parking', 'fast_track', 'seat_upgrade', 'excursion', 'travel_insurance', 'other']
   const [adding, setAdding]     = useState(false)
   const [form, setForm]         = useState<any>({ ...blank })
@@ -2029,36 +2238,61 @@ function ExtrasTab({ bookingId, extras, onUpdate, showToast }: any) {
 
   async function addExtra() {
     setSaving(true)
-    const { error } = await supabase.from('booking_extras').insert({
-      booking_id: bookingId, extra_type: form.extra_type,
-      description: form.description || null, supplier: form.supplier || null,
-      net_cost: form.net_cost ? Number(form.net_cost) : null,
-      sell_price: form.sell_price ? Number(form.sell_price) : null,
-      notes: form.notes || null,
-    })
-    setSaving(false)
-    if (error) { showToast('Failed: ' + error.message, 'error'); return }
-    showToast('Extra added ✓')
-    setAdding(false); onUpdate()
+    try {
+      const result = await apiRequest<{ message?: string }>(`/api/bookings/${bookingId}/extras`, {
+        method: 'POST',
+        body: JSON.stringify({
+          extra_type: form.extra_type,
+          description: form.description || null,
+          supplier: form.supplier || null,
+          net_cost: form.net_cost ? Number(form.net_cost) : null,
+          notes: form.notes || null,
+        }),
+      })
+      showToast(result.message || 'Extra added ✓')
+      setAdding(false)
+      onUpdate()
+    } catch (error: any) {
+      showToast(`Failed: ${error.message}`, 'error')
+    } finally {
+      setSaving(false)
+    }
   }
 
   async function saveExtraEdit(id: number) {
     setSaving(true)
-    const { error } = await supabase.from('booking_extras').update({
-      extra_type: editForm.extra_type, description: editForm.description || null,
-      supplier: editForm.supplier || null,
-      net_cost: editForm.net_cost ? Number(editForm.net_cost) : null,
-      sell_price: editForm.sell_price ? Number(editForm.sell_price) : null,
-      notes: editForm.notes || null,
-    }).eq('id', id)
-    setSaving(false)
-    if (error) { showToast('Failed: ' + error.message, 'error'); return }
-    showToast('Extra updated ✓'); setEditing(null); onUpdate()
+    try {
+      const result = await apiRequest<{ message?: string }>(`/api/bookings/${bookingId}/extras`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          extraId: id,
+          extra_type: editForm.extra_type,
+          description: editForm.description || null,
+          supplier: editForm.supplier || null,
+          net_cost: editForm.net_cost ? Number(editForm.net_cost) : null,
+          notes: editForm.notes || null,
+        }),
+      })
+      showToast(result.message || 'Extra updated ✓')
+      setEditing(null)
+      onUpdate()
+    } catch (error: any) {
+      showToast(`Failed: ${error.message}`, 'error')
+    } finally {
+      setSaving(false)
+    }
   }
 
   async function deleteExtra(id: number) {
-    await supabase.from('booking_extras').delete().eq('id', id)
-    showToast('Extra removed'); onUpdate()
+    try {
+      const result = await apiRequest<{ message?: string }>(`/api/bookings/${bookingId}/extras?extraId=${id}`, {
+        method: 'DELETE',
+      })
+      showToast(result.message || 'Extra removed')
+      onUpdate()
+    } catch (error: any) {
+      showToast(error.message || 'Failed to delete extra', 'error')
+    }
   }
 
   const totalExtrasNet = extras.reduce((a: number, e: Extra) => a + (e.net_cost || 0), 0)
@@ -2080,7 +2314,6 @@ function ExtrasTab({ bookingId, extras, onUpdate, showToast }: any) {
                   <div><label className="label">Description</label><input className="input" value={editForm.description||''} onChange={ev=>setEditForm((p:any)=>({...p,description:ev.target.value}))}/></div>
                   <div><label className="label">Supplier</label><input className="input" value={editForm.supplier||''} onChange={ev=>setEditForm((p:any)=>({...p,supplier:ev.target.value}))}/></div>
                   <div><label className="label">Net Cost (£)</label><input className="input" type="number" value={editForm.net_cost||''} onChange={ev=>setEditForm((p:any)=>({...p,net_cost:ev.target.value}))}/></div>
-                  <div><label className="label">Sell Price (£)</label><input className="input" type="number" value={editForm.sell_price||''} onChange={ev=>setEditForm((p:any)=>({...p,sell_price:ev.target.value}))}/></div>
                   <div><label className="label">Notes</label><input className="input" value={editForm.notes||''} onChange={ev=>setEditForm((p:any)=>({...p,notes:ev.target.value}))}/></div>
                 </div>
                 <div style={{ display:'flex', gap:'8px', justifyContent:'flex-end', marginTop:'12px' }}>
@@ -2094,13 +2327,12 @@ function ExtrasTab({ bookingId, extras, onUpdate, showToast }: any) {
                   <div style={{ fontSize:'13.5px', fontWeight:'500', textTransform:'capitalize' }}>{e.extra_type?.replace('_',' ')} {e.description ? `— ${e.description}` : ''}</div>
                   <div style={{ fontSize:'12px', color:'var(--text-muted)', marginTop:'2px' }}>
                     {e.supplier && <span>{e.supplier} · </span>}
-                    {e.net_cost && <span>Net: {fmt(e.net_cost)} · </span>}
-                    {e.sell_price && <span>Sell: {fmt(e.sell_price)}</span>}
+                    {e.net_cost && <span>Net: {fmt(e.net_cost)}</span>}
                   </div>
                   {e.notes && <div style={{ fontSize:'12px', color:'var(--text-muted)', fontStyle:'italic', marginTop:'2px' }}>{e.notes}</div>}
                 </div>
                 <div style={{ display:'flex', gap:'6px' }}>
-                  <button className="btn btn-secondary btn-xs" onClick={() => { setEditing(e.id); setEditForm({ ...e, net_cost: e.net_cost ?? '', sell_price: e.sell_price ?? '' }) }}>Edit</button>
+                  <button className="btn btn-secondary btn-xs" onClick={() => { setEditing(e.id); setEditForm({ ...e, net_cost: e.net_cost ?? '' }) }}>Edit</button>
                   <button className="btn btn-ghost btn-xs" style={{ color:'var(--red)' }} onClick={() => deleteExtra(e.id)}>✕</button>
                 </div>
               </div>
@@ -2120,7 +2352,6 @@ function ExtrasTab({ bookingId, extras, onUpdate, showToast }: any) {
               <div><label className="label">Description</label><input className="input" placeholder="e.g. Aspire Lounge, LGW" value={form.description} onChange={e=>setForm((p:any)=>({...p,description:e.target.value}))}/></div>
               <div><label className="label">Supplier</label><input className="input" placeholder="e.g. Holiday Extras" value={form.supplier} onChange={e=>setForm((p:any)=>({...p,supplier:e.target.value}))}/></div>
               <div><label className="label">Net Cost (£)</label><input className="input" type="number" value={form.net_cost} onChange={e=>setForm((p:any)=>({...p,net_cost:e.target.value}))}/></div>
-              <div><label className="label">Sell Price (£)</label><input className="input" type="number" value={form.sell_price} onChange={e=>setForm((p:any)=>({...p,sell_price:e.target.value}))}/></div>
               <div><label className="label">Notes</label><input className="input" value={form.notes} onChange={e=>setForm((p:any)=>({...p,notes:e.target.value}))}/></div>
             </div>
             <div style={{ display:'flex', gap:'8px', justifyContent:'flex-end', marginTop:'12px' }}>
@@ -2152,69 +2383,60 @@ function PaymentsTab({ booking, payments, balance, onUpdate, showToast, currentS
   const paymentLockActive   = !!booking.balance_cleared_at || balance <= 0
   const paymentLocked       = paymentLockActive && !isManager(currentStaff)
 
-  async function syncBookingPaymentFlags(newTotalPaid: number) {
-    await supabase.from('bookings').update({
-      deposit_received: newTotalPaid > 0,
-      balance_cleared_at: sell > 0 && newTotalPaid >= sell ? (booking.balance_cleared_at || new Date().toISOString()) : null,
-    }).eq('id', booking.id)
-  }
-
   async function addPayment() {
     if (paymentLocked) { showToast('Payments are locked once the balance is cleared', 'error'); return }
     const total = (Number(form.debit_card)||0) + (Number(form.credit_card)||0) + (Number(form.amex)||0) + (Number(form.bank_transfer)||0)
     const amount = total || Number(form.amount)
     if (!amount) { showToast('Enter payment amount', 'error'); return }
     setSaving(true)
-    const { data, error } = await supabase.from('booking_payments').insert({
-      booking_id: booking.id, amount,
-      payment_date: form.payment_date,
-      debit_card: Number(form.debit_card) || 0,
-      credit_card: Number(form.credit_card) || 0,
-      amex: Number(form.amex) || 0,
-      bank_transfer: Number(form.bank_transfer) || 0,
-      notes: form.notes || null,
-    }).select('id').single()
-    setSaving(false)
-    if (error) { showToast('Failed: ' + error.message, 'error'); return }
-    await syncBookingPaymentFlags(totalPaid + amount)
-    if (data?.id) {
-      await logAuditEntries([{
-        entity_type: 'booking',
-        entity_id: booking.id,
-        action: 'payment_added',
-        field_name: 'booking_payments',
-        new_value: { payment_id: data.id, amount, payment_date: form.payment_date, notes: form.notes || null },
-        performed_by_staff_id: currentStaff?.id ?? null,
-        performed_by_role: currentStaff?.role ?? null,
-        notes: 'Payment recorded',
-      }])
+    try {
+      const result = await apiRequest<{ message?: string }>(`/api/bookings/${booking.id}/payments`, {
+        method: 'POST',
+        body: JSON.stringify({
+          amount,
+          payment_date: form.payment_date,
+          debit_card: Number(form.debit_card) || 0,
+          credit_card: Number(form.credit_card) || 0,
+          amex: Number(form.amex) || 0,
+          bank_transfer: Number(form.bank_transfer) || 0,
+          notes: form.notes || null,
+        }),
+      })
+      showToast(result.message || 'Payment recorded ✓')
+      setAdding(false)
+      setForm({ ...blank })
+      onUpdate()
+    } catch (error: any) {
+      showToast(`Failed: ${error.message}`, 'error')
+    } finally {
+      setSaving(false)
     }
-    showToast('Payment recorded ✓')
-    setAdding(false); setForm({ ...blank }); onUpdate()
   }
 
   async function markInvoiceSent(id: number) {
-    await supabase.from('booking_payments').update({ invoice_sent: true, invoice_sent_at: new Date().toISOString() }).eq('id', id)
-    showToast('Invoice marked as sent')
-    onUpdate()
+    try {
+      const result = await apiRequest<{ message?: string }>(`/api/bookings/${booking.id}/payments`, {
+        method: 'PUT',
+        body: JSON.stringify({ paymentId: id }),
+      })
+      showToast(result.message || 'Invoice marked as sent')
+      onUpdate()
+    } catch (error: any) {
+      showToast(error.message || 'Failed to mark invoice as sent', 'error')
+    }
   }
 
   async function deletePayment(id: number) {
     if (paymentLocked) { showToast('Payments are locked once the balance is cleared', 'error'); return }
-    const payment = payments.find((entry: Payment) => entry.id === id)
-    await supabase.from('booking_payments').delete().eq('id', id)
-    await syncBookingPaymentFlags(Math.max(0, totalPaid - (payment?.amount || 0)))
-    await logAuditEntries([{
-      entity_type: 'booking',
-      entity_id: booking.id,
-      action: 'payment_deleted',
-      field_name: 'booking_payments',
-      old_value: payment || null,
-      performed_by_staff_id: currentStaff?.id ?? null,
-      performed_by_role: currentStaff?.role ?? null,
-      notes: 'Payment removed',
-    }])
-    showToast('Payment removed'); onUpdate()
+    try {
+      const result = await apiRequest<{ message?: string }>(`/api/bookings/${booking.id}/payments?paymentId=${id}`, {
+        method: 'DELETE',
+      })
+      showToast(result.message || 'Payment removed')
+      onUpdate()
+    } catch (error: any) {
+      showToast(error.message || 'Failed to delete payment', 'error')
+    }
   }
 
   const pctPaid = sell > 0 ? Math.min(100, Math.round((totalPaid / sell) * 100)) : 0
@@ -2310,7 +2532,7 @@ function PaymentsTab({ booking, payments, balance, onUpdate, showToast, currentS
             </div>
           </div>
           <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px', marginBottom:'12px' }}>
-            <div><label className="label">Payment Date</label><input className="input" type="date" value={form.payment_date} onChange={e=>setForm((p:any)=>({...p,payment_date:e.target.value}))}/></div>
+            <div><label className="label">Payment Date</label><DateInput value={form.payment_date} onChange={v=>setForm((p:any)=>({...p,payment_date:v}))}/></div>
             <div><label className="label">Notes</label><input className="input" placeholder="Optional" value={form.notes} onChange={e=>setForm((p:any)=>({...p,notes:e.target.value}))}/></div>
           </div>
           <div style={{ display:'flex', gap:'8px', justifyContent:'flex-end' }}>
@@ -2336,9 +2558,19 @@ function CostingTab({ booking, flights, accommodations, transfers, extras, payme
   const [balDueDraft, setBalDueDraft]     = useState(booking.balance_due_date?.split('T')[0] || '')
   const [ccDraft, setCcDraft]             = useState(String(booking.cc_surcharge || ''))
   const [editingCc, setEditingCc]         = useState(false)
+  const [discountDraft, setDiscountDraft] = useState(String(booking.discount || ''))
+  const [editingDiscount, setEditingDiscount] = useState(false)
   const [syncing, setSyncing]             = useState(false)
+  const [sellDraft, setSellDraft]         = useState(String(booking.total_sell ?? booking.deals?.deal_value ?? 0))
 
-  const sell      = booking.total_sell || booking.deals?.deal_value || 0
+  useEffect(() => {
+    setBalDueDraft(booking.balance_due_date?.split('T')[0] || '')
+    setCcDraft(String(booking.cc_surcharge || ''))
+    setDiscountDraft(String(booking.discount || ''))
+    setSellDraft(String(booking.total_sell ?? booking.deals?.deal_value ?? 0))
+  }, [booking])
+
+  const sell      = Number(sellDraft) || 0
   const discount  = booking.discount || 0
   const ccSurch   = booking.cc_surcharge || 0
   const clientNet = sell - discount - ccSurch
@@ -2392,7 +2624,9 @@ function CostingTab({ booking, flights, accommodations, transfers, extras, payme
   const grossComm    = clientNet - totalNetCost
 
   const totalPaid = payments.reduce((a: number, p: Payment) => a + (p.amount || 0), 0)
-  const managerMode = isManager(currentStaff)
+  const isManagerUser       = isManager(currentStaff)
+  const canEditCommercial   = !booking.deposit_received || isManagerUser
+  const managerMode         = canEditCommercial  // alias kept so downstream references compile
   let running = 0
   const receiptRows = payments.map((p: Payment, i: number) => {
     running += p.amount
@@ -2403,40 +2637,72 @@ function CostingTab({ booking, flights, accommodations, transfers, extras, payme
   const balanceDue = sell - totalPaid
 
   async function saveBalDue() {
-    const { error } = await supabase.from('bookings').update({ balance_due_date: balDueDraft || null }).eq('id', booking.id)
-    if (error) { showToast('Failed: ' + error.message, 'error'); return }
-    showToast('Balance due date updated ✓'); setEditingBalDue(false); onUpdate()
+    try {
+      const result = await apiRequest<{ message?: string }>(`/api/bookings/${booking.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({ action: 'update_balance_due', balance_due_date: balDueDraft || null }),
+      })
+      showToast(result.message || 'Balance due date updated ✓')
+      setEditingBalDue(false)
+      onUpdate()
+    } catch (error: any) {
+      showToast(`Failed: ${error.message}`, 'error')
+    }
   }
 
   async function saveCcSurcharge() {
     if (!managerMode) { showToast('Only managers can change CC surcharge', 'error'); return }
-    const { error } = await supabase.from('bookings').update({ cc_surcharge: Number(ccDraft) || 0 }).eq('id', booking.id)
-    if (error) { showToast('Failed: ' + error.message, 'error'); return }
-    showToast('CC surcharge updated ✓'); setEditingCc(false); onUpdate()
+    try {
+      const result = await apiRequest<{ message?: string }>(`/api/bookings/${booking.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({ action: 'update_cc_surcharge', cc_surcharge: Number(ccDraft) || 0 }),
+      })
+      showToast(result.message || 'CC surcharge updated ✓')
+      setEditingCc(false)
+      onUpdate()
+    } catch (error: any) {
+      showToast(`Failed: ${error.message}`, 'error')
+    }
+  }
+
+  async function saveDiscount() {
+    if (!canEditCommercial) { showToast('Only managers can change commercial fields after deposit', 'error'); return }
+    try {
+      const result = await apiRequest<{ message?: string }>(`/api/bookings/${booking.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({ action: 'update_discount', discount: Number(discountDraft) || null }),
+      })
+      showToast(result.message || 'Discount updated ✓')
+      setEditingDiscount(false)
+      onUpdate()
+    } catch (error: any) {
+      showToast(`Failed: ${error.message}`, 'error')
+    }
   }
 
   async function pushToOverview() {
     if (!managerMode) { showToast('Only managers can change protected commercial fields', 'error'); return }
     if (totalNetCost === 0) { showToast('No costs entered yet', 'error'); return }
     setSyncing(true)
-    const { error } = await supabase.from('bookings').update({
-      total_net:    totalNetCost,
-      gross_profit: grossComm,
-    }).eq('id', booking.id)
-    setSyncing(false)
-    if (error) { showToast('Failed: ' + error.message, 'error'); return }
-    await logAuditEntries([{
-      entity_type: 'booking',
-      entity_id: booking.id,
-      action: 'commercial_fields_updated',
-      field_name: 'gross_profit',
-      old_value: { total_net: booking.total_net, gross_profit: booking.gross_profit, cc_surcharge: booking.cc_surcharge },
-      new_value: { total_net: totalNetCost, gross_profit: grossComm, cc_surcharge: Number(ccDraft) || 0 },
-      performed_by_staff_id: currentStaff?.id ?? null,
-      performed_by_role: currentStaff?.role ?? null,
-      notes: 'Costing pushed to overview',
-    }])
-    showToast('Total net & gross profit pushed to Overview ✓'); onUpdate()
+    try {
+      const result = await apiRequest<{ message?: string }>(`/api/bookings/${booking.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          action: 'push_costing',
+          total_sell: sell,
+          total_net: totalNetCost,
+          gross_profit: grossComm,
+          final_profit: grossComm,
+          cc_surcharge: Number(ccDraft) || 0,
+        }),
+      })
+      showToast(result.message || 'Total sell, net and gross profit pushed to Overview ✓')
+      onUpdate()
+    } catch (error: any) {
+      showToast(`Failed: ${error.message}`, 'error')
+    } finally {
+      setSyncing(false)
+    }
   }
 
   const TH = ({ children, right }: { children: string; right?: boolean }) => (
@@ -2451,7 +2717,7 @@ function CostingTab({ booking, flights, accommodations, transfers, extras, payme
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'16px' }}>
           <div style={{ fontFamily:'Fraunces,serif', fontSize:'17px', fontWeight:'300' }}>Cost Details</div>
           {totalNetCost > 0 && (
-            <button className="btn btn-cta btn-xs" onClick={pushToOverview} disabled={syncing}>
+            <button className="btn btn-cta btn-xs" onClick={pushToOverview} disabled={!managerMode || syncing}>
               {syncing ? 'Pushing…' : managerMode ? '⟳ Push to Overview' : 'Manager Only'}
             </button>
           )}
@@ -2504,22 +2770,64 @@ function CostingTab({ booking, flights, accommodations, transfers, extras, payme
                 ))}
               </div>
               <div style={{ display:'flex', flexDirection:'column', gap:'9px' }}>
-                {[
-                  { label:'Client Total',  val: fmt(sell),      color:'var(--accent-mid)', bold: true },
-                  { label:'Client Net',    val: fmt(clientNet), color:'var(--text-primary)', bold: true },
-                  { label:'Gross Comm',    val: fmt(grossComm), color: grossComm >= 0 ? 'var(--green)' : 'var(--red)', bold: true },
-                  { label:'Net Comm',      val: fmt(grossComm), color: grossComm >= 0 ? 'var(--green)' : 'var(--red)', bold: true },
-                ].map(r => (
-                  <div key={r.label} style={{ display:'flex', justifyContent:'space-between' }}>
-                    <span style={{ fontSize:'12.5px', color:'var(--text-muted)' }}>{r.label}</span>
-                    <span style={{ fontSize:'13px', fontFamily:'monospace', color: r.color, fontWeight:'700' }}>{r.val}</span>
+                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                  <span style={{ fontSize:'12.5px', color:'var(--text-muted)' }}>Client Total</span>
+                  {managerMode ? (
+                    <input
+                      className="input"
+                      type="number"
+                      value={sellDraft}
+                      onChange={e => setSellDraft(e.target.value)}
+                      style={{ width:'110px', fontSize:'13px', padding:'4px 8px', textAlign:'right' }}
+                    />
+                  ) : (
+                    <span style={{ fontSize:'13px', fontFamily:'monospace', color:'var(--text-primary)', fontWeight:'700' }}>
+                      {fmt(sell)}
+                    </span>
+                  )}
+                </div>
+                {!canEditCommercial && (
+                  <div style={{ fontSize:'12px', color:'var(--text-muted)', marginTop:'6px' }}>
+                    Deposit received — commercial values are locked. Only managers can amend.
                   </div>
-                ))}
+                )}
+                <div style={{ display:'flex', justifyContent:'space-between' }}>
+                  <span style={{ fontSize:'12.5px', color:'var(--text-muted)' }}>Client Net</span>
+                  <span style={{ fontSize:'13px', fontFamily:'monospace', color:'var(--text-primary)', fontWeight:'700' }}>{fmt(clientNet)}</span>
+                </div>
+                <div style={{ display:'flex', justifyContent:'space-between' }}>
+                  <span style={{ fontSize:'12.5px', color:'var(--text-muted)' }}>Gross Comm</span>
+                  <span style={{ fontSize:'13px', fontFamily:'monospace', color: grossComm >= 0 ? 'var(--green)' : 'var(--red)', fontWeight:'700' }}>{fmt(grossComm)}</span>
+                </div>
+                <div style={{ display:'flex', justifyContent:'space-between' }}>
+                  <span style={{ fontSize:'12.5px', color:'var(--text-muted)' }}>Net Comm</span>
+                  <span style={{ fontSize:'13px', fontFamily:'monospace', color: grossComm >= 0 ? 'var(--green)' : 'var(--red)', fontWeight:'700' }}>{fmt(grossComm)}</span>
+                </div>
               </div>
             </div>
 
-            {/* CC surcharge inline editor */}
+            {/* Discount inline editor */}
             <div style={{ marginTop:'14px', padding:'12px 14px', background:'var(--bg-secondary)', borderRadius:'8px', display:'flex', alignItems:'center', gap:'12px' }}>
+              <span style={{ fontSize:'12.5px', color:'var(--text-muted)', flex:1 }}>Discount (deducted from client total)</span>
+              {editingDiscount ? (
+                <div style={{ display:'flex', gap:'6px', alignItems:'center' }}>
+                  <span style={{ fontSize:'13px' }}>£</span>
+                  <input className="input" type="number" value={discountDraft} onChange={e=>setDiscountDraft(e.target.value)} style={{ width:'90px', fontSize:'13px', padding:'4px 8px' }} autoFocus />
+                  <button className="btn btn-cta btn-xs" onClick={saveDiscount}>Save</button>
+                  <button className="btn btn-secondary btn-xs" onClick={()=>setEditingDiscount(false)}>Cancel</button>
+                </div>
+              ) : (
+                <div style={{ display:'flex', gap:'8px', alignItems:'center' }}>
+                  <span style={{ fontSize:'14px', fontWeight:'600', fontFamily:'monospace', color: discount > 0 ? 'var(--amber)' : 'var(--text-muted)' }}>
+                    {discount > 0 ? fmt(discount) : '—'}
+                  </span>
+                  {canEditCommercial && <button onClick={()=>setEditingDiscount(true)} style={{ background:'none', border:'none', cursor:'pointer', fontSize:'12px', color:'var(--text-muted)', opacity:0.7 }}>✏</button>}
+                </div>
+              )}
+            </div>
+
+            {/* CC surcharge inline editor */}
+            <div style={{ marginTop:'8px', padding:'12px 14px', background:'var(--bg-secondary)', borderRadius:'8px', display:'flex', alignItems:'center', gap:'12px' }}>
               <span style={{ fontSize:'12.5px', color:'var(--text-muted)', flex:1 }}>CC Surcharge (credit card fee charged by management)</span>
               {editingCc ? (
                 <div style={{ display:'flex', gap:'6px', alignItems:'center' }}>
@@ -2606,9 +2914,8 @@ function CostingTab({ booking, flights, accommodations, transfers, extras, payme
             <div style={{ fontSize:'11px', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:'8px' }}>Balance Due Date</div>
             {editingBalDue ? (
               <div style={{ display:'flex', gap:'8px', alignItems:'center', justifyContent:'flex-end' }}>
-                <input className="input" type="date" value={balDueDraft}
-                  onChange={e => setBalDueDraft(e.target.value)}
-                  style={{ fontSize:'13px', padding:'5px 8px', width:'150px' }} />
+                <DateInput value={balDueDraft} onChange={setBalDueDraft}
+                  style={{ fontSize:'13px', width:'150px' }} />
                 <button className="btn btn-cta btn-xs" onClick={saveBalDue}>Save</button>
                 <button className="btn btn-secondary btn-xs" onClick={() => setEditingBalDue(false)}>Cancel</button>
               </div>
@@ -2850,18 +3157,18 @@ function DocumentsTab({ booking, client, passengers, outbound, returnFlts, accom
   async function markDocumentIssued(docId: string) {
     const taskKeys = documentTaskKeys(docId)
     if (taskKeys.length === 0) return
-    const pendingTasks = (tasks as BookingTask[]).filter(task => taskKeys.includes(task.task_key) && !task.is_done)
-    if (pendingTasks.length === 0) return
-    await Promise.all(
-      pendingTasks.map(task =>
-        supabase
-          .from('booking_tasks')
-          .update({ is_done: true, completed_at: new Date().toISOString() })
-          .eq('id', task.id)
-      )
-    )
-    showToast('Document task updated ✓')
-    onUpdate()
+    try {
+      const result = await apiRequest<{ message?: string }>(`/api/bookings/${booking.id}/documents`, {
+        method: 'POST',
+        body: JSON.stringify({ docId }),
+      })
+      if (result.message && result.message !== 'No task update required') {
+        showToast(result.message)
+      }
+      onUpdate()
+    } catch (error: any) {
+      showToast(error.message || 'Failed to update document task', 'error')
+    }
   }
 
   function generateDoc(docId: string): string {
@@ -3275,7 +3582,7 @@ function DocumentsTab({ booking, client, passengers, outbound, returnFlts, accom
 }
 
 // ── TASKS TAB ────────────────────────────────────────────────
-function TasksTab({ tasks, onUpdate, showToast }: any) {
+function TasksTab({ tasks, activities, bookingReference, onUpdate, showToast }: any) {
   const categories = Array.from(new Set((tasks as BookingTask[]).map(t => t.category))).sort((a, b) => {
     const aIndex = TASK_CATEGORY_ORDER.indexOf(a)
     const bIndex = TASK_CATEGORY_ORDER.indexOf(b)
@@ -3286,11 +3593,21 @@ function TasksTab({ tasks, onUpdate, showToast }: any) {
   })
   const tasksDone  = tasks.filter((t: BookingTask) => t.is_done).length
   const taskPct    = tasks.length ? Math.round((tasksDone / tasks.length) * 100) : 0
+  const relevantActivities = (activities as Activity[])
+    .filter(activity => activity.activity_type === 'TASK_COMPLETED' || activity.notes?.includes(bookingReference))
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+    .slice(0, 8)
 
   async function toggle(task: BookingTask) {
-    const newDone = !task.is_done
-    await supabase.from('booking_tasks').update({ is_done: newDone, completed_at: newDone ? new Date().toISOString() : null }).eq('id', task.id)
-    onUpdate()
+    try {
+      await apiRequest(`/api/bookings/${task.booking_id}/tasks`, {
+        method: 'PUT',
+        body: JSON.stringify({ action: 'toggle', taskId: task.id }),
+      })
+      onUpdate()
+    } catch (error: any) {
+      showToast(error.message || 'Failed to update task', 'error')
+    }
   }
 
   return (
@@ -3353,6 +3670,28 @@ function TasksTab({ tasks, onUpdate, showToast }: any) {
             </div>
           )
         })}
+      </div>
+
+      <div className="card" style={{ padding:'16px 18px', marginTop:'16px' }}>
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'10px' }}>
+          <div style={{ fontSize:'13px', fontWeight:'700', color:'var(--text-primary)' }}>Recent Activity</div>
+          <span style={{ fontSize:'11px', color:'var(--text-muted)' }}>{bookingReference}</span>
+        </div>
+        {relevantActivities.length === 0 ? (
+          <div style={{ fontSize:'12px', color:'var(--text-muted)' }}>No recent task or booking activity yet.</div>
+        ) : (
+          <div style={{ display:'flex', flexDirection:'column', gap:'8px' }}>
+            {relevantActivities.map(activity => (
+              <div key={activity.id} style={{ padding:'10px 12px', background:'var(--bg-secondary)', borderRadius:'8px' }}>
+                <div style={{ display:'flex', justifyContent:'space-between', gap:'12px', alignItems:'flex-start' }}>
+                  <div style={{ fontSize:'12.5px', color:'var(--text-primary)', lineHeight:1.5 }}>{activity.notes || activity.activity_type}</div>
+                  <div style={{ fontSize:'11px', color:'var(--text-muted)', whiteSpace:'nowrap' }}>{fmtDate(activity.created_at)}</div>
+                </div>
+                <div style={{ fontSize:'10.5px', color:'var(--text-muted)', marginTop:'4px' }}>{activity.activity_type}</div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   )

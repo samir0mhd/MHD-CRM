@@ -7,6 +7,7 @@ import type {
   HotelRoomContract,
   HotelRoomOccupancyRate,
   HotelRoomRate,
+  OfferFamily,
   OfferEligibility,
   PricingGuestMix,
   PricingPreview,
@@ -24,6 +25,12 @@ type PricingPreviewDataset = {
   roomRates?: HotelRoomRate[]
   occupancyRates?: HotelRoomOccupancyRate[]
   compulsoryCharges?: HotelCompulsoryCharge[]
+}
+
+const MANUAL_SPECIAL_OFFER_FAMILIES: OfferFamily[] = ['honeymoon']
+
+const SPECIAL_OFFER_LABELS: Partial<Record<OfferFamily, string>> = {
+  honeymoon: 'HM Offers',
 }
 
 function toUtcMidday(date: string) {
@@ -51,6 +58,14 @@ export function parseAgeCsv(input: string) {
 
 function sameText(left: string | null | undefined, right: string | null | undefined) {
   return (left || '').trim().toLowerCase() === (right || '').trim().toLowerCase()
+}
+
+function requiresManualSpecialOfferSelection(family: OfferFamily) {
+  return MANUAL_SPECIAL_OFFER_FAMILIES.includes(family)
+}
+
+function getSpecialOfferSelectionLabel(family: OfferFamily) {
+  return SPECIAL_OFFER_LABELS[family] || family.replaceAll('_', ' ')
 }
 
 export function buildGuestMix(request: PricingRequest): PricingGuestMix {
@@ -176,6 +191,16 @@ function evaluateCompulsoryCharges(
 export function evaluateOfferEligibility(offer: HotelOffer, request: PricingRequest, nights: string[]): OfferEligibility {
   if (offer.status !== 'active') {
     return { offerId: offer.id, offerCode: offer.offer_code, offerName: offer.offer_name, eligible: false, reason: 'Offer is not active' }
+  }
+
+  if (requiresManualSpecialOfferSelection(offer.offer_family) && !request.selectedOfferFamilies.includes(offer.offer_family)) {
+    return {
+      offerId: offer.id,
+      offerCode: offer.offer_code,
+      offerName: offer.offer_name,
+      eligible: false,
+      reason: `Requires ${getSpecialOfferSelectionLabel(offer.offer_family)} selection`,
+    }
   }
 
   if (!isWithinDateRange(request.bookingDate, offer.booking_from, offer.booking_to)) {
@@ -395,10 +420,11 @@ export function buildPricingPreview(request: PricingRequest, dataset: PricingPre
 
     if (eligibleChildBase > 0) {
       const discount = eligibleChildBase * ((rule.value || 0) / 100)
+      const sourceOffer = offersById.get(rule.hotel_offer_id)
       childDiscountTotal += discount
       trace.push({
         stage: 'child_discount',
-        label: 'Child discount applied first',
+        label: sourceOffer ? `${sourceOffer.offer_code} child discount` : 'Child discount applied first',
         amount: -discount,
         detail: `${rule.value}%`,
       })
@@ -408,12 +434,15 @@ export function buildPricingPreview(request: PricingRequest, dataset: PricingPre
   const accommodationSubtotalAfterChild = adultBaseTotal + childBaseTotal - childDiscountTotal
 
   let offerDiscountTotal = 0
+  let runningOfferSubtotal = accommodationSubtotalAfterChild
   for (const rule of eligibleRules.filter(rule => rule.apply_stage === 'offers' && rule.rule_type === 'percentage_discount' && rule.pricing_method === 'percentage' && rule.value)) {
-    const discount = accommodationSubtotalAfterChild * ((rule.value || 0) / 100)
+    const discount = runningOfferSubtotal * ((rule.value || 0) / 100)
+    const sourceOffer = offersById.get(rule.hotel_offer_id)
     offerDiscountTotal += discount
+    runningOfferSubtotal -= discount
     trace.push({
       stage: 'offer_discount',
-      label: 'Overall offer discount',
+      label: sourceOffer ? `${sourceOffer.offer_code} overall discount` : 'Overall offer discount',
       amount: -discount,
       detail: `${rule.value}%`,
     })

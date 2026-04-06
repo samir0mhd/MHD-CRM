@@ -585,7 +585,7 @@ The current quote builder stores accommodation net manually in fields like `accN
 
 Future quote flow:
 
-1. consultant chooses hotel, room, board, check-in, nights, adults, children, ages
+1. consultant chooses hotel, room, board, check-in, nights, adults, children/teens with ages, and any manual special-offer trigger such as `HM Offers`
 2. engine returns calculated net
 3. user can accept:
    - calculated net

@@ -1,10 +1,9 @@
 'use client'
 
 import { useEffect, useState, useRef } from 'react'
-import { supabase } from '@/lib/supabase'
 import type { Deal } from '@/lib/supabase'
-import { getAccessContext, type StaffUser } from '@/lib/access'
 import Link from 'next/link'
+import { authedFetch } from '@/lib/api-client'
 
 const STAGES = [
   { key: 'NEW_LEAD',         label: 'New Lead',         color: '#8b5cf6' },
@@ -26,50 +25,6 @@ const ACT_DISPLAY: Record<string, string> = {
   NOTE: 'Note', MEETING: 'Meeting', FOLLOW_UP: 'Follow-up',
 }
 
-function getDealSignals(deal: DealWithClient) {
-  const now = Date.now()
-
-  let daysUntilDeparture: number | null = null
-  if (deal.departure_date) {
-    daysUntilDeparture = Math.ceil(
-      (new Date(deal.departure_date + 'T12:00').getTime() - now) / 86400000
-    )
-  }
-
-  let isOverdue = false, overdueBy = 0, daysUntilActivity: number | null = null
-  if (deal.next_activity_at) {
-    const diff = (new Date(deal.next_activity_at).getTime() - now) / 86400000
-    if (diff < 0) { isOverdue = true; overdueBy = Math.floor(Math.abs(diff)) }
-    else daysUntilActivity = Math.ceil(diff)
-  }
-
-  let temp: 'hot' | 'warm' | 'cold' | 'frozen'
-  if (overdueBy >= 7) {
-    temp = 'frozen'
-  } else if (overdueBy >= 3 || !deal.next_activity_at) {
-    temp = 'cold'
-  } else if (
-    (daysUntilDeparture !== null && daysUntilDeparture <= 45) ||
-    (isOverdue && overdueBy <= 2) ||
-    (daysUntilActivity !== null && daysUntilActivity <= 1)
-  ) {
-    temp = 'hot'
-  } else if (
-    (daysUntilDeparture !== null && daysUntilDeparture <= 120) ||
-    (daysUntilActivity !== null && daysUntilActivity <= 7)
-  ) {
-    temp = 'warm'
-  } else {
-    temp = 'cold'
-  }
-
-  let valueTier: null | 'whale' | 'high' = null
-  if (deal.deal_value >= 8000) valueTier = 'whale'
-  else if (deal.deal_value >= 4000) valueTier = 'high'
-
-  return { daysUntilDeparture, isOverdue, overdueBy, daysUntilActivity, temp, valueTier }
-}
-
 function fmt(n: number) {
   return '£' + (n || 0).toLocaleString('en-GB', { maximumFractionDigits: 0 })
 }
@@ -88,6 +43,62 @@ type ClientResult = {
   owner_staff_id: number | null
 }
 
+type DealSignals = {
+  daysUntilDeparture: number | null
+  isOverdue: boolean
+  overdueBy: number
+  daysUntilActivity: number | null
+  temp: 'hot' | 'warm' | 'cold' | 'frozen'
+  valueTier: null | 'whale' | 'high'
+}
+
+function calculateDealSignals(deal: Deal, renderTime: number = Date.now()): DealSignals {
+  let daysUntilDeparture: number | null = null
+  if (deal.departure_date) {
+    daysUntilDeparture = Math.ceil(
+      (new Date(deal.departure_date + 'T12:00').getTime() - renderTime) / 86400000
+    )
+  }
+
+  let isOverdue = false
+  let overdueBy = 0
+  let daysUntilActivity: number | null = null
+  if (deal.next_activity_at) {
+    const diff = (new Date(deal.next_activity_at).getTime() - renderTime) / 86400000
+    if (diff < 0) {
+      isOverdue = true
+      overdueBy = Math.floor(Math.abs(diff))
+    } else {
+      daysUntilActivity = Math.ceil(diff)
+    }
+  }
+
+  let temp: 'hot' | 'warm' | 'cold' | 'frozen'
+  if (overdueBy >= 7) temp = 'frozen'
+  else if (overdueBy >= 3 || !deal.next_activity_at) temp = 'cold'
+  else if (
+    (daysUntilDeparture !== null && daysUntilDeparture <= 45) ||
+    (isOverdue && overdueBy <= 2) ||
+    (daysUntilActivity !== null && daysUntilActivity <= 1)
+  ) temp = 'hot'
+  else if (
+    (daysUntilDeparture !== null && daysUntilDeparture <= 120) ||
+    (daysUntilActivity !== null && daysUntilActivity <= 7)
+  ) temp = 'warm'
+  else temp = 'cold'
+
+  let valueTier: null | 'whale' | 'high' = null
+  if ((deal.deal_value || 0) >= 8000) valueTier = 'whale'
+  else if ((deal.deal_value || 0) >= 4000) valueTier = 'high'
+
+  return { daysUntilDeparture, isOverdue, overdueBy, daysUntilActivity, temp, valueTier }
+}
+
+function isRottenDeal(deal: Deal, renderTime: number = Date.now()): boolean {
+  if (!deal.next_activity_at) return false
+  return (renderTime - new Date(deal.next_activity_at).getTime()) / 86400000 >= 5
+}
+
 export default function PipelinePage() {
   const [deals, setDeals]           = useState<DealWithClient[]>([])
   const [loading, setLoading]       = useState(true)
@@ -104,12 +115,11 @@ export default function PipelinePage() {
 
   async function loadDeals() {
     setLoading(true)
-    const { data } = await supabase
-      .from('deals')
-      .select('*, clients(first_name, last_name)')
-      .not('stage', 'in', '("BOOKED","LOST")')
-      .order('created_at', { ascending: false })
-    setDeals(data || [])
+    const response = await authedFetch('/api/pipeline')
+    if (response.ok) {
+      const data = await response.json()
+      setDeals(data || [])
+    }
     setLoading(false)
   }
 
@@ -137,28 +147,56 @@ export default function PipelinePage() {
   async function moveDeal(dealId: number, newStage: string) {
     const deal = deals.find(d => d.id === dealId)
     if (!deal || deal.stage === newStage) return
+    
     setDeals(prev => prev.map(d => d.id === dealId ? { ...d, stage: newStage } : d))
-    const { error } = await supabase.from('deals').update({ stage: newStage }).eq('id', dealId)
-    if (error) {
+    
+    const stageLabel = STAGES.find(s => s.key === newStage)?.label || newStage
+    
+    try {
+      const response = await authedFetch('/api/pipeline/move', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dealId, newStage, stageLabel }),
+      })
+
+      const result = await response.json()
+
+      if (!result.success) {
+        setDeals(prev => prev.map(d => d.id === dealId ? { ...d, stage: deal.stage } : d))
+        showToast('Failed to update deal')
+      } else {
+        showToast(`Moved to ${stageLabel}`)
+      }
+    } catch {
       setDeals(prev => prev.map(d => d.id === dealId ? { ...d, stage: deal.stage } : d))
       showToast('Failed to update deal')
-    } else {
-      await supabase.from('activities').insert({
-        deal_id: dealId,
-        activity_type: 'STAGE_CHANGE',
-        notes: `Moved to ${STAGES.find(s => s.key === newStage)?.label || newStage}`,
-      })
-      showToast(`Moved to ${STAGES.find(s => s.key === newStage)?.label}`)
     }
   }
 
   async function snoozeDeal(dealId: number, days: number) {
-    const at = new Date()
-    at.setDate(at.getDate() + days)
-    const iso = at.toISOString()
-    await supabase.from('deals').update({ next_activity_at: iso }).eq('id', dealId)
-    setDeals(prev => prev.map(d => d.id === dealId ? { ...d, next_activity_at: iso } : d))
-    showToast(`Snoozed ${days} day${days > 1 ? 's' : ''}`)
+    try {
+      const response = await authedFetch('/api/pipeline/snooze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dealId, days }),
+      })
+
+      const result = await response.json()
+
+      if (!result.success) {
+        showToast('Failed to snooze deal')
+        return
+      }
+
+      const at = new Date()
+      at.setDate(at.getDate() + days)
+      const iso = at.toISOString()
+      
+      setDeals(prev => prev.map(d => d.id === dealId ? { ...d, next_activity_at: iso } : d))
+      showToast(`Snoozed ${days} day${days > 1 ? 's' : ''}`)
+    } catch {
+      showToast('Failed to snooze deal')
+    }
   }
 
   const filtered = search
@@ -181,11 +219,6 @@ export default function PipelinePage() {
     }
     return 0
   }) : filtered
-
-  function isRotten(d: DealWithClient) {
-    if (!d.next_activity_at) return false
-    return (renderNow - new Date(d.next_activity_at).getTime()) / 86400000 >= 5
-  }
 
   if (loading) {
     return (
@@ -234,7 +267,7 @@ export default function PipelinePage() {
           {STAGES.map((stage, i) => {
             const count = deals.filter(d => d.stage === stage.key).length
             const pct   = deals.length > 0 ? Math.round(count / deals.length * 100) : 0
-            const rotten = deals.filter(d => d.stage === stage.key && isRotten(d)).length
+            const rotten = deals.filter(d => d.stage === stage.key && isRottenDeal(d, renderNow)).length
             return (
               <div key={stage.key} style={{ flex: 1, padding: '12px 14px', borderLeft: i > 0 ? '1px solid var(--border)' : 'none', position: 'relative', paddingBottom: '16px' }}>
                 <div style={{ fontSize: '9.5px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.07em', color: stage.color, marginBottom: '5px', fontFamily: 'Outfit, sans-serif' }}>{stage.label}</div>
@@ -260,7 +293,7 @@ export default function PipelinePage() {
           {STAGES.map(stage => {
             const stageDeals   = filtered.filter(d => d.stage === stage.key)
             const stageVal     = stageDeals.reduce((a, d) => a + (d.deal_value || 0), 0)
-            const rottenInStage = stageDeals.filter(isRotten).length
+            const rottenInStage = stageDeals.filter(deal => isRottenDeal(deal, renderNow)).length
             const isDragOver   = dragOverStage === stage.key
 
             return (
@@ -292,7 +325,7 @@ export default function PipelinePage() {
 
                   {stageDeals.map(deal => {
                     const client = deal.clients
-                    const sig    = getDealSignals(deal)
+                    const sig    = calculateDealSignals(deal, renderNow)
                     const tc     = TEMP_COLORS[sig.temp]
 
                     return (
@@ -495,7 +528,7 @@ export default function PipelinePage() {
 
           {sortedFiltered.map(deal => {
             const client    = deal.clients
-            const sig       = getDealSignals(deal)
+            const sig       = calculateDealSignals(deal, renderNow)
             const tc        = TEMP_COLORS[sig.temp]
             const stageInfo = STAGES.find(s => s.key === deal.stage)
 
@@ -678,15 +711,7 @@ function NewDealModal({ defaultStage, onClose, onSaved }: {
 
   const [saving, setSaving] = useState(false)
   const [error, setError]   = useState('')
-  const [currentStaff, setCurrentStaff] = useState<StaffUser | null>(null)
   const searchTimer         = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  useEffect(() => {
-    void (async () => {
-      const { currentStaff } = await getAccessContext()
-      setCurrentStaff(currentStaff)
-    })()
-  }, [])
 
   // Search clients as user types
   function handleClientSearch(val: string) {
@@ -697,12 +722,13 @@ function NewDealModal({ defaultStage, onClose, onSaved }: {
     if (searchTimer.current) clearTimeout(searchTimer.current)
     searchTimer.current = setTimeout(async () => {
       setSearching(true)
-      const { data } = await supabase
-        .from('clients')
-        .select('id, first_name, last_name, phone, email, owner_staff_id')
-        .or(`first_name.ilike.%${val}%,last_name.ilike.%${val}%,phone.ilike.%${val}%,email.ilike.%${val}%`)
-        .limit(6)
-      setClientResults(data || [])
+      const response = await authedFetch(`/api/pipeline/clients?q=${encodeURIComponent(val)}`)
+      if (response.ok) {
+        const data = await response.json()
+        setClientResults(data || [])
+      } else {
+        setClientResults([])
+      }
       setSearching(false)
     }, 300)
   }
@@ -733,54 +759,34 @@ function NewDealModal({ defaultStage, onClose, onSaved }: {
 
     setSaving(true); setError('')
     try {
-      let clientId: number
-      let ownerStaffId: number | null = currentStaff?.id ?? null
+      const response = await authedFetch('/api/pipeline', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          selectedClientId: selectedClient?.id ?? null,
+          title,
+          dealValue,
+          departureDate,
+          source,
+          stage,
+          adults,
+          children,
+          travelType,
+          budgetConf,
+          newFirst,
+          newLast,
+          newEmail,
+          newPhone,
+        }),
+      })
 
-      if (selectedClient) {
-        clientId = selectedClient.id
-        ownerStaffId = selectedClient.owner_staff_id || ownerStaffId
-      } else {
-        // Create new client
-        const { data: newClient, error: cErr } = await supabase
-          .from('clients')
-          .insert({
-            first_name: newFirst.trim(),
-            last_name:  newLast.trim(),
-            email:      newEmail.trim(),
-            phone:      newPhone.trim(),
-            owner_staff_id: ownerStaffId,
-          })
-          .select('id, owner_staff_id').single()
-        if (cErr || !newClient) { setError('Failed to create client'); setSaving(false); return }
-        clientId = newClient.id
-        ownerStaffId = newClient.owner_staff_id || ownerStaffId
+      if (!response.ok) {
+        const result = await response.json().catch(() => null)
+        setError(result?.error || 'Failed to create deal')
+        setSaving(false)
+        return
       }
 
-      // Create deal
-      const { data: newDeal, error: dErr } = await supabase.from('deals').insert({
-        title:          title.trim(),
-        client_id:      clientId,
-        staff_id:       ownerStaffId,
-        stage,
-        deal_value:     dealValue ? parseFloat(dealValue) : null,
-        departure_date: departureDate || null,
-        source,
-      }).select('id').single()
-      if (dErr || !newDeal) { setError('Failed to create deal'); setSaving(false); return }
-      // Save qualification as an activity note
-      const qualParts = [
-        `Adults: ${adults}`,
-        parseInt(children) > 0 ? `Children: ${children}` : null,
-        travelType ? `Type: ${travelType}` : null,
-        `Budget: ${budgetConf}`,
-      ].filter(Boolean)
-      if (qualParts.length) {
-        await supabase.from('activities').insert({
-          deal_id: newDeal.id,
-          activity_type: 'NOTE',
-          notes: `Qualification — ${qualParts.join(' · ')}`,
-        })
-      }
       onSaved()
     } catch {
       setError('Something went wrong')

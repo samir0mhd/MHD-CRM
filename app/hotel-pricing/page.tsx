@@ -2,8 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
-import { supabase } from '@/lib/supabase'
-import { buildPricingPreview, parseAgeCsv } from '@/lib/hotel-pricing/engine'
+import { buildPricingPreview } from '@/lib/hotel-pricing/engine'
 import type {
   HotelCompulsoryCharge,
   HotelContractSeason,
@@ -13,6 +12,7 @@ import type {
   HotelRoomContract,
   HotelRoomOccupancyRate,
   HotelRoomRate,
+  OfferFamily,
   PricingRequest,
 } from '@/lib/hotel-pricing/types'
 
@@ -39,6 +39,25 @@ type ContractVersionSummary = {
   is_active: boolean
 }
 
+type SpecialOfferOption = {
+  aliases: string[]
+  description: string
+  label: string
+  value: OfferFamily
+}
+
+const CHILD_AGE_OPTIONS = Array.from({ length: 10 }, (_, index) => index + 3)
+const TEEN_AGE_OPTIONS = Array.from({ length: 5 }, (_, index) => index + 13)
+
+const SPECIAL_OFFER_OPTIONS: SpecialOfferOption[] = [
+  {
+    value: 'honeymoon',
+    label: 'HM Offers',
+    description: 'Qualify honeymoon, civil-union, or wedding-anniversary benefits.',
+    aliases: ['hm', 'hm offer', 'hm offers', 'honeymoon', 'honeymoon offer', 'honeymoon offers', 'anniversary', 'wedding anniversary', 'civil union'],
+  },
+]
+
 function todayIso() {
   return new Date().toISOString().slice(0, 10)
 }
@@ -52,6 +71,37 @@ function addDaysIso(date: string, days: number) {
 function formatMoney(value: number) {
   const sign = value < 0 ? '-' : ''
   return `${sign}£${Math.abs(value).toFixed(2)}`
+}
+
+function syncAgeList(ages: number[], count: number, allowedAges: number[], fallbackAge: number) {
+  const normalized = ages.filter(age => allowedAges.includes(age))
+  const next = normalized.slice(0, Math.max(0, count))
+
+  while (next.length < count) {
+    next.push(fallbackAge)
+  }
+
+  return next
+}
+
+function findSpecialOfferOption(input: string) {
+  const normalized = input.trim().toLowerCase()
+  if (!normalized) return null
+
+  return SPECIAL_OFFER_OPTIONS.find(option =>
+    option.value === normalized ||
+    option.label.toLowerCase() === normalized ||
+    option.aliases.includes(normalized),
+  ) || null
+}
+
+async function apiRequest<T = unknown>(url: string) {
+  const response = await fetch(url)
+  const json = await response.json().catch(() => ({}))
+  if (!response.ok || json?.error) {
+    throw new Error(json?.error || 'Request failed')
+  }
+  return json as T
 }
 
 export default function HotelPricingPage() {
@@ -82,36 +132,90 @@ export default function HotelPricingPage() {
       checkOutDate: addDaysIso(checkInDate, 7),
       roomName: 'Family Suite',
       boardBasis: 'All Inclusive',
+      selectedOfferFamilies: [],
       adults: 2,
       childAges: [8],
       teenAges: [],
       infants: 0,
     }
   })
+  const [specialOfferSearch, setSpecialOfferSearch] = useState('')
+
+  function updateChildGuests(count: number) {
+    setRequest(prev => ({
+      ...prev,
+      childAges: syncAgeList(prev.childAges, count, CHILD_AGE_OPTIONS, 8),
+    }))
+  }
+
+  function updateTeenGuests(count: number) {
+    setRequest(prev => ({
+      ...prev,
+      teenAges: syncAgeList(prev.teenAges, count, TEEN_AGE_OPTIONS, 14),
+    }))
+  }
+
+  function updateChildAge(index: number, age: number) {
+    setRequest(prev => ({
+      ...prev,
+      childAges: prev.childAges.map((value, valueIndex) => valueIndex === index ? age : value),
+    }))
+  }
+
+  function updateTeenAge(index: number, age: number) {
+    setRequest(prev => ({
+      ...prev,
+      teenAges: prev.teenAges.map((value, valueIndex) => valueIndex === index ? age : value),
+    }))
+  }
+
+  function addSpecialOfferSelection() {
+    const match = findSpecialOfferOption(specialOfferSearch)
+    if (!match) return
+
+    setRequest(prev => ({
+      ...prev,
+      selectedOfferFamilies: prev.selectedOfferFamilies.includes(match.value)
+        ? prev.selectedOfferFamilies
+        : [...prev.selectedOfferFamilies, match.value],
+    }))
+    setSpecialOfferSearch('')
+  }
+
+  function removeSpecialOfferSelection(offerFamily: OfferFamily) {
+    setRequest(prev => ({
+      ...prev,
+      selectedOfferFamilies: prev.selectedOfferFamilies.filter(value => value !== offerFamily),
+    }))
+  }
 
   async function loadDashboard() {
     setLoading(true)
     setSetupError(null)
 
-    const { data: hotelRows, error: hotelError } = await supabase
-      .from('hotel_list')
-      .select('id,name')
-      .order('name')
+    try {
+      const { data } = await apiRequest<{ data: { hotels: HotelSummary[]; contracts: ContractSummary[]; versions: ContractVersionSummary[] } }>('/api/pricing')
+      const hotelRows = data.hotels
+      const safeContracts = data.contracts
+      const safeVersions = data.versions
 
-    if (hotelError) {
-      setSetupError(hotelError.message)
+      setHotels(hotelRows)
+      setContracts(safeContracts)
+      setVersions(safeVersions)
+
+      const pilotHotel = hotelRows.find(hotel => hotel.name.toLowerCase().includes('ravenala'))
+      const pilotContract = pilotHotel ? safeContracts.find(contract => contract.hotel_id === pilotHotel.id) : null
+      const pilotVersion = pilotContract
+        ? safeVersions.find(version => version.hotel_contract_id === pilotContract.id && version.is_active) || safeVersions.find(version => version.hotel_contract_id === pilotContract.id) || null
+        : null
+
+      setRequest(prev => ({
+        ...prev,
+        hotelId: prev.hotelId ?? pilotHotel?.id ?? null,
+        contractVersionId: prev.contractVersionId ?? pilotVersion?.id ?? null,
+      }))
       setLoading(false)
-      return
-    }
-
-    setHotels((hotelRows || []) as HotelSummary[])
-
-    const [{ data: contractRows, error: contractError }, { data: versionRows, error: versionError }] = await Promise.all([
-      supabase.from('hotel_contracts').select('id,hotel_id,name,status').order('name'),
-      supabase.from('hotel_contract_versions').select('id,hotel_contract_id,version_name,valid_from,valid_to,booking_from,booking_to,is_active').order('valid_from', { ascending: false }),
-    ])
-
-    if (contractError || versionError) {
+    } catch (error: unknown) {
       setContracts([])
       setVersions([])
       setOffers([])
@@ -123,61 +227,58 @@ export default function HotelPricingPage() {
       setOccupancyRates([])
       setOfferRules([])
       setCompulsoryCharges([])
-      setSetupError(contractError?.message || versionError?.message || 'Pricing schema is not available yet')
+      setSetupError(error instanceof Error ? error.message : 'Pricing schema is not available yet')
       setLoading(false)
-      return
     }
-
-    const safeContracts = (contractRows || []) as ContractSummary[]
-    const safeVersions = (versionRows || []) as ContractVersionSummary[]
-    setContracts(safeContracts)
-    setVersions(safeVersions)
-
-    const pilotHotel = (hotelRows || []).find(hotel => hotel.name.toLowerCase().includes('ravenala'))
-    const pilotContract = pilotHotel ? safeContracts.find(contract => contract.hotel_id === pilotHotel.id) : null
-    const pilotVersion = pilotContract
-      ? safeVersions.find(version => version.hotel_contract_id === pilotContract.id && version.is_active) || safeVersions.find(version => version.hotel_contract_id === pilotContract.id) || null
-      : null
-
-    setRequest(prev => ({
-      ...prev,
-      hotelId: prev.hotelId ?? pilotHotel?.id ?? null,
-      contractVersionId: prev.contractVersionId ?? pilotVersion?.id ?? null,
-    }))
-
-    setLoading(false)
   }
 
   async function loadVersionData(contractVersionId: number) {
-    const [
-      { data: offerRows, error: offerError },
-      { data: seasonRows, error: seasonError },
-      { data: roomContractRows, error: roomContractError },
-      { data: chargeRows, error: chargeError },
-    ] = await Promise.all([
-      supabase
-        .from('hotel_offers')
-        .select('id,contract_version_id,offer_code,offer_name,offer_family,status,booking_from,booking_to,travel_from,travel_to,minimum_nights,maximum_nights,priority,stop_after_apply,description,notes')
-        .eq('contract_version_id', contractVersionId)
-        .order('priority'),
-      supabase
-        .from('hotel_contract_seasons')
-        .select('id,contract_version_id,season_code,season_name,travel_from,travel_to,sort_order')
-        .eq('contract_version_id', contractVersionId)
-        .order('sort_order'),
-      supabase
-        .from('hotel_room_contracts')
-        .select('id,contract_version_id,room_name,room_code,room_group,min_pax,max_pax,max_adults,max_children,max_infants,room_notes')
-        .eq('contract_version_id', contractVersionId)
-        .order('room_name'),
-      supabase
-        .from('hotel_compulsory_charges')
-        .select('id,contract_version_id,charge_name,charge_code,pricing_method,value,per_person,per_night,stay_date_from,stay_date_to,booking_date_from,booking_date_to,age_from,age_to,notes')
-        .eq('contract_version_id', contractVersionId)
-        .order('stay_date_from'),
-    ])
+    try {
+      const { data } = await apiRequest<{
+        data: {
+          offers: HotelOffer[]
+          seasons: HotelContractSeason[]
+          roomContracts: HotelRoomContract[]
+          compulsoryCharges: HotelCompulsoryCharge[]
+          roomOptions: string[]
+          roomRates: HotelRoomRate[]
+          occupancyRates: HotelRoomOccupancyRate[]
+          offerRules: HotelOfferRule[]
+          offerCombinability: HotelOfferCombinability[]
+        }
+      }>(`/api/pricing/versions/${contractVersionId}`)
 
-    if (offerError || seasonError || roomContractError || chargeError) {
+      const safeOffers = data.offers
+      const safeSeasons = data.seasons
+      const safeRoomContracts = data.roomContracts
+      const safeCharges = data.compulsoryCharges
+
+      setOffers(safeOffers)
+      setSeasons(safeSeasons)
+      setRoomContracts(safeRoomContracts)
+      setCompulsoryCharges(safeCharges)
+      setRoomOptions(data.roomOptions)
+      setRoomRates(data.roomRates)
+      setOccupancyRates(data.occupancyRates)
+      setOfferRules(data.offerRules)
+      setOfferCombinability(data.offerCombinability)
+
+      const boardOptions = Array.from(new Set(data.roomRates.map(rate => rate.board_basis))).sort((left, right) => left.localeCompare(right))
+      setRequest(prev => {
+        if (prev.contractVersionId !== contractVersionId) return prev
+
+        let next = prev
+        if (data.roomOptions.length > 0 && !data.roomOptions.includes(prev.roomName)) {
+          next = { ...next, roomName: data.roomOptions[0] }
+        }
+        if (boardOptions.length > 0 && !boardOptions.some(board => board.toLowerCase() === prev.boardBasis.toLowerCase())) {
+          next = { ...next, boardBasis: boardOptions[0] }
+        }
+        return next
+      })
+
+      setSetupError(null)
+    } catch (error: unknown) {
       setOffers([])
       setOfferCombinability([])
       setSeasons([])
@@ -187,129 +288,8 @@ export default function HotelPricingPage() {
       setOccupancyRates([])
       setOfferRules([])
       setCompulsoryCharges([])
-      setSetupError(offerError?.message || seasonError?.message || roomContractError?.message || chargeError?.message || 'Pricing data could not be loaded')
-      return
+      setSetupError(error instanceof Error ? error.message : 'Pricing data could not be loaded')
     }
-
-    const safeOffers = (offerRows || []) as HotelOffer[]
-    const safeSeasons = (seasonRows || []) as HotelContractSeason[]
-    const safeRoomContracts = (roomContractRows || []) as HotelRoomContract[]
-    const safeCharges = (chargeRows || []) as HotelCompulsoryCharge[]
-
-    setOffers(safeOffers)
-    setSeasons(safeSeasons)
-    setRoomContracts(safeRoomContracts)
-    setCompulsoryCharges(safeCharges)
-
-    const safeRoomOptions = Array.from(new Set(safeRoomContracts.map(room => room.room_name))).sort((left, right) => left.localeCompare(right))
-    setRoomOptions(safeRoomOptions)
-
-    const roomContractIds = safeRoomContracts.map(room => room.id)
-    if (roomContractIds.length === 0) {
-      setRoomRates([])
-      setOccupancyRates([])
-      setOfferRules([])
-      setOfferCombinability([])
-      setRequest(prev => {
-        if (!prev.contractVersionId || prev.contractVersionId !== contractVersionId) return prev
-        return safeRoomOptions.length > 0 && !safeRoomOptions.includes(prev.roomName)
-          ? { ...prev, roomName: safeRoomOptions[0] }
-          : prev
-      })
-      return
-    }
-
-    const { data: roomRateRows, error: roomRateError } = await supabase
-      .from('hotel_room_rates')
-      .select('id,room_contract_id,season_id,board_basis,pricing_model,rate_value,rate_unit,single_rate_value,triple_rate_value,currency,notes')
-      .in('room_contract_id', roomContractIds)
-      .order('season_id')
-
-    if (roomRateError) {
-      setRoomRates([])
-      setOccupancyRates([])
-      setOfferRules([])
-      setOfferCombinability([])
-      setSetupError(roomRateError.message)
-      return
-    }
-
-    const roomContractMap = new Map(safeRoomContracts.map(room => [room.id, room.room_name]))
-    const safeRoomRates = ((roomRateRows || []) as Omit<HotelRoomRate, 'room_name'>[]).map(rate => ({
-      ...rate,
-      room_name: roomContractMap.get(rate.room_contract_id) || 'Unknown room',
-    }))
-
-    setRoomRates(safeRoomRates)
-
-    const roomRateIds = safeRoomRates.map(rate => rate.id)
-    const offerIds = safeOffers.map(offer => offer.id)
-
-    if (roomRateIds.length > 0) {
-      const { data: occupancyRows, error: occupancyError } = await supabase
-        .from('hotel_room_occupancy_rates')
-        .select('id,room_rate_id,occupancy_code,adults,children,infants,age_band_code,rate_value,notes')
-        .in('room_rate_id', roomRateIds)
-
-      if (occupancyError) {
-        setOccupancyRates([])
-        setSetupError(occupancyError.message)
-        return
-      }
-
-      setOccupancyRates((occupancyRows || []) as HotelRoomOccupancyRate[])
-    } else {
-      setOccupancyRates([])
-    }
-
-    if (offerIds.length > 0) {
-      const { data: ruleRows, error: ruleError } = await supabase
-        .from('hotel_offer_rules')
-        .select('id,hotel_offer_id,rule_type,target_scope,pricing_method,value,age_from,age_to,room_name,board_basis,apply_stage,sort_order,notes')
-        .in('hotel_offer_id', offerIds)
-        .order('sort_order')
-
-      if (ruleError) {
-        setOfferRules([])
-        setOfferCombinability([])
-        setSetupError(ruleError.message)
-        return
-      }
-
-      setOfferRules((ruleRows || []) as HotelOfferRule[])
-
-      const { data: combinabilityRows, error: combinabilityError } = await supabase
-        .from('hotel_offer_combinability')
-        .select('id,hotel_offer_id,with_offer_family,with_offer_code,is_allowed,notes')
-        .in('hotel_offer_id', offerIds)
-
-      if (combinabilityError) {
-        setOfferCombinability([])
-        setSetupError(combinabilityError.message)
-        return
-      }
-
-      setOfferCombinability((combinabilityRows || []) as HotelOfferCombinability[])
-    } else {
-      setOfferRules([])
-      setOfferCombinability([])
-    }
-
-    const boardOptions = Array.from(new Set(safeRoomRates.map(rate => rate.board_basis))).sort((left, right) => left.localeCompare(right))
-    setRequest(prev => {
-      if (prev.contractVersionId !== contractVersionId) return prev
-
-      let next = prev
-      if (safeRoomOptions.length > 0 && !safeRoomOptions.includes(prev.roomName)) {
-        next = { ...next, roomName: safeRoomOptions[0] }
-      }
-      if (boardOptions.length > 0 && !boardOptions.some(board => board.toLowerCase() === prev.boardBasis.toLowerCase())) {
-        next = { ...next, boardBasis: boardOptions[0] }
-      }
-      return next
-    })
-
-    setSetupError(null)
   }
 
   useEffect(() => {
@@ -531,12 +511,161 @@ export default function HotelPricingPage() {
                   <input className="input" type="number" min="1" value={request.adults} onChange={event => setRequest(prev => ({ ...prev, adults: Number(event.target.value) || 0 }))} />
                 </div>
                 <div>
-                  <label className="label">Child Ages</label>
-                  <input className="input" placeholder="e.g. 8, 10" value={request.childAges.join(', ')} onChange={event => setRequest(prev => ({ ...prev, childAges: parseAgeCsv(event.target.value) }))} />
+                  <label className="label">Infants</label>
+                  <input className="input" type="number" min="0" value={request.infants} onChange={event => setRequest(prev => ({ ...prev, infants: Number(event.target.value) || 0 }))} />
                 </div>
                 <div>
-                  <label className="label">Teen Ages</label>
-                  <input className="input" placeholder="e.g. 14, 16" value={request.teenAges.join(', ')} onChange={event => setRequest(prev => ({ ...prev, teenAges: parseAgeCsv(event.target.value) }))} />
+                  <label className="label">Child Guests</label>
+                  <input className="input" type="number" min="0" max="6" value={request.childAges.length} onChange={event => updateChildGuests(Math.min(6, Math.max(0, Number(event.target.value) || 0)))} />
+                </div>
+                <div>
+                  <label className="label">Teen Guests</label>
+                  <input className="input" type="number" min="0" max="6" value={request.teenAges.length} onChange={event => updateTeenGuests(Math.min(6, Math.max(0, Number(event.target.value) || 0)))} />
+                </div>
+                <div style={{ gridColumn: '1 / -1' }}>
+                  <label className="label">Special Offer Search</label>
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    <input
+                      className="input"
+                      list="hotel-special-offer-options"
+                      placeholder="Search and add a trigger such as HM Offers…"
+                      value={specialOfferSearch}
+                      onChange={event => setSpecialOfferSearch(event.target.value)}
+                      onKeyDown={event => {
+                        if (event.key === 'Enter') {
+                          event.preventDefault()
+                          addSpecialOfferSelection()
+                        }
+                      }}
+                    />
+                    <button type="button" className="btn btn-secondary btn-sm" onClick={addSpecialOfferSelection}>
+                      Add
+                    </button>
+                  </div>
+                  <datalist id="hotel-special-offer-options">
+                    {SPECIAL_OFFER_OPTIONS.map(option => (
+                      <option key={option.value} value={option.label}>{option.description}</option>
+                    ))}
+                  </datalist>
+                  <div style={{ fontSize: '11.5px', color: 'var(--text-muted)', marginTop: '6px' }}>
+                    Add `HM Offers` when a honeymoon-style benefit should be considered. If it is not selected, contracted pricing can still fall back.
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginTop: '10px' }}>
+                    {request.selectedOfferFamilies.length === 0 && (
+                      <span style={{ fontSize: '11.5px', color: 'var(--text-muted)' }}>
+                        No manual special-offer triggers selected.
+                      </span>
+                    )}
+                    {request.selectedOfferFamilies.map(offerFamily => {
+                      const option = SPECIAL_OFFER_OPTIONS.find(value => value.value === offerFamily)
+                      return (
+                        <button
+                          key={offerFamily}
+                          type="button"
+                          onClick={() => removeSpecialOfferSelection(offerFamily)}
+                          style={{
+                            fontSize: '11.5px',
+                            color: 'var(--text-secondary)',
+                            padding: '6px 10px',
+                            borderRadius: '999px',
+                            background: 'var(--bg-secondary)',
+                            border: '1px solid var(--border)',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          {option?.label || offerFamily} ×
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+                {request.childAges.length > 0 && (
+                  <div style={{ gridColumn: '1 / -1' }}>
+                    <div style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '8px' }}>
+                      Child Ages
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '10px' }}>
+                      {request.childAges.map((age, index) => (
+                        <div key={`child-age-${index}`}>
+                          <label className="label">Child {index + 1}</label>
+                          <select className="input" value={age} onChange={event => updateChildAge(index, Number(event.target.value))}>
+                            {CHILD_AGE_OPTIONS.map(option => <option key={option} value={option}>{option} years</option>)}
+                          </select>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {request.teenAges.length > 0 && (
+                  <div style={{ gridColumn: '1 / -1' }}>
+                    <div style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '8px' }}>
+                      Teen Ages
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '10px' }}>
+                      {request.teenAges.map((age, index) => (
+                        <div key={`teen-age-${index}`}>
+                          <label className="label">Teen {index + 1}</label>
+                          <select className="input" value={age} onChange={event => updateTeenAge(index, Number(event.target.value))}>
+                            {TEEN_AGE_OPTIONS.map(option => <option key={option} value={option}>{option} years</option>)}
+                          </select>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {(request.childAges.length > 0 || request.teenAges.length > 0) && (
+                  <div style={{ gridColumn: '1 / -1', fontSize: '11.5px', color: 'var(--text-muted)' }}>
+                    Children are limited to ages 3-12 and teens to ages 13-17 so the right occupancy bands are priced automatically.
+                  </div>
+                )}
+                {request.selectedOfferFamilies.length > 0 && (
+                  <div style={{ gridColumn: '1 / -1' }}>
+                    <div style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '8px' }}>
+                      Selected Special Offer Triggers
+                    </div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                      {request.selectedOfferFamilies.map(offerFamily => {
+                        const option = SPECIAL_OFFER_OPTIONS.find(value => value.value === offerFamily)
+                        return (
+                          <span key={`selected-${offerFamily}`} style={{ fontSize: '11.5px', color: 'var(--text-secondary)', padding: '5px 10px', borderRadius: '999px', background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
+                            {option?.label || offerFamily}
+                          </span>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
+                {request.selectedOfferFamilies.length === 0 && (
+                  <div style={{ gridColumn: '1 / -1', fontSize: '11.5px', color: 'var(--text-muted)' }}>
+                    Special-offer families such as honeymoon are only considered when you add them from the search box.
+                  </div>
+                )}
+                {request.childAges.length === 0 && request.teenAges.length === 0 && (
+                  <div style={{ gridColumn: '1 / -1', fontSize: '11.5px', color: 'var(--text-muted)' }}>
+                    Add child or teen guests above to select the exact ages used in the pricing bands.
+                  </div>
+                )}
+                <div style={{ gridColumn: '1 / -1' }}>
+                  <div style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '8px' }}>
+                    Current Guest Ages
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                    {request.childAges.map((age, index) => (
+                      <span key={`child-pill-${index}`} style={{ fontSize: '11.5px', color: 'var(--text-secondary)', padding: '5px 10px', borderRadius: '999px', background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
+                        Child {index + 1}: {age}
+                      </span>
+                    ))}
+                    {request.teenAges.map((age, index) => (
+                      <span key={`teen-pill-${index}`} style={{ fontSize: '11.5px', color: 'var(--text-secondary)', padding: '5px 10px', borderRadius: '999px', background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
+                        Teen {index + 1}: {age}
+                      </span>
+                    ))}
+                    {request.childAges.length === 0 && request.teenAges.length === 0 && (
+                      <span style={{ fontSize: '11.5px', color: 'var(--text-muted)' }}>
+                        No child or teen ages selected yet.
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
             </div>
