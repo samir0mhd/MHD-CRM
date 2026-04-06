@@ -244,10 +244,13 @@ export default function BookingDetailPage() {
   useEffect(() => { if (id && currentStaff) void loadClaims() }, [id, currentStaff])
 
   async function loadAccess() {
-    const { data } = await apiRequest<{ data: { staffUsers: StaffUser[]; currentStaff: StaffUser | null } }>('/api/bookings/access')
-    const { staffUsers, currentStaff } = data
-    setStaffUsers(staffUsers)
-    setCurrentStaff(currentStaff)
+    try {
+      const { staffUsers, currentStaff } = await apiRequest<{ staffUsers: StaffUser[]; currentStaff: StaffUser | null }>('/api/bookings/access')
+      setStaffUsers(staffUsers)
+      setCurrentStaff(currentStaff)
+    } catch (err) {
+      console.error('Failed to load access context:', err)
+    }
   }
 
   async function loadClaims() {
@@ -2560,6 +2563,7 @@ function CostingTab({ booking, flights, accommodations, transfers, extras, payme
   const [editingCc, setEditingCc]         = useState(false)
   const [discountDraft, setDiscountDraft] = useState(String(booking.discount || ''))
   const [editingDiscount, setEditingDiscount] = useState(false)
+  const [editingSell, setEditingSell]     = useState(false)
   const [syncing, setSyncing]             = useState(false)
   const [sellDraft, setSellDraft]         = useState(String(booking.total_sell ?? booking.deals?.deal_value ?? 0))
 
@@ -2680,6 +2684,21 @@ function CostingTab({ booking, flights, accommodations, transfers, extras, payme
     }
   }
 
+  async function saveTotalSell() {
+    if (!managerMode) { showToast('Only managers can change commercial fields', 'error'); return }
+    try {
+      const result = await apiRequest<{ message?: string }>(`/api/bookings/${booking.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({ action: 'update_total_sell', total_sell: Number(sellDraft) || 0 }),
+      })
+      showToast(result.message || 'Client total updated ✓')
+      setEditingSell(false)
+      onUpdate()
+    } catch (error: any) {
+      showToast(`Failed: ${error.message}`, 'error')
+    }
+  }
+
   async function pushToOverview() {
     if (!managerMode) { showToast('Only managers can change protected commercial fields', 'error'); return }
     if (totalNetCost === 0) { showToast('No costs entered yet', 'error'); return }
@@ -2760,30 +2779,66 @@ function CostingTab({ booking, flights, accommodations, transfers, extras, payme
                 {[
                   { label:'Total Net Cost', val: fmt(totalNetCost), bold: true },
                   { label:'Excess',         val: fmt(excess),       color:'var(--text-muted)' },
-                  { label:'Discount',       val: discount > 0 ? `− ${fmt(discount)}` : '—', color:'var(--amber)' },
-                  { label:'CC Surcharge',   val: ccSurch > 0 ? `− ${fmt(ccSurch)}` : '—', color:'var(--amber)' },
                 ].map(r => (
                   <div key={r.label} style={{ display:'flex', justifyContent:'space-between' }}>
                     <span style={{ fontSize:'12.5px', color:'var(--text-muted)' }}>{r.label}</span>
                     <span style={{ fontSize:'13px', fontFamily:'monospace', color: (r as any).color || 'var(--text-primary)', fontWeight: (r as any).bold ? '700' : '500' }}>{r.val}</span>
                   </div>
                 ))}
+                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', minHeight:'28px' }}>
+                  <span style={{ fontSize:'12.5px', color:'var(--text-muted)' }}>Discount</span>
+                  {editingDiscount ? (
+                    <div style={{ display:'flex', gap:'6px', alignItems:'center' }}>
+                      <span style={{ fontSize:'13px' }}>£</span>
+                      <input className="input" type="number" value={discountDraft} onChange={e=>setDiscountDraft(e.target.value)} style={{ width:'80px', fontSize:'13px', padding:'4px 8px' }} autoFocus />
+                      <button className="btn btn-cta btn-xs" onClick={saveDiscount}>Save</button>
+                      <button className="btn btn-secondary btn-xs" onClick={()=>setEditingDiscount(false)}>Cancel</button>
+                    </div>
+                  ) : (
+                    <div style={{ display:'flex', gap:'10px', alignItems:'center' }}>
+                      <span style={{ fontSize:'13px', fontFamily:'monospace', color: discount > 0 ? 'var(--amber)' : 'var(--text-muted)', fontWeight:'500' }}>
+                        {discount > 0 ? `− ${fmt(discount)}` : '—'}
+                      </span>
+                      {canEditCommercial && <button className="btn btn-secondary btn-xs" onClick={()=>setEditingDiscount(true)}>Edit</button>}
+                    </div>
+                  )}
+                </div>
+                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', minHeight:'28px' }}>
+                  <span style={{ fontSize:'12.5px', color:'var(--text-muted)' }}>CC Surcharge</span>
+                  {editingCc ? (
+                    <div style={{ display:'flex', gap:'6px', alignItems:'center' }}>
+                      <span style={{ fontSize:'13px' }}>£</span>
+                      <input className="input" type="number" value={ccDraft} onChange={e=>setCcDraft(e.target.value)} style={{ width:'80px', fontSize:'13px', padding:'4px 8px' }} autoFocus />
+                      <button className="btn btn-cta btn-xs" onClick={saveCcSurcharge}>Save</button>
+                      <button className="btn btn-secondary btn-xs" onClick={()=>setEditingCc(false)}>Cancel</button>
+                    </div>
+                  ) : (
+                    <div style={{ display:'flex', gap:'10px', alignItems:'center' }}>
+                      <span style={{ fontSize:'13px', fontFamily:'monospace', color: ccSurch > 0 ? 'var(--amber)' : 'var(--text-muted)', fontWeight:'500' }}>
+                        {ccSurch > 0 ? `− ${fmt(ccSurch)}` : '—'}
+                      </span>
+                      {managerMode && <button className="btn btn-secondary btn-xs" onClick={()=>setEditingCc(true)}>Edit</button>}
+                    </div>
+                  )}
+                </div>
               </div>
               <div style={{ display:'flex', flexDirection:'column', gap:'9px' }}>
-                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', minHeight:'28px' }}>
                   <span style={{ fontSize:'12.5px', color:'var(--text-muted)' }}>Client Total</span>
-                  {managerMode ? (
-                    <input
-                      className="input"
-                      type="number"
-                      value={sellDraft}
-                      onChange={e => setSellDraft(e.target.value)}
-                      style={{ width:'110px', fontSize:'13px', padding:'4px 8px', textAlign:'right' }}
-                    />
+                  {editingSell ? (
+                    <div style={{ display:'flex', gap:'6px', alignItems:'center' }}>
+                      <span style={{ fontSize:'13px' }}>£</span>
+                      <input className="input" type="number" value={sellDraft} onChange={e=>setSellDraft(e.target.value)} style={{ width:'90px', fontSize:'13px', padding:'4px 8px' }} autoFocus />
+                      <button className="btn btn-cta btn-xs" onClick={saveTotalSell}>Save</button>
+                      <button className="btn btn-secondary btn-xs" onClick={()=>setEditingSell(false)}>Cancel</button>
+                    </div>
                   ) : (
-                    <span style={{ fontSize:'13px', fontFamily:'monospace', color:'var(--text-primary)', fontWeight:'700' }}>
-                      {fmt(sell)}
-                    </span>
+                    <div style={{ display:'flex', gap:'10px', alignItems:'center' }}>
+                      <span style={{ fontSize:'14px', fontWeight:'600', fontFamily:'monospace', color:'var(--text-primary)' }}>
+                        {fmt(sell)}
+                      </span>
+                      {managerMode && <button className="btn btn-secondary btn-xs" onClick={()=>setEditingSell(true)}>Edit</button>}
+                    </div>
                   )}
                 </div>
                 {!canEditCommercial && (
@@ -2806,45 +2861,6 @@ function CostingTab({ booking, flights, accommodations, transfers, extras, payme
               </div>
             </div>
 
-            {/* Discount inline editor */}
-            <div style={{ marginTop:'14px', padding:'12px 14px', background:'var(--bg-secondary)', borderRadius:'8px', display:'flex', alignItems:'center', gap:'12px' }}>
-              <span style={{ fontSize:'12.5px', color:'var(--text-muted)', flex:1 }}>Discount (deducted from client total)</span>
-              {editingDiscount ? (
-                <div style={{ display:'flex', gap:'6px', alignItems:'center' }}>
-                  <span style={{ fontSize:'13px' }}>£</span>
-                  <input className="input" type="number" value={discountDraft} onChange={e=>setDiscountDraft(e.target.value)} style={{ width:'90px', fontSize:'13px', padding:'4px 8px' }} autoFocus />
-                  <button className="btn btn-cta btn-xs" onClick={saveDiscount}>Save</button>
-                  <button className="btn btn-secondary btn-xs" onClick={()=>setEditingDiscount(false)}>Cancel</button>
-                </div>
-              ) : (
-                <div style={{ display:'flex', gap:'8px', alignItems:'center' }}>
-                  <span style={{ fontSize:'14px', fontWeight:'600', fontFamily:'monospace', color: discount > 0 ? 'var(--amber)' : 'var(--text-muted)' }}>
-                    {discount > 0 ? fmt(discount) : '—'}
-                  </span>
-                  {canEditCommercial && <button onClick={()=>setEditingDiscount(true)} style={{ background:'none', border:'none', cursor:'pointer', fontSize:'12px', color:'var(--text-muted)', opacity:0.7 }}>✏</button>}
-                </div>
-              )}
-            </div>
-
-            {/* CC surcharge inline editor */}
-            <div style={{ marginTop:'8px', padding:'12px 14px', background:'var(--bg-secondary)', borderRadius:'8px', display:'flex', alignItems:'center', gap:'12px' }}>
-              <span style={{ fontSize:'12.5px', color:'var(--text-muted)', flex:1 }}>CC Surcharge (credit card fee charged by management)</span>
-              {editingCc ? (
-                <div style={{ display:'flex', gap:'6px', alignItems:'center' }}>
-                  <span style={{ fontSize:'13px' }}>£</span>
-                  <input className="input" type="number" value={ccDraft} onChange={e=>setCcDraft(e.target.value)} style={{ width:'90px', fontSize:'13px', padding:'4px 8px' }} autoFocus />
-                  <button className="btn btn-cta btn-xs" onClick={saveCcSurcharge}>Save</button>
-                  <button className="btn btn-secondary btn-xs" onClick={()=>setEditingCc(false)}>Cancel</button>
-                </div>
-              ) : (
-                <div style={{ display:'flex', gap:'8px', alignItems:'center' }}>
-                  <span style={{ fontSize:'14px', fontWeight:'600', fontFamily:'monospace', color: ccSurch > 0 ? 'var(--amber)' : 'var(--text-muted)' }}>
-                    {ccSurch > 0 ? fmt(ccSurch) : '—'}
-                  </span>
-                  {managerMode && <button onClick={()=>setEditingCc(true)} style={{ background:'none', border:'none', cursor:'pointer', fontSize:'12px', color:'var(--text-muted)', opacity:0.7 }}>✏</button>}
-                </div>
-              )}
-            </div>
           </>
         )}
       </div>

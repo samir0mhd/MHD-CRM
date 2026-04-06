@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { usePathname } from 'next/navigation'
+import { usePathname, useRouter } from 'next/navigation'
 import { useSyncExternalStore } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useAuth, useTheme } from '../providers'
@@ -51,6 +51,7 @@ const NAV = [
 
 export default function Sidebar() {
   const pathname  = usePathname()
+  const router = useRouter()
   const { theme, toggleTheme } = useTheme()
   const { staffUser } = useAuth()
   const hydratedTheme = useSyncExternalStore(
@@ -68,6 +69,12 @@ export default function Sidebar() {
     if (href === '/deals')      return pathname === '/deals'
     if (href === '/')           return pathname === '/'
     return pathname === href || pathname.startsWith(href + '/')
+  }
+
+  async function handleSignOut() {
+    await supabase.auth.signOut()
+    router.replace('/')
+    router.refresh()
   }
 
   return (
@@ -176,7 +183,7 @@ export default function Sidebar() {
               {staffUser?.role || 'Secure access'}
             </div>
           </div>
-          <button className="btn btn-secondary btn-xs" onClick={() => void supabase.auth.signOut()}>Sign out</button>
+          <button className="btn btn-secondary btn-xs" onClick={() => void handleSignOut()}>Sign out</button>
         </div>
       </div>
     </aside>

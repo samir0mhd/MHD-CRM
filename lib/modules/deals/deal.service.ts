@@ -1,7 +1,7 @@
 import * as repo from './deal.repository'
 import { buildFieldAuditEntries, logAuditEntries } from '@/lib/audit'
 import { isManager, type StaffUser } from '@/lib/access'
-import { replaceBookingCommissions } from '@/lib/modules/bookings/booking.repository'
+import { replaceBookingCommissions, insertRepeatFlag } from '@/lib/modules/bookings/booking.repository'
 
 export type CelebrationMilestone = {
   tier: 'bronze' | 'silver' | 'gold'
@@ -209,6 +209,24 @@ export async function markBooked(
       share_percent: 100,
       is_primary: true,
     }])
+  }
+
+  // Auto-detect repeat client: flag if the client has an existing owner and the
+  // booking is assigned to a different consultant. No ownership change is made —
+  // this only creates a flag for manager review.
+  const clientOwnerId = deal.clients?.owner_staff_id ?? null
+  if (
+    deal.clients?.id &&
+    clientOwnerId !== null &&
+    consultantId !== null &&
+    consultantId !== clientOwnerId
+  ) {
+    await insertRepeatFlag({
+      client_id: deal.clients.id,
+      booking_id: booking.id,
+      original_staff_id: clientOwnerId,
+      handling_staff_id: consultantId,
+    })
   }
 
   await repo.insertBookingTasks(BOOKING_TASKS.map(t => ({
@@ -440,7 +458,10 @@ export async function createPipelineDeal(input: CreatePipelineDealInput, current
   }
 
   let clientId: number
-  let ownerStaffId: number | null = currentStaff?.id ?? null
+  // The new deal is always owned by the logged-in user.
+  // client.owner_staff_id records the client's CRM owner, which is a separate concept
+  // and must not overwrite the deal's staff assignment.
+  const ownerStaffId: number | null = currentStaff?.id ?? null
 
   if (input.selectedClientId) {
     const selectedClient = await repo.getClientLookup(input.selectedClientId)
@@ -448,7 +469,6 @@ export async function createPipelineDeal(input: CreatePipelineDealInput, current
       throw new Error('Selected client not found')
     }
     clientId = selectedClient.id
-    ownerStaffId = selectedClient.owner_staff_id || ownerStaffId
   } else {
     const { data: newClient, error: clientError } = await repo.insertClient({
       first_name: input.newFirst?.trim() || '',
@@ -463,7 +483,6 @@ export async function createPipelineDeal(input: CreatePipelineDealInput, current
     }
 
     clientId = newClient.id
-    ownerStaffId = newClient.owner_staff_id || ownerStaffId
   }
 
   const { data: newDeal, error: dealError } = await repo.insertDeal({

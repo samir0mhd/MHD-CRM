@@ -122,6 +122,22 @@ export async function PUT(
         return NextResponse.json({ success: true, message: 'Discount updated ✓', data: result })
       }
 
+      case 'update_total_sell': {
+        const booking = await fetchBookingById(id)
+        if (!booking) {
+          return NextResponse.json({ success: false, message: 'Booking not found' }, { status: 404 })
+        }
+        if (booking.deposit_received) {
+          const token = request.headers.get('authorization')?.replace('Bearer ', '') ?? null
+          const { currentStaff } = await getAccessContext(token)
+          if (!isManager(currentStaff)) {
+            return NextResponse.json({ success: false, message: 'Deposit received — only managers can change commercial fields' }, { status: 403 })
+          }
+        }
+        const result = await updateBooking(Number(id), { total_sell: Number(data.total_sell) || null })
+        return NextResponse.json({ success: true, message: 'Client total updated ✓', data: result })
+      }
+
       case 'push_costing': {
         const booking = await fetchBookingById(id)
         if (!booking) {

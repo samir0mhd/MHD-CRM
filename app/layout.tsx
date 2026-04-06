@@ -1,7 +1,7 @@
 import type { Metadata } from 'next'
 import './globals.css'
 import { Providers } from './providers'
-import Sidebar from './components/Sidebar'
+import AuthShell from './components/AuthShell'
 
 export const metadata: Metadata = {
   title: 'MHD CRM — Mauritius Holidays Direct',
@@ -17,12 +17,7 @@ export default function RootLayout({
     <html lang="en">
       <body>
         <Providers>
-          <div className="main-layout">
-            <Sidebar />
-            <main className="main-content">
-              {children}
-            </main>
-          </div>
+          <AuthShell>{children}</AuthShell>
         </Providers>
       </body>
     </html>
