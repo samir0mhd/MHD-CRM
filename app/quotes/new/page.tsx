@@ -1495,17 +1495,18 @@ function qOptionPriceRow(price: number, label: string, nights?: number): string 
   const perNight = nightCount > 0 ? price / nightCount : price
   const pn = '&pound;' + perNight.toLocaleString('en-GB',{minimumFractionDigits:0,maximumFractionDigits:0})
   return `<tr><td style="padding:0 36px 20px;">
-    <p style="font-size:11px;font-weight:700;color:${QG};text-transform:uppercase;letter-spacing:0.1em;margin:0 0 12px;">${label}</p>
-    <table width="100%" cellpadding="0" cellspacing="0" bgcolor="${QN}" style="border-radius:4px;">
+    <p style="font-size:10px;font-weight:700;color:#9a7a3a;text-transform:uppercase;letter-spacing:0.1em;margin:0 0 10px;">${label}</p>
+    <table width="100%" cellpadding="0" cellspacing="0" style="background:#faf8f5;border:1px solid #e2dbd2;border-radius:6px;overflow:hidden;">
       <tr>
-        <td style="padding:16px 20px;vertical-align:middle;">
-          <p style="font-size:9px;text-transform:uppercase;letter-spacing:0.14em;color:rgba(184,146,46,0.65);margin:0 0 4px;">Total Investment</p>
-          <p style="font-size:30px;color:${QG};font-family:Georgia,serif;font-weight:bold;margin:0;line-height:1;">${fp}</p>
-          <p style="font-size:11px;color:rgba(255,255,255,0.36);margin:6px 0 0;">From ${pn} per night for your stay</p>
+        <td style="padding:18px 22px 16px;border-top:2px solid ${QG};vertical-align:middle;width:62%;">
+          <p style="font-size:8px;text-transform:uppercase;letter-spacing:0.2em;color:#b0a090;margin:0 0 6px;">Total Investment</p>
+          <p style="font-size:26px;color:${QN};font-family:Georgia,serif;font-weight:normal;margin:0;line-height:1.1;letter-spacing:-0.01em;">${fp}</p>
+          <p style="font-size:10px;color:#9a8e80;margin:6px 0 0;">${pn} per night</p>
         </td>
-        <td style="padding:16px 20px;text-align:right;vertical-align:middle;border-left:1px solid rgba(255,255,255,0.06);">
-          <p style="font-size:9px;text-transform:uppercase;letter-spacing:0.1em;color:rgba(255,255,255,0.3);margin:0 0 3px;">Secure from</p>
-          <p style="font-size:20px;color:${QG};font-family:Georgia,serif;font-weight:bold;margin:0;">${fd}</p>
+        <td style="padding:18px 22px 16px;border-top:2px solid transparent;border-left:1px solid #e2dbd2;text-align:right;vertical-align:middle;width:38%;background:#f4efe8;">
+          <p style="font-size:8px;text-transform:uppercase;letter-spacing:0.18em;color:#b0a090;margin:0 0 5px;">Deposit to reserve</p>
+          <p style="font-size:20px;color:${QG};font-family:Georgia,serif;font-weight:normal;margin:0;">${fd}</p>
+          <p style="font-size:10px;color:#9a8e80;margin:4px 0 0;">10% to secure</p>
         </td>
       </tr>
     </table>
@@ -1919,17 +1920,21 @@ ${autoPrint}
     </tr></table>
   </td></tr>
 
-  <!-- 3. PRICE — primary visual weight -->
-  ${showTopPrice ? `<tr><td style="padding:0 36px 32px;">
-    <table width="100%" cellpadding="0" cellspacing="0" bgcolor="${QN}" style="border-radius:5px;">
-      <tr><td align="center" style="padding:30px 24px 16px;">
-        <p style="font-size:9px;text-transform:uppercase;letter-spacing:0.2em;color:rgba(184,146,46,0.6);margin:0 0 8px;">Total Investment</p>
-        <p style="font-size:54px;color:${QG};font-family:Georgia,serif;font-weight:bold;margin:0;line-height:1;">${priceFmt}</p>
-        <p style="font-size:12px;color:rgba(255,255,255,0.4);margin:8px 0 0;">From ${perNightFmt} per night for your stay &nbsp;&middot;&nbsp; flights, hotel, transfers and taxes included</p>
-      </td></tr>
-      <tr><td align="center" style="border-top:1px solid rgba(255,255,255,0.06);padding:12px 24px;">
-        <p style="font-size:12.5px;color:rgba(255,255,255,0.45);margin:0;">Secure your dates from just <strong style="color:${QG};font-size:15px;">${depositFmt}</strong> today &nbsp;&middot;&nbsp; Balance due 12 weeks before departure</p>
-      </td></tr>
+  <!-- 3. PRICE — restrained luxury panel -->
+  ${showTopPrice ? `<tr><td style="padding:0 36px 30px;">
+    <table width="100%" cellpadding="0" cellspacing="0" style="background:#faf8f5;border:1px solid #e2dbd2;border-radius:5px;overflow:hidden;">
+      <tr>
+        <td style="padding:20px 26px 18px;border-top:2px solid ${QG};vertical-align:middle;width:58%;">
+          <p style="font-size:8px;text-transform:uppercase;letter-spacing:0.2em;color:#b0a090;margin:0 0 7px;">Total Investment</p>
+          <p style="font-size:30px;color:${QN};font-family:Georgia,serif;font-weight:normal;margin:0;line-height:1.1;letter-spacing:-0.01em;">${priceFmt}</p>
+          <p style="font-size:10.5px;color:#9a8e80;margin:7px 0 0;">${perNightFmt} per night &nbsp;&middot;&nbsp; flights, hotel, transfers &amp; taxes included</p>
+        </td>
+        <td style="padding:20px 26px 18px;border-top:2px solid transparent;border-left:1px solid #e2dbd2;vertical-align:middle;width:42%;background:#f4efe8;text-align:right;">
+          <p style="font-size:8px;text-transform:uppercase;letter-spacing:0.18em;color:#b0a090;margin:0 0 5px;">Deposit to reserve</p>
+          <p style="font-size:22px;color:${QG};font-family:Georgia,serif;font-weight:normal;margin:0;line-height:1.1;">${depositFmt}</p>
+          <p style="font-size:10px;color:#9a8e80;margin:6px 0 0;">Balance due 12 weeks before departure</p>
+        </td>
+      </tr>
     </table>
   </td></tr>` : ''}
 

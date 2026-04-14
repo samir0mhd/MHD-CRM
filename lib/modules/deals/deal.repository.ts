@@ -156,7 +156,7 @@ export async function getAllDeals(): Promise<Deal[]> {
 export async function getActivePipelineDeals(): Promise<Deal[]> {
   const { data } = await supabase
     .from('deals')
-    .select('*, clients(first_name, last_name)')
+    .select('*, clients(first_name, last_name), activities(created_at)')
     .not('stage', 'in', '("BOOKED","LOST")')
     .order('created_at', { ascending: false })
 

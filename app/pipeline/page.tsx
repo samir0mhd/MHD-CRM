@@ -32,6 +32,7 @@ function fmt(n: number) {
 
 type DealWithClient = Deal & {
   clients?: { first_name: string; last_name: string }
+  activities?: { created_at: string }[]
 }
 
 type ClientResult = {
@@ -326,154 +327,183 @@ export default function PipelinePage() {
                   {stageDeals.map(deal => {
                     const client = deal.clients
                     const sig    = calculateDealSignals(deal, renderNow)
-                    const tc     = TEMP_COLORS[sig.temp]
+
+                    // ── Idle / rot computation ──────────────────────────
+                    const actDates = [new Date(deal.created_at).getTime()]
+                    deal.activities?.forEach(a => actDates.push(new Date(a.created_at).getTime()))
+                    const lastActivityMs  = Math.max(...actDates)
+                    const idleDays        = Math.floor((renderNow - lastActivityMs) / 86400000)
+                    const hasUpcomingTask = !sig.isOverdue && !!deal.next_activity_at
+                    const isRotting       = idleDays >= 3 && !hasUpcomingTask
+
+                    // ── Left border urgency ─────────────────────────────
+                    const borderColor = (isRotting || sig.isOverdue)
+                      ? '#ef4444'
+                      : idleDays >= 2
+                      ? '#f59e0b'
+                      : hasUpcomingTask
+                      ? '#4ade80'
+                      : 'var(--border)'
+
+                    // ── Idle badge ──────────────────────────────────────
+                    let idleBadge: React.ReactNode = null
+                    if (isRotting) {
+                      idleBadge = (
+                        <span style={{ fontSize: '10px', fontWeight: '700', color: '#dc2626', background: '#fee2e2', padding: '1px 6px', borderRadius: '8px', fontFamily: 'Outfit, sans-serif', letterSpacing: '0.02em', whiteSpace: 'nowrap' }}>
+                          💀 Rotting
+                        </span>
+                      )
+                    } else if (idleDays >= 3) {
+                      idleBadge = (
+                        <span style={{ fontSize: '10px', fontWeight: '700', color: '#dc2626', background: '#fee2e2', padding: '1px 6px', borderRadius: '8px', fontFamily: 'Outfit, sans-serif', whiteSpace: 'nowrap' }}>
+                          🔴 {idleDays}d
+                        </span>
+                      )
+                    } else if (idleDays >= 2) {
+                      idleBadge = (
+                        <span style={{ fontSize: '10px', fontWeight: '700', color: '#92400e', background: '#fef3c7', padding: '1px 6px', borderRadius: '8px', fontFamily: 'Outfit, sans-serif', whiteSpace: 'nowrap' }}>
+                          🟡 {idleDays}d
+                        </span>
+                      )
+                    }
+
+                    // ── Action directive ────────────────────────────────
+                    const rawType  = deal.next_activity_type ?? ''
+                    const actLabel = rawType
+                      ? (ACT_DISPLAY[rawType] ?? rawType.toLowerCase().replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()))
+                      : 'Follow-up'
+                    let actionNode: React.ReactNode
+                    if (sig.isOverdue) {
+                      const txt = sig.overdueBy === 0
+                        ? `${actLabel} due today`
+                        : `${actLabel} overdue — ${sig.overdueBy}d`
+                      actionNode = (
+                        <span style={{ fontSize: '11.5px', fontWeight: '600', color: '#dc2626', fontFamily: 'Outfit, sans-serif' }}>
+                          ❗ {txt}
+                        </span>
+                      )
+                    } else if (deal.next_activity_at) {
+                      const txt = sig.daysUntilActivity === 0
+                        ? `${actLabel} due today`
+                        : sig.daysUntilActivity === 1
+                        ? `${actLabel} tomorrow`
+                        : `${actLabel} in ${sig.daysUntilActivity}d`
+                      actionNode = (
+                        <span style={{ fontSize: '11.5px', fontWeight: '500', color: 'var(--text-secondary)', fontFamily: 'Outfit, sans-serif' }}>
+                          ⏰ {txt}
+                        </span>
+                      )
+                    } else {
+                      actionNode = (
+                        <span style={{ fontSize: '11.5px', color: '#9ca3af', fontStyle: 'italic', fontFamily: 'Outfit, sans-serif' }}>
+                          ⚠️ No next action
+                        </span>
+                      )
+                    }
+
+                    // ── Tags (max 2, meaningful only) ──────────────────
+                    const tags: { label: string; color: string; bg: string }[] = []
+                    if (sig.valueTier === 'whale')         tags.push({ label: 'HIGH VALUE',   color: '#92400e', bg: '#fef3c7' })
+                    else if (sig.valueTier === 'high')     tags.push({ label: 'STRONG',       color: '#166534', bg: '#dcfce7' })
+                    if (deal.source === 'Repeat Client')   tags.push({ label: 'REPEAT CLIENT',color: '#6d28d9', bg: '#ede9fe' })
+                    else if (deal.source === 'Referral')   tags.push({ label: 'REFERRAL',     color: '#0369a1', bg: '#e0f2fe' })
+                    const displayTags = tags.slice(0, 2)
+
+                    // ── Departure line ─────────────────────────────────
+                    const tripDate = deal.departure_date
+                      ? new Date(deal.departure_date + 'T12:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: '2-digit' })
+                      : null
 
                     return (
-                      <div key={deal.id} className={`deal-card ${draggingId === deal.id ? 'dragging' : ''}`}
+                      <div key={deal.id}
+                        className={`deal-card ${draggingId === deal.id ? 'dragging' : ''}`}
                         draggable
                         onDragStart={() => setDraggingId(deal.id)}
                         onDragEnd={() => { setDraggingId(null); setDragOverStage(null) }}
-                        style={{
-                          borderLeft: `3px solid ${tc}`,
-                          ...(sig.temp === 'hot' ? { boxShadow: `0 0 0 1.5px ${tc}28, var(--shadow-sm)` } : {}),
-                        }}>
+                        style={{ borderLeft: `3px solid ${borderColor}` }}>
 
-                        {/* Client row + temperature pill */}
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '7px', gap: '6px' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0, flex: 1 }}>
-                            <div style={{
-                              width: '22px', height: '22px', borderRadius: '50%', flexShrink: 0,
-                              background: stage.color + '18', border: `1.5px solid ${stage.color}50`,
-                              display: 'flex', alignItems: 'center', justifyContent: 'center',
-                              fontSize: '8.5px', fontWeight: '700', color: stage.color,
-                              fontFamily: 'Outfit, sans-serif', letterSpacing: '0.02em',
-                            }}>
-                              {client ? `${client.first_name[0]}${client.last_name?.[0] ?? ''}` : '?'}
-                            </div>
-                            <span style={{ fontSize: '12px', color: 'var(--text-secondary)', fontFamily: 'Outfit, sans-serif', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                              {client ? `${client.first_name} ${client.last_name}` : '—'}
-                            </span>
-                          </div>
-                          {/* Temperature pill */}
-                          <div style={{
-                            display: 'flex', alignItems: 'center', gap: '4px', flexShrink: 0,
-                            background: tc + '15', border: `1px solid ${tc}40`,
-                            borderRadius: '20px', padding: '2px 7px',
-                          }}>
-                            <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: tc, display: 'inline-block', flexShrink: 0 }} />
-                            <span style={{ fontSize: '9.5px', fontWeight: '700', color: tc, textTransform: 'uppercase', letterSpacing: '0.05em', fontFamily: 'Outfit, sans-serif' }}>
-                              {TEMP_LABELS[sig.temp]}
-                            </span>
-                          </div>
+                        {/* Row 1: Client name + idle badge */}
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '6px', marginBottom: '5px' }}>
+                          <span style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-primary)', fontFamily: 'Outfit, sans-serif', lineHeight: '1.3', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {client ? `${client.first_name} ${client.last_name}` : deal.title}
+                          </span>
+                          {idleBadge}
                         </div>
 
-                        {/* Title */}
+                        {/* Row 2: Trip summary → deal detail link */}
                         <Link href={`/deals/${deal.id}`} style={{ textDecoration: 'none', display: 'block', marginBottom: '9px' }}>
-                          <div style={{ fontFamily: 'Fraunces, serif', fontSize: '14px', fontWeight: '300', color: 'var(--text-primary)', lineHeight: '1.35', letterSpacing: '-0.01em' }}>
+                          <div style={{ fontFamily: 'Fraunces, serif', fontSize: '13px', fontWeight: '300', color: 'var(--text-secondary)', lineHeight: '1.35', letterSpacing: '-0.01em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                             {deal.title}
                           </div>
+                          {tripDate && (
+                            <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px', fontFamily: 'Outfit, sans-serif' }}>
+                              ✈ {tripDate}
+                              {sig.daysUntilDeparture !== null && sig.daysUntilDeparture > 0 && (
+                                <span style={{ marginLeft: '4px', fontWeight: '600', color: sig.daysUntilDeparture <= 30 ? '#dc2626' : sig.daysUntilDeparture <= 90 ? '#f59e0b' : 'var(--text-muted)' }}>
+                                  · {sig.daysUntilDeparture}d
+                                </span>
+                              )}
+                            </div>
+                          )}
                         </Link>
 
-                        {/* Divider */}
-                        <div style={{ height: '1px', background: 'var(--border)', marginBottom: '9px' }} />
-
-                        {/* Value + tier */}
-                        {deal.deal_value > 0 && (
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px' }}>
-                            <span style={{ fontSize: '14.5px', fontWeight: '700', color: 'var(--text-primary)', fontFamily: 'Outfit, sans-serif', letterSpacing: '-0.02em' }}>
-                              {fmt(deal.deal_value)}
+                        {/* Value row — visual anchor */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '7px', marginBottom: '10px' }}>
+                          <span style={{ fontFamily: 'Outfit, sans-serif', fontSize: '17px', fontWeight: '700', letterSpacing: '-0.03em', color: deal.deal_value > 0 ? 'var(--text-primary)' : 'var(--text-muted)' }}>
+                            {deal.deal_value > 0 ? fmt(deal.deal_value) : '—'}
+                          </span>
+                          {sig.valueTier === 'whale' && (
+                            <span style={{ fontSize: '8.5px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.07em', color: '#92400e', background: '#fef3c7', padding: '2px 6px', borderRadius: '4px', border: '1px solid #f59e0b55', fontFamily: 'Outfit, sans-serif' }}>
+                              HIGH VALUE
                             </span>
-                            {sig.valueTier === 'whale' && (
-                              <span style={{ fontSize: '9px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--gold)', background: 'var(--gold-light)', padding: '1px 6px', borderRadius: '4px', border: '1px solid var(--gold)', fontFamily: 'Outfit, sans-serif' }}>
-                                ◈ High Value
-                              </span>
-                            )}
-                            {sig.valueTier === 'high' && (
-                              <span style={{ fontSize: '9px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--green)', background: 'var(--green-light)', padding: '1px 6px', borderRadius: '4px', fontFamily: 'Outfit, sans-serif' }}>
-                                ◆ Strong
-                              </span>
-                            )}
-                          </div>
-                        )}
-
-                        {/* Departure */}
-                        {deal.departure_date && sig.daysUntilDeparture !== null && (
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '5px' }}>
-                            <span style={{
-                              fontSize: '11.5px', fontFamily: 'Outfit, sans-serif',
-                              fontWeight: sig.daysUntilDeparture > 0 && sig.daysUntilDeparture <= 90 ? '600' : '400',
-                              color: sig.daysUntilDeparture <= 0 ? 'var(--text-muted)'
-                                : sig.daysUntilDeparture <= 30 ? 'var(--red)'
-                                : sig.daysUntilDeparture <= 90 ? 'var(--amber)'
-                                : 'var(--text-muted)',
-                            }}>
-                              ✈ {sig.daysUntilDeparture <= 0
-                                ? 'Departed'
-                                : sig.daysUntilDeparture === 1 ? 'Tomorrow'
-                                : sig.daysUntilDeparture <= 14 ? `${sig.daysUntilDeparture}d away`
-                                : `${new Date(deal.departure_date + 'T12:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })} · ${sig.daysUntilDeparture}d`}
+                          )}
+                          {sig.valueTier === 'high' && (
+                            <span style={{ fontSize: '8.5px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#166534', background: '#dcfce7', padding: '2px 6px', borderRadius: '4px', fontFamily: 'Outfit, sans-serif' }}>
+                              STRONG
                             </span>
-                          </div>
-                        )}
-
-                        {/* Activity status */}
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '9px' }}>
-                          {sig.isOverdue ? (
-                            <>
-                              <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: sig.overdueBy >= 5 ? 'var(--red)' : 'var(--amber)', display: 'inline-block', flexShrink: 0 }} />
-                              <span style={{ fontSize: '11.5px', fontWeight: '600', fontFamily: 'Outfit, sans-serif', color: sig.overdueBy >= 5 ? 'var(--red)' : 'var(--amber)' }}>
-                                {deal.next_activity_type ? (ACT_DISPLAY[deal.next_activity_type] ?? deal.next_activity_type) + ' · ' : ''}
-                                {sig.overdueBy === 0 ? 'due today' : `${sig.overdueBy}d overdue`}
-                              </span>
-                            </>
-                          ) : deal.next_activity_at ? (
-                            <>
-                              <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'var(--text-muted)', display: 'inline-block', flexShrink: 0, opacity: 0.5 }} />
-                              <span style={{ fontSize: '11.5px', color: 'var(--text-secondary)', fontFamily: 'Outfit, sans-serif' }}>
-                                {deal.next_activity_type ? (ACT_DISPLAY[deal.next_activity_type] ?? deal.next_activity_type) + ' · ' : ''}
-                                {sig.daysUntilActivity === 0 ? 'today'
-                                  : sig.daysUntilActivity === 1 ? 'tomorrow'
-                                  : new Date(deal.next_activity_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
-                              </span>
-                            </>
-                          ) : (
-                            <>
-                              <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'var(--border-strong)', display: 'inline-block', flexShrink: 0 }} />
-                              <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontStyle: 'italic', fontFamily: 'Outfit, sans-serif' }}>No action scheduled</span>
-                            </>
                           )}
                         </div>
 
-                        {/* Footer: source chip + quick-move buttons */}
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexWrap: 'wrap' }}>
-                          {deal.source && (
-                            <span style={{
-                              fontSize: '9.5px', color: 'var(--text-muted)', fontFamily: 'Outfit, sans-serif',
-                              background: 'var(--bg-tertiary)', border: '1px solid var(--border)',
-                              borderRadius: '4px', padding: '1px 5px', letterSpacing: '0.02em',
-                            }}>
-                              {deal.source}
-                            </span>
-                          )}
+                        {/* Divider */}
+                        <div style={{ height: '1px', background: 'var(--border)', marginBottom: '8px' }} />
+
+                        {/* Action directive */}
+                        <div style={{ marginBottom: '8px' }}>
+                          {actionNode}
+                        </div>
+
+                        {/* Divider */}
+                        <div style={{ height: '1px', background: 'var(--border)', marginBottom: '8px' }} />
+
+                        {/* Tags row */}
+                        {displayTags.length > 0 && (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexWrap: 'wrap', marginBottom: '8px' }}>
+                            {displayTags.map(tag => (
+                              <span key={tag.label} style={{ fontSize: '8.5px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.07em', color: tag.color, background: tag.bg, padding: '2px 6px', borderRadius: '4px', fontFamily: 'Outfit, sans-serif', border: '1px solid transparent' }}>
+                                {tag.label}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* Controls: stage movement + snooze (de-emphasised) */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '3px', flexWrap: 'wrap' }}>
                           {STAGES.filter(s => s.key !== deal.stage).slice(0, 2).map(s => (
                             <button key={s.key}
                               onClick={e => { e.stopPropagation(); moveDeal(deal.id, s.key) }}
-                              style={{ fontSize: '9.5px', padding: '1px 6px', borderRadius: '4px', border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', transition: 'all 0.12s', fontFamily: 'Outfit, sans-serif' }}
-                              onMouseEnter={e => { e.currentTarget.style.background = s.color+'22'; e.currentTarget.style.color = s.color; e.currentTarget.style.borderColor = s.color }}
+                              style={{ fontSize: '9.5px', padding: '2px 7px', borderRadius: '4px', border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', transition: 'all 0.12s', fontFamily: 'Outfit, sans-serif' }}
+                              onMouseEnter={e => { e.currentTarget.style.background = s.color+'20'; e.currentTarget.style.color = s.color; e.currentTarget.style.borderColor = s.color+'60' }}
                               onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-muted)'; e.currentTarget.style.borderColor = 'var(--border)' }}>
                               → {s.label}
                             </button>
                           ))}
-                        </div>
-                        {/* Snooze row */}
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '3px', marginTop: '6px', paddingTop: '6px', borderTop: '1px solid var(--border)' }}>
-                          <span style={{ fontSize: '9.5px', color: 'var(--text-muted)', fontFamily: 'Outfit, sans-serif', marginRight: '2px' }}>Snooze:</span>
+                          <span style={{ flex: 1 }} />
                           {[1, 3, 7].map(d => (
                             <button key={d}
                               onClick={e => { e.stopPropagation(); snoozeDeal(deal.id, d) }}
-                              style={{ fontSize: '9.5px', padding: '1px 7px', borderRadius: '4px', border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', fontFamily: 'Outfit, sans-serif', transition: 'all 0.1s' }}
-                              onMouseEnter={e => { e.currentTarget.style.background = 'var(--accent-light)'; e.currentTarget.style.color = 'var(--accent)'; e.currentTarget.style.borderColor = 'var(--accent)' }}
-                              onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-muted)'; e.currentTarget.style.borderColor = 'var(--border)' }}>
+                              style={{ fontSize: '9px', padding: '2px 6px', borderRadius: '4px', border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', fontFamily: 'Outfit, sans-serif', transition: 'all 0.1s', opacity: '0.7' }}
+                              onMouseEnter={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.background = 'var(--bg-tertiary)' }}
+                              onMouseLeave={e => { e.currentTarget.style.opacity = '0.7'; e.currentTarget.style.background = 'transparent' }}>
                               {d}d
                             </button>
                           ))}
