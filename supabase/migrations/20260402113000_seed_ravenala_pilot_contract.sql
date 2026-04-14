@@ -26,7 +26,6 @@ select
 where not exists (
   select 1 from hotel_list where lower(name) = 'the ravenala attitude'
 );
-
 with ravenala_hotel as (
   select id
   from hotel_list
@@ -52,7 +51,6 @@ set
   default_board_basis = excluded.default_board_basis,
   status = excluded.status,
   notes = excluded.notes;
-
 with ravenala_contract as (
   select hc.id
   from hotel_contracts hc
@@ -95,7 +93,6 @@ set
   is_active = excluded.is_active,
   source_document_name = excluded.source_document_name,
   notes = excluded.notes;
-
 with ravenala_version as (
   select hcv.id
   from hotel_contract_versions hcv
@@ -126,7 +123,6 @@ set
   travel_from = excluded.travel_from,
   travel_to = excluded.travel_to,
   sort_order = excluded.sort_order;
-
 with ravenala_version as (
   select hcv.id
   from hotel_contract_versions hcv
@@ -174,7 +170,6 @@ set
   max_adults = excluded.max_adults,
   max_children = excluded.max_children,
   room_notes = excluded.room_notes;
-
 with version_data as (
   select hcv.id as version_id
   from hotel_contract_versions hcv
@@ -255,7 +250,6 @@ set
   triple_rate_value = excluded.triple_rate_value,
   currency = excluded.currency,
   notes = excluded.notes;
-
 with version_data as (
   select hcv.id as version_id
   from hotel_contract_versions hcv
@@ -362,7 +356,6 @@ where not exists (
   where existing.room_rate_id = hrr.id
     and existing.age_band_code = occupancy_rows.age_band_code
 );
-
 with version_data as (
   select hcv.id as version_id
   from hotel_contract_versions hcv
@@ -402,7 +395,6 @@ where not exists (
   where hcp.contract_version_id = version_data.version_id
     and hcp.child_band_name = 'Infant FOC'
 );
-
 with version_data as (
   select hcv.id as version_id
   from hotel_contract_versions hcv
@@ -457,7 +449,6 @@ where not exists (
     and coalesce(existing.age_from, -1) = coalesce(charges.age_from, -1)
     and coalesce(existing.age_to, -1) = coalesce(charges.age_to, -1)
 );
-
 with version_data as (
   select hcv.id as version_id
   from hotel_contract_versions hcv
@@ -513,7 +504,6 @@ set
   priority = excluded.priority,
   stop_after_apply = excluded.stop_after_apply,
   notes = excluded.notes;
-
 with offer_data as (
   select ho.id as offer_id
   from hotel_offers ho
@@ -566,7 +556,6 @@ where not exists (
     and existing.apply_stage = rules.apply_stage
     and existing.sort_order = rules.sort_order
 );
-
 with offer_data as (
   select ho.id as offer_id
   from hotel_offers ho
@@ -602,7 +591,6 @@ where not exists (
   where existing.hotel_offer_id = offer_data.offer_id
     and coalesce(existing.with_offer_family, '') = coalesce(combos.with_offer_family, '')
 );
-
 with hotel_data as (
   select hl.id as hotel_id, hcv.id as version_id
   from hotel_list hl

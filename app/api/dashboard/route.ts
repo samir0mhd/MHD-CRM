@@ -1,9 +1,10 @@
-import { NextResponse } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 import { getDashboardData } from '@/lib/modules/dashboard/dashboard.service'
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    const result = await getDashboardData()
+    const staffId = request.nextUrl.searchParams.get('staffId')
+    const result = await getDashboardData(staffId ? Number(staffId) : undefined)
     return NextResponse.json(result)
   } catch (error) {
     console.error('Error loading dashboard:', error)

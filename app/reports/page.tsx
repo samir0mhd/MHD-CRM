@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
+import { useAuth } from '../providers'
 
 const fmt     = (n: number) => '£' + (n||0).toLocaleString('en-GB', { maximumFractionDigits: 0 })
 const fmtDate = (d: string) => new Date(d).toLocaleDateString('en-GB', { day:'numeric', month:'short', year:'numeric' })
@@ -44,7 +45,9 @@ type CommissionRow = {
   surname: string
   clearedDate: string
   paymentReceived: number
-  commissionableAmount: number
+  staffShare: number
+  sharePercent: number
+  commissionAmount: number
 }
 type QuoteRow = {
   staffId: number
@@ -121,6 +124,33 @@ type AssignmentHealth = {
 type ProfitTargetKey = 'profit_target_bronze' | 'profit_target_silver' | 'profit_target_gold'
 type BonusTargetKey = 'bonus_bronze' | 'bonus_silver' | 'bonus_gold'
 
+type PayrollSheet = {
+  id: number
+  period: string
+  staff_id: number
+  payable_month: string
+  issued_at: string | null
+  issued_by: number | null
+  total_commission: number
+  manual_bonus: number
+  bonus_amount: number
+  bonus_tier: string | null
+  total_payable: number
+  status: 'draft' | 'issued'
+  issuer?: { name: string } | null
+}
+
+type BonusEvent = {
+  id: number
+  staff_id: number
+  period: string
+  bonus_amount: number
+  tier: 'bronze' | 'silver' | 'gold'
+  recognised_profit: number
+  created_at: string
+  updated_at: string
+}
+
 type ReportView = 'commission' | 'overview' | 'sales' | 'quotes' | 'suppliers'
 
 function previousMonthValue() {
@@ -168,6 +198,7 @@ function currentMonthRange() {
 }
 
 export default function ReportsPage() {
+  const { session, staffUser: currentStaff } = useAuth()
   const previousRange = previousMonthRange()
   const salesRange = currentMonthRange()
   const [monthlyData, setMonthlyData]   = useState<MonthData[]>([])
@@ -180,6 +211,10 @@ export default function ReportsPage() {
   const [commissionRows, setCommissionRows] = useState<CommissionRow[]>([])
   const [commissionLoading, setCommissionLoading] = useState(false)
   const [manualBonus, setManualBonus] = useState(0)
+  const [bonusEvent, setBonusEvent] = useState<BonusEvent | null>(null)
+  const [computingBonus, setComputingBonus] = useState(false)
+  const [payrollSheet, setPayrollSheet] = useState<PayrollSheet | null>(null)
+  const [issuingSheet, setIssuingSheet] = useState(false)
   const [salesFrom, setSalesFrom] = useState(salesRange.from)
   const [salesTo, setSalesTo] = useState(salesRange.to)
   const [salesStaffFilter, setSalesStaffFilter] = useState<string>('ALL')
@@ -258,6 +293,86 @@ export default function ReportsPage() {
     setTimeout(() => setToast(null), 3000)
   }
 
+  // Derives 'YYYY-MM' recognition period from the commission date range start.
+  function recognitionPeriod(): string {
+    return commissionFrom.slice(0, 7)
+  }
+
+  async function loadPayrollSheet() {
+    if (!selectedStaffId) { setPayrollSheet(null); return }
+    const period = recognitionPeriod()
+    const res = await fetch(
+      `/api/reports/commission/sheets?period=${period}&staffId=${selectedStaffId}`,
+      { headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {} },
+    )
+    if (!res.ok) { setPayrollSheet(null); return }
+    const data = await res.json()
+    setPayrollSheet(data.sheet ?? null)
+  }
+
+  async function loadBonusEvent() {
+    if (!selectedStaffId) { setBonusEvent(null); return }
+    const period = recognitionPeriod()
+    const res = await fetch(
+      `/api/reports/commission/bonus?period=${period}&staffId=${selectedStaffId}`,
+      { headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {} },
+    )
+    if (!res.ok) { setBonusEvent(null); return }
+    const data = await res.json()
+    setBonusEvent(data.bonusEvent ?? null)
+  }
+
+  async function computeBonusEvent() {
+    if (!selectedStaffId || !session?.access_token) return
+    setComputingBonus(true)
+    const res = await fetch('/api/reports/commission/bonus', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+      body: JSON.stringify({ period: recognitionPeriod(), staffId: selectedStaffId }),
+    })
+    setComputingBonus(false)
+    if (res.ok) {
+      const data = await res.json()
+      setBonusEvent(data.bonusEvent ?? null)
+      if (!data.bonusEvent) {
+        setToast('No tier threshold reached — no bonus for this period')
+      } else {
+        setToast(`${data.bonusEvent.tier.charAt(0).toUpperCase() + data.bonusEvent.tier.slice(1)} tier bonus computed ✓`)
+      }
+      setTimeout(() => setToast(null), 4000)
+    } else {
+      const err = await res.json()
+      setToast(err.error || 'Failed to compute bonus')
+      setTimeout(() => setToast(null), 4000)
+    }
+  }
+
+  async function issueSheet() {
+    if (!selectedStaffId || !session?.access_token) return
+    setIssuingSheet(true)
+    const res = await fetch('/api/reports/commission/sheets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+      body: JSON.stringify({
+        period: recognitionPeriod(),
+        staffId: selectedStaffId,
+        totalCommission: commissionTotal,
+        manualBonus,
+      }),
+    })
+    setIssuingSheet(false)
+    if (res.ok) {
+      const data = await res.json()
+      setPayrollSheet(data.sheet)
+      setToast('Payroll sheet issued ✓')
+      setTimeout(() => setToast(null), 3000)
+    } else {
+      const err = await res.json()
+      setToast(err.error || 'Failed to issue sheet')
+      setTimeout(() => setToast(null), 4000)
+    }
+  }
+
   useEffect(() => {
     let cancelled = false
 
@@ -313,6 +428,10 @@ export default function ReportsPage() {
     return () => { cancelled = true }
   }, [selectedStaffId, commissionFrom, commissionTo])
 
+  // Reload the payroll sheet and bonus event whenever the staff selection or period changes.
+  useEffect(() => { void loadPayrollSheet() }, [selectedStaffId, commissionFrom])
+  useEffect(() => { void loadBonusEvent() }, [selectedStaffId, commissionFrom])
+
   useEffect(() => {
     let cancelled = false
 
@@ -361,11 +480,13 @@ export default function ReportsPage() {
   const totalProfit  = monthlyData.reduce((a,m)=>a+m.profit, 0)
   const totalBookings = monthlyData.reduce((a,m)=>a+m.bookings, 0)
   const maxRevenue   = Math.max(...monthlyData.map(m=>m.revenue), 1)
-  const commissionableTotal = commissionRows.reduce((sum, row) => sum + row.commissionableAmount, 0)
+  const commissionableTotal = commissionRows.reduce((sum, row) => sum + row.staffShare, 0)
   const paymentReceivedTotal = commissionRows.reduce((sum, row) => sum + row.paymentReceived, 0)
-  const commissionTotal = calcCommission(commissionableTotal)
-  const staffPayoutTotal = commissionTotal + manualBonus
+  const commissionTotal = commissionRows.reduce((sum, row) => sum + row.commissionAmount, 0)
+  const tierBonusAmount = bonusEvent ? Number(bonusEvent.bonus_amount) : 0
+  const staffPayoutTotal = commissionTotal + tierBonusAmount + manualBonus
   const selectedStaff = staffUsers.find(staff => staff.id === selectedStaffId) || null
+  const isManagerUser = currentStaff?.role === 'manager'
   const filteredSalesRows = salesStaffFilter === 'ALL'
     ? salesRows
     : salesRows.filter(row => row.staffId === Number(salesStaffFilter))
@@ -522,7 +643,7 @@ export default function ReportsPage() {
                 <div>
                   <div style={{ fontFamily:'Fraunces,serif', fontSize:'17px', fontWeight:'300' }}>Staff Commission Report</div>
                   <div style={{ fontSize:'12.5px', color:'var(--text-muted)', marginTop:'3px' }}>
-                    Triggered only when the booking balance reaches zero. Later amendments do not change the pulled commissionable profit.
+                    Recognised when the booking balance reaches zero. Later amendments adjust commission in the period they are recorded. Shared bookings show each staff member's allocated share only.
                   </div>
                 </div>
                 <div style={{ display:'flex', gap:'8px', alignItems:'center', flexWrap:'wrap' }}>
@@ -532,20 +653,33 @@ export default function ReportsPage() {
                   </select>
                   <input className="input" type="date" value={commissionFrom} onChange={e => setCommissionFrom(e.target.value)} />
                   <input className="input" type="date" value={commissionTo} onChange={e => setCommissionTo(e.target.value)} />
-                  <input className="input" type="number" min="0" value={manualBonus} onChange={e => setManualBonus(Number(e.target.value) || 0)} placeholder="Manual bonus" style={{ width:'150px' }} />
+                  {isManagerUser && (
+                    <button
+                      className="btn btn-secondary"
+                      style={{ fontSize:'12.5px', padding:'6px 12px', whiteSpace:'nowrap' }}
+                      onClick={computeBonusEvent}
+                      disabled={computingBonus || !selectedStaffId}
+                      title="Compute tier bonus from recognised profit and target thresholds"
+                    >
+                      {computingBonus ? 'Computing…' : bonusEvent ? `${bonusEvent.tier.charAt(0).toUpperCase() + bonusEvent.tier.slice(1)} bonus ✓` : 'Compute Bonus'}
+                    </button>
+                  )}
+                  <input className="input" type="number" min="0" value={manualBonus} onChange={e => setManualBonus(Number(e.target.value) || 0)} placeholder="Manual override" style={{ width:'140px' }} title="Additional manual override on top of tier bonus" />
                 </div>
               </div>
 
-              <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:'12px', marginBottom:'18px' }}>
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(5,1fr)', gap:'12px', marginBottom:'18px' }}>
                 {[
-                  { label:'Payment Received', val:fmt(paymentReceivedTotal), color:'var(--green)' },
-                  { label:'Commissionable Amount', val:fmt(commissionableTotal), color:'var(--gold)' },
-                  { label:'Commission', val:fmt(commissionTotal), color:'var(--accent-mid)' },
-                  { label:'Commission + Bonus', val:fmt(staffPayoutTotal), color:'var(--text-primary)' },
+                  { label:'Payment Received', val:fmt(paymentReceivedTotal), color:'var(--green)', sub: null },
+                  { label:'Commissionable Profit', val:fmt(commissionableTotal), color:'var(--gold)', sub: null },
+                  { label:'Commission', val:fmt(commissionTotal), color:'var(--accent-mid)', sub: 'Banded 10% / 15%' },
+                  { label:'Tier Bonus', val: bonusEvent ? fmt(tierBonusAmount) : '—', color: bonusEvent ? 'var(--gold)' : 'var(--text-muted)', sub: bonusEvent ? `${bonusEvent.tier.charAt(0).toUpperCase() + bonusEvent.tier.slice(1)} tier` : 'Not yet computed' },
+                  { label:'Total Payable', val:fmt(staffPayoutTotal), color:'var(--text-primary)', sub: manualBonus > 0 ? `incl. ${fmt(manualBonus)} override` : null },
                 ].map(card => (
                   <div key={card.label} style={{ border:'1px solid var(--border)', borderRadius:'12px', padding:'14px 16px', background:'var(--bg-secondary)' }}>
                     <div style={{ fontSize:'11px', fontWeight:'700', textTransform:'uppercase', letterSpacing:'0.07em', color:'var(--text-muted)' }}>{card.label}</div>
                     <div style={{ marginTop:'6px', fontFamily:'Fraunces,serif', fontSize:'26px', fontWeight:'300', color:card.color }}>{card.val}</div>
+                    {card.sub && <div style={{ marginTop:'3px', fontSize:'11px', color:'var(--text-muted)' }}>{card.sub}</div>}
                   </div>
                 ))}
               </div>
@@ -571,7 +705,7 @@ export default function ReportsPage() {
                 <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'13px' }}>
                   <thead>
                     <tr style={{ borderBottom:'2px solid var(--border)' }}>
-                      {['Sr#','Booking ID','Booking Ref','Customer Surname','Payment Received','Commissionable Amount','Cleared On'].map(h => (
+                      {['Sr#','Booking ID','Booking Ref','Customer Surname','Payment Received','Profit Share','Share %','Commission Amount','Cleared On'].map(h => (
                         <th key={h} style={{ padding:'8px 10px', textAlign:h === 'Customer Surname' || h === 'Booking Ref' ? 'left' : 'right', fontSize:'11px', fontWeight:'700', textTransform:'uppercase', letterSpacing:'0.07em', color:'var(--text-muted)' }}>{h}</th>
                       ))}
                     </tr>
@@ -588,7 +722,9 @@ export default function ReportsPage() {
                         <td style={{ padding:'10px 10px', fontFamily:'monospace' }}>{row.bookingReference}</td>
                         <td style={{ padding:'10px 10px' }}>{row.surname}</td>
                         <td style={{ padding:'10px 10px', textAlign:'right', color:'var(--green)', fontWeight:'600' }}>{fmt(row.paymentReceived)}</td>
-                        <td style={{ padding:'10px 10px', textAlign:'right', color:'var(--gold)', fontWeight:'600' }}>{fmt(row.commissionableAmount)}</td>
+                        <td style={{ padding:'10px 10px', textAlign:'right', color:'var(--gold)', fontWeight:'600' }}>{fmt(row.staffShare)}</td>
+                        <td style={{ padding:'10px 10px', textAlign:'right', color:'var(--text-muted)' }}>{row.sharePercent}%</td>
+                        <td style={{ padding:'10px 10px', textAlign:'right', color:'var(--accent-mid)', fontWeight:'600' }}>{fmt(row.commissionAmount)}</td>
                         <td style={{ padding:'10px 10px', textAlign:'right', color:'var(--text-muted)' }}>{fmtDate(row.clearedDate)}</td>
                       </tr>
                     ))}
@@ -596,10 +732,80 @@ export default function ReportsPage() {
                       <td colSpan={4} style={{ padding:'10px 10px', fontSize:'12px', fontWeight:'700', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.06em' }}>Total</td>
                       <td style={{ padding:'10px 10px', textAlign:'right', fontWeight:'700', color:'var(--green)' }}>{fmt(paymentReceivedTotal)}</td>
                       <td style={{ padding:'10px 10px', textAlign:'right', fontWeight:'700', color:'var(--gold)' }}>{fmt(commissionableTotal)}</td>
+                      <td />
+                      <td style={{ padding:'10px 10px', textAlign:'right', fontWeight:'700', color:'var(--accent-mid)' }}>{fmt(commissionTotal)}</td>
                       <td style={{ padding:'10px 10px', textAlign:'right', color:'var(--text-muted)' }}>{commissionRows.length} booking{commissionRows.length === 1 ? '' : 's'}</td>
                     </tr>
                   </tbody>
                 </table>
+              )}
+
+              {/* ── Payroll Sheet Panel ──────────────────────── */}
+              {selectedStaffId && (
+                <div style={{ marginTop:'20px', borderTop:'1px solid var(--border)', paddingTop:'18px' }}>
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'16px', flexWrap:'wrap' }}>
+                    <div>
+                      <div style={{ fontSize:'14px', fontWeight:'600', color:'var(--text-primary)' }}>
+                        Payroll Sheet — {recognitionPeriod()}
+                      </div>
+                      <div style={{ fontSize:'12px', color:'var(--text-muted)', marginTop:'3px' }}>
+                        Payable month: {(() => { const [y,m] = recognitionPeriod().split('-').map(Number); const d = new Date(y, m, 1); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}` })()}
+                      </div>
+                    </div>
+                    <div style={{ display:'flex', gap:'8px', alignItems:'center', flexWrap:'wrap' }}>
+                      {payrollSheet ? (
+                        <div style={{ display:'flex', gap:'8px', alignItems:'center' }}>
+                          <span style={{
+                            fontSize:'11.5px', fontWeight:'700', textTransform:'uppercase', letterSpacing:'0.07em',
+                            padding:'4px 10px', borderRadius:'20px',
+                            background: payrollSheet.status === 'issued' ? 'var(--accent-mid)' : 'var(--border)',
+                            color: payrollSheet.status === 'issued' ? 'white' : 'var(--text-muted)',
+                          }}>
+                            {payrollSheet.status}
+                          </span>
+                          {payrollSheet.issued_at && (
+                            <span style={{ fontSize:'12px', color:'var(--text-muted)' }}>
+                              Issued {fmtDate(payrollSheet.issued_at)}
+                              {payrollSheet.issuer ? ` by ${payrollSheet.issuer.name}` : ''}
+                            </span>
+                          )}
+                        </div>
+                      ) : (
+                        <span style={{ fontSize:'12px', color:'var(--text-muted)' }}>Not yet issued</span>
+                      )}
+                      {isManagerUser && (
+                        <button
+                          className="btn btn-cta"
+                          style={{ fontSize:'12.5px', padding:'6px 14px' }}
+                          onClick={issueSheet}
+                          disabled={issuingSheet || commissionRows.length === 0}
+                          title={payrollSheet?.status === 'issued' ? 'Re-issue to update snapshot totals' : 'Issue payroll sheet for this staff member and period'}
+                        >
+                          {issuingSheet ? 'Issuing…' : payrollSheet ? 'Re-issue Sheet' : 'Issue Payroll Sheet'}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Sheet totals snapshot (only shown once issued) */}
+                  {payrollSheet && payrollSheet.status !== 'draft' && (
+                    <div style={{ marginTop:'14px', display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:'10px' }}>
+                      {[
+                        { label:'Commission', val: fmt(Number(payrollSheet.total_commission)), sub: null },
+                        { label:'Tier Bonus', val: payrollSheet.bonus_amount > 0 ? fmt(Number(payrollSheet.bonus_amount)) : '—', sub: payrollSheet.bonus_tier ? `${payrollSheet.bonus_tier.charAt(0).toUpperCase() + payrollSheet.bonus_tier.slice(1)} tier` : null },
+                        { label:'Manual Override', val: payrollSheet.manual_bonus > 0 ? fmt(Number(payrollSheet.manual_bonus)) : '—', sub: null },
+                        { label:'Total Payable', val: fmt(Number(payrollSheet.total_payable)), sub: null },
+                      ].map(c => (
+                        <div key={c.label} style={{ border:'1px solid var(--border)', borderRadius:'10px', padding:'12px 14px', background:'var(--bg-secondary)' }}>
+                          <div style={{ fontSize:'11px', fontWeight:'700', textTransform:'uppercase', letterSpacing:'0.07em', color:'var(--text-muted)' }}>{c.label}</div>
+                          <div style={{ marginTop:'4px', fontFamily:'Fraunces,serif', fontSize:'20px', fontWeight:'300' }}>{c.val}</div>
+                          {c.sub && <div style={{ marginTop:'2px', fontSize:'11px', color:'var(--text-muted)' }}>{c.sub}</div>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                </div>
               )}
             </div>
             </div>

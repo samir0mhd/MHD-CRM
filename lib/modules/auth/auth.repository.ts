@@ -8,6 +8,9 @@ export type StaffUser = {
   is_active: boolean
   auth_user_id: string | null
   email: string
+  job_title: string | null
+  profile_photo_url: string | null
+  email_signature: string | null
   mfa_required: boolean
   mfa_enrolled_at: string | null
 }
@@ -21,7 +24,7 @@ export type AuthUser = {
 export async function getStaffUserByAuthId(authUserId: string): Promise<StaffUser | null> {
   const { data } = await supabase
     .from('staff_users')
-    .select('id,name,role,is_active,auth_user_id,email,mfa_required,mfa_enrolled_at')
+    .select('id,name,role,is_active,auth_user_id,email,job_title,profile_photo_url,email_signature,mfa_required,mfa_enrolled_at')
     .eq('auth_user_id', authUserId)
     .maybeSingle()
   return data
@@ -30,7 +33,7 @@ export async function getStaffUserByAuthId(authUserId: string): Promise<StaffUse
 export async function getStaffUserByEmail(email: string): Promise<StaffUser | null> {
   const { data } = await supabase
     .from('staff_users')
-    .select('id,name,role,is_active,auth_user_id,email,mfa_required,mfa_enrolled_at')
+    .select('id,name,role,is_active,auth_user_id,email,job_title,profile_photo_url,email_signature,mfa_required,mfa_enrolled_at')
     .eq('email', email.toLowerCase())
     .maybeSingle()
   return data
@@ -39,7 +42,7 @@ export async function getStaffUserByEmail(email: string): Promise<StaffUser | nu
 export async function getUnlinkedManagers(): Promise<StaffUser[]> {
   const { data } = await supabase
     .from('staff_users')
-    .select('id,name,role,is_active,auth_user_id,email,mfa_required,mfa_enrolled_at')
+    .select('id,name,role,is_active,auth_user_id,email,job_title,profile_photo_url,email_signature,mfa_required,mfa_enrolled_at')
     .eq('role', 'manager')
     .is('auth_user_id', null)
   return data || []

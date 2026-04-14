@@ -176,12 +176,10 @@ export default function UsersPage() {
   }, [enrollData?.qrCode])
 
   useEffect(() => {
-    const timer = window.setTimeout(() => {
-      void loadStaff()
-      void refreshStaff()
-    }, 0)
-    return () => window.clearTimeout(timer)
-  }, [refreshStaff])
+    void loadStaff()
+    void refreshStaff()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   useEffect(() => {
     if (!session?.user || staffUser?.mfa_enrolled_at) return

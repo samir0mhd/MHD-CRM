@@ -13,9 +13,25 @@ export type StaffUser = {
   is_active: boolean | null
   auth_user_id?: string | null
   email?: string | null
+  job_title?: string | null
+  profile_photo_url?: string | null
+  email_signature?: string | null
   mfa_required?: boolean | null
   mfa_enrolled_at?: string | null
 }
+
+// ── Auth result cache ─────────────────────────────────────────
+// getAccessContext() makes 2 remote calls per invocation:
+//   1. DB query to staff_users
+//   2. HTTP call to Supabase Auth to validate the JWT
+// Caching by token eliminates both on repeat calls within the same
+// request burst (60s TTL, well within a typical JWT lifetime).
+type CacheEntry = {
+  result: { staffUsers: StaffUser[]; currentStaff: StaffUser | null }
+  expiresAt: number
+}
+const _cache = new Map<string, CacheEntry>()
+const CACHE_TTL_MS = 60_000
 
 /**
  * Resolves the current user and returns the full active staff list.
@@ -34,9 +50,15 @@ export type StaffUser = {
  * they are treated as unauthenticated (currentStaff=null).
  */
 export async function getAccessContext(token?: string | null) {
+  // Cache hit: same token resolves to the same identity within 60 s
+  if (token) {
+    const hit = _cache.get(token)
+    if (hit && hit.expiresAt > Date.now()) return hit.result
+  }
+
   const { data } = await supabase
     .from('staff_users')
-    .select('id,name,role,is_active,auth_user_id,email,mfa_required,mfa_enrolled_at')
+    .select('id,name,role,is_active,auth_user_id,email,job_title,profile_photo_url,email_signature,mfa_required,mfa_enrolled_at')
     .eq('is_active', true)
     .order('name')
 
@@ -65,10 +87,25 @@ export async function getAccessContext(token?: string | null) {
 
   // Enforce MFA: required but not yet enrolled → deny identity
   if (currentStaff?.mfa_required && !currentStaff.mfa_enrolled_at) {
-    return { staffUsers, currentStaff: null }
+    const result = { staffUsers, currentStaff: null }
+    if (token) _cache.set(token, { result, expiresAt: Date.now() + CACHE_TTL_MS })
+    return result
   }
 
-  return { staffUsers, currentStaff }
+  const result = { staffUsers, currentStaff }
+
+  if (token) {
+    _cache.set(token, { result, expiresAt: Date.now() + CACHE_TTL_MS })
+    // Evict expired entries when the cache grows large
+    if (_cache.size > 200) {
+      const now = Date.now()
+      for (const [k, v] of _cache) {
+        if (v.expiresAt < now) _cache.delete(k)
+      }
+    }
+  }
+
+  return result
 }
 
 export function isManager(staff: StaffUser | null | undefined) {

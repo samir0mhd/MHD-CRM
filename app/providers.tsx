@@ -1,6 +1,6 @@
 'use client'
 
-import { createContext, useContext, useEffect, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useState } from 'react'
 import type { Session, User } from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabase'
 import type { StaffUser } from '@/lib/access'
@@ -21,12 +21,14 @@ const AuthContext = createContext<{
   staffUser: StaffUser | null
   loadingAuth: boolean
   refreshStaff: () => Promise<void>
+  signOut: () => Promise<void>
 }>({
   session: null,
   user: null,
   staffUser: null,
   loadingAuth: true,
   refreshStaff: async () => {},
+  signOut: async () => {},
 })
 
 export function useTheme() {
@@ -51,7 +53,21 @@ export function Providers({ children }: { children: React.ReactNode }) {
     document.documentElement.setAttribute('data-theme', theme)
   }, [theme])
 
-  async function refreshStaff(authUser?: User | null) {
+  async function signOut() {
+    // Explicitly clear all auth state before Supabase signOut so the UI
+    // immediately exits the authenticated shell — no dependency on onAuthStateChange.
+    setLoadingAuth(false)
+    setSession(null)
+    setUser(null)
+    setStaffUser(null)
+    try {
+      await supabase.auth.signOut()
+    } catch (err) {
+      console.error('[auth] signOut error:', err)
+    }
+  }
+
+  const refreshStaff = useCallback(async function refreshStaff(authUser?: User | null) {
     const activeUser = authUser ?? user
     if (!activeUser) {
       setStaffUser(null)
@@ -75,34 +91,61 @@ export function Providers({ children }: { children: React.ReactNode }) {
 
     const json = await res.json()
     setStaffUser((json.staffUser || null) as StaffUser | null)
-  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user])
 
   useEffect(() => {
     let active = true
 
-    async function init() {
-      const { data } = await supabase.auth.getSession()
-      if (!active) return
-      setSession(data.session)
-      setUser(data.session?.user ?? null)
-      if (data.session?.user) {
-        await refreshStaff(data.session.user)
+    // Safety net: if neither init() nor onAuthStateChange resolves within 10s,
+    // force loadingAuth to false so the app never hangs on the loading gate.
+    const safetyTimer = setTimeout(() => {
+      if (active) {
+        console.warn('[auth] init timed out — forcing loader to resolve')
+        setLoadingAuth(false)
       }
-      if (active) setLoadingAuth(false)
+    }, 10_000)
+
+    async function init() {
+      try {
+        const { data } = await supabase.auth.getSession()
+        if (!active) return
+        setSession(data.session)
+        setUser(data.session?.user ?? null)
+        if (data.session?.user) {
+          await refreshStaff(data.session.user)
+        }
+      } catch (err) {
+        console.error('[auth] init failed:', err)
+      } finally {
+        if (active) {
+          clearTimeout(safetyTimer)
+          setLoadingAuth(false)
+        }
+      }
     }
 
     void init()
 
     const { data: listener } = supabase.auth.onAuthStateChange(async (_event, nextSession) => {
-      setSession(nextSession)
-      setUser(nextSession?.user ?? null)
-      if (nextSession?.user) await refreshStaff(nextSession.user)
-      else setStaffUser(null)
-      setLoadingAuth(false)
+      try {
+        setSession(nextSession)
+        setUser(nextSession?.user ?? null)
+        if (nextSession?.user) await refreshStaff(nextSession.user)
+        else setStaffUser(null)
+      } catch (err) {
+        console.error('[auth] onAuthStateChange failed:', err)
+      } finally {
+        if (active) {
+          clearTimeout(safetyTimer)
+          setLoadingAuth(false)
+        }
+      }
     })
 
     return () => {
       active = false
+      clearTimeout(safetyTimer)
       listener.subscription.unsubscribe()
     }
   }, [])
@@ -116,7 +159,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
 
   return (
     <ThemeContext.Provider value={{ theme, toggleTheme }}>
-      <AuthContext.Provider value={{ session, user, staffUser, loadingAuth, refreshStaff }}>
+      <AuthContext.Provider value={{ session, user, staffUser, loadingAuth, refreshStaff, signOut }}>
         {children}
       </AuthContext.Provider>
     </ThemeContext.Provider>

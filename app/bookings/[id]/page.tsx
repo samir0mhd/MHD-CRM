@@ -90,6 +90,7 @@ type BookingTask = {
 }
 type Hotel = { id: number; name: string; room_types: string[] | null; meal_plans: string[] | null; reservation_email: string | null; reservation_phone: string | null; reservation_address: string | null; reservation_contact: string | null }
 type Supplier = { id: number; name: string; type: string | null }
+type BookingCommission = { id: number; booking_id: number; staff_id: number; share_percent: number; is_primary: boolean; created_at: string }
 
 // ── CONSTANTS ────────────────────────────────────────────────
 const CABIN_CLASSES = ['Economy', 'Premium Economy', 'Business Class', 'First Class']
@@ -222,6 +223,7 @@ export default function BookingDetailPage() {
   const [tasks, setTasks]               = useState<BookingTask[]>([])
   const [hotels, setHotels]             = useState<Hotel[]>([])
   const [suppliers, setSuppliers]       = useState<Supplier[]>([])
+  const [commissions, setCommissions]   = useState<BookingCommission[]>([])
   const [loading, setLoading]           = useState(true)
   const [tab, setTab]                   = useState<'overview'|'passengers'|'flights'|'accommodation'|'transfers'|'extras'|'payments'|'costing'|'tasks'|'documents'>('overview')
   const [toast, setToast]               = useState<{ msg: string; type: 'success'|'error' } | null>(null)
@@ -237,11 +239,13 @@ export default function BookingDetailPage() {
   const [claimSplits, setClaimSplits]     = useState<Record<number, string>>({})
   const [claimNotes, setClaimNotes]       = useState<Record<number, string>>({})
   const [savingClaim, setSavingClaim]     = useState<number|null>(null)
+  const [directShareStaff, setDirectShareStaff] = useState('')
+  const [directSharePct, setDirectSharePct]     = useState('')
+  const [savingDirectShare, setSavingDirectShare] = useState(false)
   const toastTimer                        = useRef<any>(null)
 
-  useEffect(() => { loadAll() }, [id])
+  useEffect(() => { loadAll(); void loadClaims() }, [id])
   useEffect(() => { void loadAccess() }, [])
-  useEffect(() => { if (id && currentStaff) void loadClaims() }, [id, currentStaff])
 
   async function loadAccess() {
     try {
@@ -277,10 +281,11 @@ export default function BookingDetailPage() {
           tasks: BookingTask[]
           hotels: Hotel[]
           suppliers: Supplier[]
+          commissions: BookingCommission[]
         }
       }>(`/api/bookings/${id}?all=true`)
 
-      const { booking, passengers, flights, accommodations, transfers, extras, payments, tasks, hotels, suppliers } = data
+      const { booking, passengers, flights, accommodations, transfers, extras, payments, tasks, hotels, suppliers, commissions } = data
 
       setBooking(booking)
       setOwnerDraft(String(booking?.staff_id || booking?.deals?.clients?.owner_staff_id || ''))
@@ -293,6 +298,7 @@ export default function BookingDetailPage() {
       setTasks(tasks || [])
       setHotels(hotels || [])
       setSuppliers(suppliers || [])
+      setCommissions(commissions || [])
     } catch (error: any) {
       setBooking(null)
       showToast(error.message || 'Failed to load booking', 'error')
@@ -347,6 +353,48 @@ export default function BookingDetailPage() {
       showToast(err.message || 'Failed', 'error')
     } finally {
       setSavingClaim(null)
+    }
+  }
+
+  async function saveDirectShare() {
+    if (!booking) return
+    const pct = Number(directSharePct)
+    if (!directShareStaff || !pct || pct < 1 || pct > 99) {
+      showToast('Select a staff member and enter a share between 1–99%', 'error'); return
+    }
+    setSavingDirectShare(true)
+    try {
+      const result = await apiRequest<{ message?: string }>(`/api/bookings/${booking.id}/claims`, {
+        method: 'PUT',
+        body: JSON.stringify({ action: 'manager_direct_share', secondStaffId: Number(directShareStaff), secondStaffShare: pct }),
+      })
+      showToast(result.message || 'Split saved ✓')
+      setDirectShareStaff('')
+      setDirectSharePct('')
+      await loadAll()
+    } catch (err: any) {
+      showToast(err.message || 'Failed to save split', 'error')
+    } finally {
+      setSavingDirectShare(false)
+    }
+  }
+
+  async function undoDirectShare() {
+    if (!booking) return
+    setSavingDirectShare(true)
+    try {
+      const result = await apiRequest<{ message?: string }>(`/api/bookings/${booking.id}/claims`, {
+        method: 'PUT',
+        body: JSON.stringify({ action: 'manager_direct_unsplit' }),
+      })
+      showToast(result.message || 'Split removed ✓')
+      setDirectShareStaff('')
+      setDirectSharePct('')
+      await loadAll()
+    } catch (err: any) {
+      showToast(err.message || 'Failed to undo split', 'error')
+    } finally {
+      setSavingDirectShare(false)
     }
   }
 
@@ -493,11 +541,29 @@ export default function BookingDetailPage() {
       <div style={{ margin:'0 0 16px' }} className="card">
         <div style={{ padding:'16px 18px', display:'flex', justifyContent:'space-between', gap:'16px', alignItems:'flex-start', flexWrap:'wrap' }}>
           <div>
-            <div style={{ fontSize:'11px', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.07em', marginBottom:'4px' }}>Assigned Consultant</div>
-            <div style={{ fontSize:'14px', fontWeight:'600', color:'var(--text-primary)' }}>{assignedStaff?.name || 'Unassigned'}</div>
-            <div style={{ fontSize:'12px', color:'var(--text-muted)', marginTop:'2px' }}>
-              {assignedStaff?.role || 'Needs assignment to appear correctly in commission reporting'}
-            </div>
+            {commissions.length > 1 ? (
+              <>
+                <div style={{ fontSize:'11px', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.07em', marginBottom:'6px' }}>Shared Ownership</div>
+                {commissions.map(c => {
+                  const staff = staffUsers.find(s => s.id === c.staff_id)
+                  return (
+                    <div key={c.id} style={{ display:'flex', alignItems:'center', gap:'8px', marginBottom:'4px' }}>
+                      <span style={{ fontSize:'14px', fontWeight:'600', color:'var(--text-primary)' }}>{staff?.name || `Staff #${c.staff_id}`}</span>
+                      <span style={{ fontSize:'12px', color:'var(--text-muted)', background:'var(--bg-secondary)', borderRadius:'4px', padding:'1px 6px' }}>{c.share_percent}%</span>
+                      {c.is_primary && <span style={{ fontSize:'11px', color:'var(--accent-mid)' }}>primary</span>}
+                    </div>
+                  )
+                })}
+              </>
+            ) : (
+              <>
+                <div style={{ fontSize:'11px', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.07em', marginBottom:'4px' }}>Assigned Consultant</div>
+                <div style={{ fontSize:'14px', fontWeight:'600', color:'var(--text-primary)' }}>{assignedStaff?.name || 'Unassigned'}</div>
+                <div style={{ fontSize:'12px', color:'var(--text-muted)', marginTop:'2px' }}>
+                  {assignedStaff?.role || 'Needs assignment to appear correctly in commission reporting'}
+                </div>
+              </>
+            )}
           </div>
 
           <div style={{ minWidth:'300px', display:'flex', flexDirection:'column', gap:'10px' }}>
@@ -576,6 +642,46 @@ export default function BookingDetailPage() {
                     </div>
                   </div>
                 ))}
+              </div>
+            )}
+
+            {/* ── Manager: direct share creation ── */}
+            {isManager(currentStaff) && (
+              <div style={{ borderTop:'1px solid var(--border)', paddingTop:'12px' }}>
+                <div style={{ fontSize:'11px', fontWeight:'700', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:'8px' }}>
+                  {commissions.length > 1 ? 'Replace Split Directly' : 'Create Split Directly'}
+                </div>
+                <div style={{ display:'grid', gridTemplateColumns:'1fr auto', gap:'8px', marginBottom:'8px' }}>
+                  <select className="input" value={directShareStaff} onChange={e => setDirectShareStaff(e.target.value)}>
+                    <option value="">Select second staff member…</option>
+                    {staffUsers.filter(s => s.id !== (booking.staff_id ?? null)).map(s => (
+                      <option key={s.id} value={String(s.id)}>{s.name} · {s.role || 'staff'}</option>
+                    ))}
+                  </select>
+                  <input className="input" type="number" min="1" max="99" placeholder="%" style={{ width:'64px' }}
+                    value={directSharePct} onChange={e => setDirectSharePct(e.target.value)} />
+                </div>
+                {directShareStaff && directSharePct && Number(directSharePct) > 0 && Number(directSharePct) < 100 && (
+                  <div style={{ fontSize:'11.5px', color:'var(--text-muted)', marginBottom:'8px' }}>
+                    Primary owner: <strong>{100 - Number(directSharePct)}%</strong> · {staffUsers.find(s => s.id === Number(directShareStaff))?.name}: <strong>{directSharePct}%</strong>
+                  </div>
+                )}
+                {commissions.length > 1 && (
+                  <div style={{ fontSize:'11.5px', color:'var(--text-muted)', marginBottom:'8px' }}>
+                    Saving a new split replaces the current live split completely. Undo share restores one 100% primary-owner row.
+                  </div>
+                )}
+                <div style={{ display:'flex', justifyContent:'flex-end', gap:'8px' }}>
+                  {commissions.length > 1 && (
+                    <button className="btn btn-secondary btn-xs" onClick={undoDirectShare} disabled={savingDirectShare}>
+                      {savingDirectShare ? 'Saving…' : 'Undo Share'}
+                    </button>
+                  )}
+                  <button className="btn btn-cta btn-xs" onClick={saveDirectShare}
+                    disabled={savingDirectShare || !directShareStaff || !directSharePct}>
+                    {savingDirectShare ? 'Saving…' : commissions.length > 1 ? 'Replace Split' : 'Save Split'}
+                  </button>
+                </div>
               </div>
             )}
 
@@ -2391,6 +2497,10 @@ function PaymentsTab({ booking, payments, balance, onUpdate, showToast, currentS
     const total = (Number(form.debit_card)||0) + (Number(form.credit_card)||0) + (Number(form.amex)||0) + (Number(form.bank_transfer)||0)
     const amount = total || Number(form.amount)
     if (!amount) { showToast('Enter payment amount', 'error'); return }
+    if (sell > 0 && amount > balance + 0.005) {
+      showToast(`Payment of £${amount.toLocaleString('en-GB', { minimumFractionDigits: 2 })} exceeds outstanding balance of £${balance.toLocaleString('en-GB', { minimumFractionDigits: 2 })}`, 'error')
+      return
+    }
     setSaving(true)
     try {
       const result = await apiRequest<{ message?: string }>(`/api/bookings/${booking.id}/payments`, {

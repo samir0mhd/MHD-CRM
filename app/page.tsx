@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
+import { useAuth } from '@/app/providers'
 
 type Target = {
   revenue_target: number
@@ -16,9 +17,23 @@ type Target = {
   rotten_days: number
 }
 
+type CommercialEvent = {
+  bookingId: number
+  bookingReference: string
+  clientSurname: string | null
+  status: string
+  totalSell: number
+  finalProfit: number
+  staffShare: number
+  sharePercent: number
+  recognitionPeriod: string
+  balanceClearedAt: string | null
+}
+
 type DashData = {
   confirmedRevenue: number
   confirmedProfit: number
+  recognisedProfit: number
   quotesThisMonth: number
   leadsThisMonth: number
   conversionRate: number
@@ -32,6 +47,7 @@ type DashData = {
   recentBookings: Array<{ id: number; profit: number }>
   lostReasons: { reason: string; count: number }[]
   upcomingDepartures: UpcomingDeparture[]
+  commercialEvents: CommercialEvent[]
 }
 
 type ProfitTierProps = {
@@ -107,7 +123,7 @@ function ProfitTier({ profit, bronze, silver, gold, bonusBronze, bonusSilver, bo
         </div>
         <div style={{ textAlign: 'right' }}>
           <div style={{ fontFamily: 'Fraunces,serif', fontSize: '32px', fontWeight: '300', color: tier ? tierConfig[tier].color : 'var(--text-primary)' }}>{fmt(profit)}</div>
-          <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>confirmed profit this month</div>
+          <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>recognised commissionable profit</div>
         </div>
       </div>
       <div style={{ position: 'relative', height: '10px', background: 'var(--border)', borderRadius: '5px', overflow: 'hidden', marginBottom: '6px' }}>
@@ -131,25 +147,29 @@ function ProfitTier({ profit, bronze, silver, gold, bonusBronze, bonusSilver, bo
 }
 
 export default function DashboardPage() {
-  const [data, setData]       = useState<DashData | null>(null)
-  const [target, setTarget]   = useState<Target | null>(null)
-  const [loading, setLoading] = useState(true)
+  const { staffUser } = useAuth()
+  const [data, setData]               = useState<DashData | null>(null)
+  const [target, setTarget]           = useState<Target | null>(null)
+  const [noTargetConfigured, setNoTargetConfigured] = useState(false)
+  const [loading, setLoading]         = useState(true)
   const [renderNow] = useState(() => Date.now())
 
   useEffect(() => {
     async function load() {
       setLoading(true)
-      const response = await fetch('/api/dashboard')
+      const url = staffUser?.id ? `/api/dashboard?staffId=${staffUser.id}` : '/api/dashboard'
+      const response = await fetch(url)
       if (response.ok) {
         const result = await response.json()
         setTarget(result.target || null)
+        setNoTargetConfigured(result.noTargetConfigured ?? false)
         setData(result.data || null)
       }
       setLoading(false)
     }
 
     void load()
-  }, [])
+  }, [staffUser?.id])
 
   if (loading) return (
     <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:'80vh' }}>
@@ -162,15 +182,19 @@ export default function DashboardPage() {
   const now = new Date()
   const monthName = now.toLocaleString('en-GB', { month:'long' })
   const year = now.getFullYear()
+  const recognisedProfit = d.recognisedProfit ?? 0
 
   return (
     <div>
       <div className="page-header">
         <div>
-          <div style={{ fontSize:'11px', fontWeight:'700', textTransform:'uppercase', letterSpacing:'0.1em', color:'var(--text-muted)', marginBottom:'2px' }}>Good morning, Samir</div>
+          <div style={{ fontSize:'11px', fontWeight:'700', textTransform:'uppercase', letterSpacing:'0.1em', color:'var(--text-muted)', marginBottom:'2px' }}>
+            Good morning, {staffUser?.name?.split(' ')[0] || 'Team'}
+          </div>
           <div className="page-title">{monthName} {year}</div>
         </div>
         <div style={{ display:'flex', gap:'8px' }}>
+          <Link href="/workspace"><button className="btn btn-secondary">My Workspace</button></Link>
           <Link href="/reports"><button className="btn btn-secondary">📊 Full Reports</button></Link>
           <Link href="/pipeline"><button className="btn btn-cta">+ New Deal</button></Link>
         </div>
@@ -178,8 +202,15 @@ export default function DashboardPage() {
 
       <div className="page-body" style={{ display:'flex', flexDirection:'column', gap:'18px' }}>
 
+        {/* No-target warning */}
+        {noTargetConfigured && (
+          <div style={{ padding:'12px 16px', background:'#fff8e1', border:'1px solid #f59e0b44', borderRadius:'10px', fontSize:'13px', color:'#92400e' }}>
+            No targets configured for {monthName} {year}. Tier thresholds below are estimated defaults — configure targets in Settings to track accurately.
+          </div>
+        )}
+
         {/* Profit tier hero */}
-        <ProfitTier profit={d.confirmedProfit} bronze={t.profit_target_bronze} silver={t.profit_target_silver} gold={t.profit_target_gold} bonusBronze={t.bonus_bronze} bonusSilver={t.bonus_silver} bonusGold={t.bonus_gold}/>
+        <ProfitTier profit={recognisedProfit} bronze={t.profit_target_bronze} silver={t.profit_target_silver} gold={t.profit_target_gold} bonusBronze={t.bonus_bronze} bonusSilver={t.bonus_silver} bonusGold={t.bonus_gold}/>
 
         {/* Monthly scoreboard */}
         <div style={{ display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:'12px' }}>
@@ -258,6 +289,31 @@ export default function DashboardPage() {
           </div>
           <ProgressBar value={d.yearProfit} max={200000} color={d.yearProfit>=200000?'var(--green)':'var(--gold)'}/>
         </div>
+
+        {/* Recognised commission events */}
+        {d.commercialEvents?.length > 0 && (
+          <div className="card" style={{ padding:'18px 20px' }}>
+            <div style={{ fontFamily:'Fraunces,serif', fontSize:'17px', fontWeight:'300', marginBottom:'14px' }}>
+              Commission Recognised This Month
+              <span style={{ fontSize:'13px', fontWeight:'400', color:'var(--text-muted)', marginLeft:'10px' }}>
+                {fmt(recognisedProfit)} total
+              </span>
+            </div>
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:'0', fontSize:'10.5px', fontWeight:'700', textTransform:'uppercase', letterSpacing:'0.06em', color:'var(--text-muted)', marginBottom:'6px', paddingBottom:'6px', borderBottom:'1px solid var(--border)' }}>
+              <span>Booking</span><span>Client</span><span style={{ textAlign:'right' }}>Revenue</span><span style={{ textAlign:'right' }}>Your Share</span>
+            </div>
+            {d.commercialEvents.map(ev => (
+              <Link key={ev.bookingId} href={`/bookings/${ev.bookingId}`} style={{ textDecoration:'none' }}>
+                <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:'0', padding:'7px 0', borderBottom:'1px solid var(--border)', alignItems:'center' }}>
+                  <div style={{ fontSize:'12.5px', fontWeight:'500', color:'var(--text-primary)' }}>{ev.bookingReference}</div>
+                  <div style={{ fontSize:'12px', color:'var(--text-secondary)' }}>{ev.clientSurname || '—'}</div>
+                  <div style={{ fontSize:'12.5px', textAlign:'right', color:'var(--text-secondary)' }}>{fmt(ev.totalSell)}</div>
+                  <div style={{ fontSize:'13px', fontWeight:'600', textAlign:'right', color:'var(--green)' }}>{fmt(ev.staffShare)}</div>
+                </div>
+              </Link>
+            ))}
+          </div>
+        )}
 
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'16px' }}>
 

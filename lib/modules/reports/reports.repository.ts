@@ -1,5 +1,6 @@
 import { dbMutate } from '@/lib/api-client'
 import { supabase } from '@/lib/supabase'
+import { supabaseAdmin } from '@/lib/supabase-admin'
 
 export type Target = {
   id: number
@@ -120,7 +121,9 @@ export type CommissionRow = {
   surname: string
   clearedDate: string
   paymentReceived: number
-  commissionableAmount: number
+  staffShare: number        // this staff member's allocated profit share (may be < full profit for shared bookings)
+  sharePercent: number      // their ownership percentage
+  commissionAmount: number  // banded commission on their share
 }
 
 export type SalesRow = {
@@ -308,62 +311,106 @@ export async function getStageBreakdown(): Promise<StageBreakdown[]> {
 }
 
 // ── COMMISSION DATA QUERIES ───────────────────────────────────
+// Calculates commission using banded rates: 10% on first £10k, 15% above.
+function calcCommission(profit: number): number {
+  const first = Math.min(profit, 10_000)
+  const rest  = Math.max(profit - 10_000, 0)
+  return first * 0.1 + rest * 0.15
+}
+
 export async function getCommissionData(staffId: number, from: string, to: string): Promise<CommissionRow[]> {
-  const { data: bookings } = await supabase
-    .from('bookings')
-    .select('id, booking_reference, total_sell, final_profit, staff_id, deals(clients(last_name))')
+  const recognitionPeriod = from.slice(0, 7)
+
+  // Use booking_profit_allocations as the source of truth for shared commissions.
+  // This ensures non-primary shared owners appear in their own report with their
+  // allocated share, not the full booking profit.
+  const { data: allocations } = await supabase
+    .from('booking_profit_allocations')
+    .select('profit_event_id, profit_share, share_percent')
     .eq('staff_id', staffId)
-    .not('total_sell', 'is', null)
-    .not('final_profit', 'is', null)
-
-  const bookingIds = (bookings || []).map((b: CommissionBooking) => b.id)
-  if (bookingIds.length === 0) return []
-
-  const { data: payments } = await supabase
-    .from('booking_payments')
-    .select('id, booking_id, amount, payment_date')
-    .in('booking_id', bookingIds)
-    .order('payment_date', { ascending: true })
     .order('id', { ascending: true })
 
-  const paymentsByBooking = new Map<number, Payment[]>()
-  ;(payments || []).forEach((payment: Payment) => {
-    const rows = paymentsByBooking.get(payment.booking_id) || []
-    rows.push(payment)
-    paymentsByBooking.set(payment.booking_id, rows)
+  if (!allocations || allocations.length === 0) return []
+
+  const eventIds = allocations.map((a: { profit_event_id: number }) => a.profit_event_id)
+
+  // Get commissionable profit events only — non-commissionable events (e.g. pushed before
+  // payment cleared) are excluded to prevent double-counting once recognition events exist.
+  const { data: events } = await supabase
+    .from('booking_profit_events')
+    .select('id, booking_id, type, profit_delta, recognition_period')
+    .in('id', eventIds)
+    .eq('commissionable', true)
+    .eq('recognition_period', recognitionPeriod)
+
+  if (!events || events.length === 0) return []
+
+  // Sum allocated profit share per booking across all recognition events in this period.
+  const bookingShareMap = new Map<number, { staffShare: number; sharePercent: number; paymentReceived: number }>()
+  const eventToBooking = new Map<number, number>()
+  const paymentBasisByBooking = new Map<number, number>()
+  events.forEach((e: { id: number; booking_id: number; type: string; profit_delta: number; recognition_period: string | null }) => {
+    eventToBooking.set(e.id, e.booking_id)
+    paymentBasisByBooking.set(e.booking_id, (paymentBasisByBooking.get(e.booking_id) ?? 0) + Number(e.profit_delta || 0))
   })
 
+  allocations.forEach((a: { profit_event_id: number; profit_share: number; share_percent: number }) => {
+    const bookingId = eventToBooking.get(a.profit_event_id)
+    if (bookingId === undefined) return
+    const existing = bookingShareMap.get(bookingId)
+    bookingShareMap.set(bookingId, {
+      staffShare: (existing?.staffShare ?? 0) + Number(a.profit_share),
+      sharePercent: Number(a.share_percent), // same across events for the same booking
+      paymentReceived: paymentBasisByBooking.get(bookingId) ?? existing?.paymentReceived ?? 0,
+    })
+  })
+
+  if (bookingShareMap.size === 0) return []
+
+  const bookingIds = [...bookingShareMap.keys()]
+
+  // Load booking details for the period's recognized events.
+  const { data: bookings } = await supabase
+    .from('bookings')
+    .select('id, booking_reference, total_sell, balance_cleared_at, cancellation_date, cancellation_type, deals(clients(last_name))')
+    .in('id', bookingIds)
+
+  if (!bookings || bookings.length === 0) return []
+
   const rows: CommissionRow[] = []
-  ;(bookings || []).forEach((booking: CommissionBooking) => {
-    const sell = Number(booking.total_sell || 0)
-    const commissionable = Number(booking.final_profit || 0)
-    if (sell <= 0 || commissionable <= 0) return
 
-    let running = 0
-    let clearedDate: string | null = null
-    let paymentReceived = 0
+  ;(bookings as {
+    id: number
+    booking_reference: string
+    total_sell: number | null
+    balance_cleared_at: string | null
+    cancellation_date: string | null
+    cancellation_type: string | null
+    deals?: { clients?: { last_name?: string | null } | null } | null
+  }[]).forEach(booking => {
+    const share = bookingShareMap.get(booking.id)
+    if (!share) return
 
-    for (const payment of paymentsByBooking.get(booking.id) || []) {
-      const amount = Number(payment.amount || 0)
-      const before = running
-      running += amount
+    const clearedDate = booking.cancellation_type === 'deposit_only' && booking.cancellation_date
+      ? booking.cancellation_date
+      : booking.balance_cleared_at?.split('T')[0] || `${recognitionPeriod}-01`
+    if (clearedDate < from || clearedDate > to) return
 
-      if (before < sell && running >= sell) {
-        clearedDate = payment.payment_date
-        paymentReceived = Math.max(Math.min(sell - before, amount), 0)
-        break
-      }
-    }
+    const staffShare = Number(share.staffShare.toFixed(2))
+    if (staffShare <= 0) return
 
-    if (!clearedDate || clearedDate < from || clearedDate > to) return
+    // paymentReceived = full commissionable basis for the booking in this recognition month.
+    const paymentReceived = Number(share.paymentReceived.toFixed(2))
 
     rows.push({
       bookingId: booking.id,
       bookingReference: booking.booking_reference,
-      surname: booking.deals?.clients?.last_name || '—',
+      surname: (booking.deals as { clients?: { last_name?: string | null } | null } | null)?.clients?.last_name || '—',
       clearedDate,
       paymentReceived,
-      commissionableAmount: commissionable,
+      staffShare,
+      sharePercent: share.sharePercent,
+      commissionAmount: calcCommission(staffShare),
     })
   })
 
@@ -727,6 +774,182 @@ export async function saveTargets(values: Target) {
     values,
     options: { onConflict: 'month,year' },
   })
+}
+
+// ── BONUS EVENT TYPES ─────────────────────────────────────────
+export type BonusTier = 'bronze' | 'silver' | 'gold'
+
+export type BonusEvent = {
+  id: number
+  staff_id: number
+  period: string
+  bonus_amount: number
+  tier: BonusTier
+  recognised_profit: number
+  created_at: string
+  updated_at: string
+}
+
+// ── PAYROLL SHEET TYPES ───────────────────────────────────────
+export type PayrollSheetStatus = 'draft' | 'issued'
+
+export type PayrollSheet = {
+  id: number
+  period: string            // 'YYYY-MM' recognition month
+  staff_id: number
+  payable_month: string     // 'YYYY-MM' = period + 1 month
+  issued_at: string | null
+  issued_by: number | null
+  total_commission: number
+  manual_bonus: number
+  bonus_amount: number      // computed tier bonus from commission_bonus_events
+  bonus_tier: string | null
+  total_payable: number
+  status: PayrollSheetStatus
+  created_at: string
+  updated_at: string
+  staff?: { name: string; role: string | null } | null
+  issuer?: { name: string } | null
+}
+
+// ── PAYROLL SHEET QUERIES ─────────────────────────────────────
+
+/** Returns all sheets for a given recognition period, joined with staff name. */
+export async function getPayrollSheetsByPeriod(period: string): Promise<PayrollSheet[]> {
+  const { data } = await supabase
+    .from('commission_payroll_sheets')
+    .select('*, staff:staff_users!staff_id(name, role), issuer:staff_users!issued_by(name)')
+    .eq('period', period)
+    .order('staff_id')
+  return (data || []) as PayrollSheet[]
+}
+
+/** Returns the sheet for a specific staff member + period, if it exists. */
+export async function getPayrollSheet(period: string, staffId: number): Promise<PayrollSheet | null> {
+  const { data } = await supabase
+    .from('commission_payroll_sheets')
+    .select('*, staff:staff_users!staff_id(name, role), issuer:staff_users!issued_by(name)')
+    .eq('period', period)
+    .eq('staff_id', staffId)
+    .maybeSingle()
+  return (data as PayrollSheet | null) ?? null
+}
+
+/**
+ * Issues (or re-issues) a payroll sheet for a staff member + period.
+ * Snapshots total_commission, manual_bonus, total_payable at issue time.
+ * Safe to call multiple times — uses upsert on (period, staff_id).
+ * Re-issuing an already-issued sheet resets status to 'issued' and updates totals.
+ */
+export async function issuePayrollSheet(values: {
+  period: string
+  staff_id: number
+  payable_month: string
+  issued_by: number
+  total_commission: number
+  manual_bonus: number
+  bonus_amount: number
+  bonus_tier: string | null
+  total_payable: number
+}): Promise<PayrollSheet> {
+  const client = supabaseAdmin ?? supabase
+  const now = new Date().toISOString()
+  const { data, error } = await client
+    .from('commission_payroll_sheets')
+    .upsert(
+      {
+        period: values.period,
+        staff_id: values.staff_id,
+        payable_month: values.payable_month,
+        issued_by: values.issued_by,
+        issued_at: now,
+        total_commission: values.total_commission,
+        manual_bonus: values.manual_bonus,
+        bonus_amount: values.bonus_amount,
+        bonus_tier: values.bonus_tier,
+        total_payable: values.total_payable,
+        status: 'issued',
+      },
+      { onConflict: 'period,staff_id' },
+    )
+    .select('*')
+    .single()
+  if (error) throw error
+  return data as PayrollSheet
+}
+
+// ── BONUS EVENT QUERIES ───────────────────────────────────────
+
+/** Returns the bonus event for a staff member + period, or null if none. */
+export async function getBonusEvent(staffId: number, period: string): Promise<BonusEvent | null> {
+  const { data } = await supabase
+    .from('commission_bonus_events')
+    .select('*')
+    .eq('staff_id', staffId)
+    .eq('period', period)
+    .maybeSingle()
+  return (data as BonusEvent | null) ?? null
+}
+
+/**
+ * Upserts a bonus event for a staff member + period.
+ * Safe to call multiple times — updates if recognised profit or tier changes.
+ */
+export async function upsertBonusEvent(
+  staffId: number,
+  period: string,
+  bonusAmount: number,
+  tier: BonusTier,
+  recognisedProfit: number,
+): Promise<BonusEvent> {
+  const client = supabaseAdmin ?? supabase
+  const now = new Date().toISOString()
+  const { data, error } = await client
+    .from('commission_bonus_events')
+    .upsert(
+      {
+        staff_id: staffId,
+        period,
+        bonus_amount: bonusAmount,
+        tier,
+        recognised_profit: recognisedProfit,
+        updated_at: now,
+      },
+      { onConflict: 'staff_id,period' },
+    )
+    .select('*')
+    .single()
+  if (error) throw error
+  return data as BonusEvent
+}
+
+/**
+ * Returns the total commissionable profit allocated to a staff member for a
+ * recognition period. Used for bonus tier threshold evaluation.
+ */
+export async function getRecognisedProfitTotal(staffId: number, period: string): Promise<number> {
+  const { data: events } = await supabase
+    .from('booking_profit_events')
+    .select('id')
+    .eq('commissionable', true)
+    .eq('recognition_period', period)
+
+  if (!events?.length) return 0
+
+  const eventIds = (events as { id: number }[]).map(e => e.id)
+
+  const { data: allocations } = await supabase
+    .from('booking_profit_allocations')
+    .select('profit_share')
+    .eq('staff_id', staffId)
+    .in('profit_event_id', eventIds)
+
+  if (!allocations?.length) return 0
+
+  const total = (allocations as { profit_share: number }[])
+    .reduce((sum, a) => sum + Number(a.profit_share), 0)
+
+  return Number(total.toFixed(2))
 }
 
 // ── UTILITY FUNCTIONS ─────────────────────────────────────────

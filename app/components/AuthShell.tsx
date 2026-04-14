@@ -2,6 +2,7 @@
 
 import { usePathname, useRouter } from 'next/navigation'
 import Sidebar from './Sidebar'
+import AppHeader from './AppHeader'
 import { useAuth } from '../providers'
 import LoginScreen from './LoginScreen'
 import MfaGate from './MfaGate'
@@ -33,6 +34,7 @@ export default function AuthShell({ children }: { children: React.ReactNode }) {
       <div className="main-layout">
         <Sidebar />
         <main className="main-content">
+          <AppHeader />
           <div className="page-body">
             <div className="card" style={{ padding:'32px 36px', maxWidth:'620px' }}>
               <div style={{ fontFamily:'Fraunces,serif', fontSize:'24px', fontWeight:'300', marginBottom:'10px' }}>Secure Your Account</div>
@@ -51,6 +53,7 @@ export default function AuthShell({ children }: { children: React.ReactNode }) {
     <div className="main-layout">
       <Sidebar />
       <main className="main-content">
+        <AppHeader />
         <MfaGate />
         {children}
       </main>

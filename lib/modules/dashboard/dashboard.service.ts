@@ -2,7 +2,8 @@ import * as repo from './dashboard.repository'
 
 export type DashData = {
   confirmedRevenue: number
-  confirmedProfit: number
+  confirmedProfit: number          // quote-based estimate (pipeline metric only)
+  recognisedProfit: number         // real commissionable profit from booking_profit_events
   quotesThisMonth: number
   leadsThisMonth: number
   conversionRate: number
@@ -16,10 +17,12 @@ export type DashData = {
   recentBookings: (repo.BookingWithQuotes & { profit: number })[]
   lostReasons: { reason: string; count: number }[]
   upcomingDepartures: repo.UpcomingDeparture[]
+  commercialEvents: repo.CommercialEvent[]
 }
 
 export type DashboardResponse = {
   target: repo.Target | null
+  noTargetConfigured: boolean      // true when no DB target row exists for this month
   data: DashData
 }
 
@@ -32,13 +35,14 @@ function bestQuoteProfit(quotes: repo.QuoteProfit[] | null | undefined): number 
   return Number(bestQuote?.profit || 0)
 }
 
-export async function getDashboardData(): Promise<DashboardResponse> {
+export async function getDashboardData(staffId?: number): Promise<DashboardResponse> {
   const now = new Date()
   const month = now.getMonth() + 1
   const year = now.getFullYear()
   const monthStart = new Date(year, month - 1, 1).toISOString()
   const monthEnd = new Date(year, month, 0, 23, 59, 59).toISOString()
   const yearStart = new Date(year, 0, 1).toISOString()
+  const recognitionPeriod = `${year}-${String(month).padStart(2, '0')}`
 
   const [
     target,
@@ -51,6 +55,7 @@ export async function getDashboardData(): Promise<DashboardResponse> {
     pipeline,
     lostDeals,
     upcomingDepartures,
+    recognisedResult,
   ] = await Promise.all([
     repo.getTarget(month, year),
     repo.getConfirmedBookingsInRange(monthStart, monthEnd),
@@ -62,6 +67,7 @@ export async function getDashboardData(): Promise<DashboardResponse> {
     repo.getActivePipelineDeals(),
     repo.getLostDeals(),
     repo.getUpcomingDepartures(now.toISOString().split('T')[0], new Date(now.getTime() + 30 * 86400000).toISOString().split('T')[0]),
+    staffId ? repo.getRecognisedProfitForPeriod(staffId, recognitionPeriod) : Promise.resolve({ total: 0, events: [] }),
   ])
 
   let confirmedRevenue = 0
@@ -107,9 +113,11 @@ export async function getDashboardData(): Promise<DashboardResponse> {
 
   return {
     target,
+    noTargetConfigured: target === null,
     data: {
       confirmedRevenue,
       confirmedProfit,
+      recognisedProfit: recognisedResult.total,
       quotesThisMonth,
       leadsThisMonth,
       conversionRate: totalDeals ? Math.round((totalBooked / totalDeals) * 100) : 0,
@@ -123,6 +131,7 @@ export async function getDashboardData(): Promise<DashboardResponse> {
       recentBookings,
       lostReasons,
       upcomingDepartures,
+      commercialEvents: recognisedResult.events,
     },
   }
 }

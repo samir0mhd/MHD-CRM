@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { authedFetch } from '@/lib/api-client'
+import { useAuth } from '../providers'
 
 // --- Types (same contract as /api/today) ---
 
@@ -79,6 +80,17 @@ type TodayData = {
   ticketAlerts: TicketAlert[]
   departureAlerts: DepartureAlert[]
   taskAlerts: BookingTaskAlert[]
+}
+
+type PendingRequest = {
+  id: string
+  type: 'share_request' | 'repeat_client_flag'
+  booking_id: number
+  booking_reference: string
+  client_name: string
+  requester: string
+  submitted_at: string
+  summary: string
 }
 
 // --- Constants ---
@@ -213,8 +225,13 @@ const EMPTY_DATA: TodayData = {
 }
 
 export default function TodayPage() {
+  const { staffUser } = useAuth()
+  const isManagerUser = staffUser?.role === 'manager'
+
   const [data, setData] = useState<TodayData>(EMPTY_DATA)
   const [loading, setLoading] = useState(true)
+  const [requests, setRequests] = useState<PendingRequest[]>([])
+  const [requestsLoading, setRequestsLoading] = useState(false)
   // 'deal-{id}' | 'task-{id}' | 'snooze-{id}' — one active action at a time
   const [completingId, setCompletingId] = useState<string | null>(null)
   const [copied, setCopied] = useState<number | null>(null)
@@ -246,6 +263,24 @@ export default function TodayPage() {
   }
 
   useEffect(() => { void load() }, [])
+
+  async function loadRequests() {
+    setRequestsLoading(true)
+    try {
+      const res = await authedFetch('/api/manager/requests', { cache: 'no-store' })
+      if (!res.ok) return
+      const json = await res.json()
+      setRequests((json.requests ?? []) as PendingRequest[])
+    } catch {
+      // non-fatal — queue simply stays empty
+    } finally {
+      setRequestsLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (isManagerUser) void loadRequests()
+  }, [isManagerUser])
 
   // --- Toast ---
 
@@ -358,6 +393,7 @@ export default function TodayPage() {
           <div className="page-title">Today&apos;s Actions</div>
         </div>
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          {isManagerUser && requests.length > 0 && <span style={{ fontSize: '13px', color: '#7c3aed', fontWeight: '600' }}>{requests.length} pending request{requests.length !== 1 ? 's' : ''}</span>}
           {tasksDue.length > 0 && <span style={{ fontSize: '13px', color: 'var(--red)', fontWeight: '600' }}>{tasksDue.length} booking task{tasksDue.length !== 1 ? 's' : ''} due</span>}
           {data.actions.length > 0 && <span style={{ fontSize: '13px', color: 'var(--amber)', fontWeight: '600' }}>{data.actions.length} follow-up{data.actions.length !== 1 ? 's' : ''} due</span>}
           <Link href="/pipeline"><button className="btn btn-secondary btn-sm">Pipeline →</button></Link>
@@ -365,17 +401,81 @@ export default function TodayPage() {
       </div>
 
       <div className="page-body">
-        {loading ? (
-          <div style={{ color: 'var(--text-muted)', fontSize: '13px' }}>Loading…</div>
-        ) : totalVisible === 0 ? (
-          <div className="card empty-state">
-            <div className="empty-state-icon">✓</div>
-            <div className="empty-state-title">All clear</div>
-            <div className="empty-state-desc">No actions or alerts today.</div>
-            <Link href="/pipeline"><button className="btn btn-cta" style={{ marginTop: '16px' }}>Open Pipeline →</button></Link>
-          </div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+
+          {/* ── Manager Request Queue ── */}
+          {isManagerUser && (requestsLoading || requests.length > 0) && (
+            <section>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>
+                <div style={{ fontFamily: 'Fraunces,serif', fontSize: '21px', fontWeight: '400' }}>🔔 Manager Requests</div>
+                {requestsLoading
+                  ? <div style={{ background: 'var(--bg-secondary)', color: 'var(--text-muted)', borderRadius: '20px', padding: '3px 12px', fontSize: '12px', fontWeight: '700' }}>…</div>
+                  : <div style={{ background: '#7c3aed', color: 'white', borderRadius: '20px', padding: '3px 12px', fontSize: '12px', fontWeight: '700' }}>{requests.length}</div>
+                }
+              </div>
+              {requestsLoading ? (
+                <div style={{ color: 'var(--text-muted)', fontSize: '13px' }}>Loading requests…</div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  {requests.map(req => {
+                    const isShareReq = req.type === 'share_request'
+                    const borderColor = isShareReq ? '#7c3aed' : 'var(--amber)'
+                    const badgeBg = isShareReq ? '#ede9fe' : '#fef3c7'
+                    const badgeColor = isShareReq ? '#5b21b6' : '#92400e'
+                    const typeLabel = isShareReq ? 'Share Request' : 'Repeat Client'
+                    return (
+                      <div
+                        key={req.id}
+                        className="card"
+                        style={{ padding: '14px 18px', borderLeft: `4px solid ${borderColor}`, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '16px' }}
+                      >
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px', flexWrap: 'wrap' }}>
+                            <span style={{ fontSize: '11px', fontWeight: '700', padding: '3px 10px', borderRadius: '4px', background: badgeBg, color: badgeColor }}>
+                              {typeLabel}
+                            </span>
+                            <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'monospace' }}>{req.booking_reference}</span>
+                            <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{fmtDate(req.submitted_at)}</span>
+                          </div>
+                          <div style={{ fontFamily: 'Fraunces,serif', fontSize: '17px', fontWeight: '300', color: 'var(--text-primary)', marginBottom: '3px' }}>
+                            {req.client_name}
+                          </div>
+                          <div style={{ fontSize: '12.5px', color: 'var(--text-secondary)', marginBottom: '4px' }}>
+                            {isShareReq ? `Requested by ${req.requester}` : `Handling: ${req.requester}`}
+                          </div>
+                          {req.summary && (
+                            <div style={{ fontSize: '12px', color: 'var(--text-muted)', fontStyle: 'italic', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '480px' }}>
+                              {req.summary}
+                            </div>
+                          )}
+                        </div>
+                        <div style={{ flexShrink: 0 }}>
+                          <Link href={`/bookings/${req.booking_id}`}>
+                            <button style={{ padding: '8px 14px', borderRadius: '8px', border: `1px solid ${borderColor}`, background: 'transparent', color: borderColor, fontSize: '12px', cursor: 'pointer', fontFamily: 'Outfit,sans-serif', whiteSpace: 'nowrap', fontWeight: '500' }}>
+                              Open Booking →
+                            </button>
+                          </Link>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </section>
+          )}
+
+          {/* ── Today content ── */}
+          {loading ? (
+            <div style={{ color: 'var(--text-muted)', fontSize: '13px' }}>Loading…</div>
+          ) : totalVisible === 0 ? (
+            <div className="card empty-state">
+              <div className="empty-state-icon">✓</div>
+              <div className="empty-state-title">All clear</div>
+              <div className="empty-state-desc">No actions or alerts today.</div>
+              <Link href="/pipeline"><button className="btn btn-cta" style={{ marginTop: '16px' }}>Open Pipeline →</button></Link>
+            </div>
+          ) : (
+            <>
 
             {/* ── Booking Tasks ── */}
             {tasksDue.length > 0 && (
@@ -644,8 +744,9 @@ export default function TodayPage() {
               </section>
             )}
 
-          </div>
-        )}
+            </>
+          )}
+        </div>
       </div>
 
       {toast && <div className={`toast ${toast.type}`}>{toast.msg}</div>}

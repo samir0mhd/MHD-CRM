@@ -207,7 +207,7 @@ export default function DealDetailPage() {
   async function saveOwnership() {
     if (!deal || !isManager(currentStaff) || !ownerDraft) return
     const nextStaffId = Number(ownerDraft)
-    const bookingTargets = (deal.bookings || []).filter(booking => booking.staff_id !== nextStaffId)
+    const bookingTargets = (Array.isArray(deal.bookings) ? deal.bookings : []).filter(booking => booking.staff_id !== nextStaffId)
 
     setSavingOwner(true)
     try {
@@ -240,7 +240,7 @@ export default function DealDetailPage() {
   const assignedStaffId = deal.staff_id || client?.owner_staff_id || null
   const assignedStaff = staffUsers.find(staff => staff.id === assignedStaffId) || null
   const clientOwnerMismatch = (client?.owner_staff_id ?? null) !== (deal.staff_id ?? null)
-  const bookingOwnerMismatch = (deal.bookings || []).some(booking => booking.staff_id !== assignedStaffId)
+  const bookingOwnerMismatch = (Array.isArray(deal.bookings) ? deal.bookings : []).some(booking => booking.staff_id !== assignedStaffId)
   const dealInfoRows: { label: string; val: string; color?: string }[] = [
     { label:'Stage', val:STAGE_LABELS[deal.stage]||deal.stage, color:STAGE_COLORS[deal.stage] },
     { label:'Departure', val:fmtDate(deal.departure_date) },

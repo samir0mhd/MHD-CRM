@@ -47,6 +47,5 @@ Any code path that completes a booking task must write the full completion contr
 Any code path that reopens a booking task must write:
 - status: 'pending'
 - is_done: false
-- completed_at: null
-
+ 
 Do not write only is_done without status, because DB triggers will create inconsistent behavior.

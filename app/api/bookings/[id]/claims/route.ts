@@ -5,6 +5,8 @@ import {
   approveOwnershipClaim,
   rejectOwnershipClaim,
   enforceRepeatClientRule,
+  managerDirectShare,
+  managerUndoShare,
 } from '@/lib/modules/bookings/booking.service'
 import {
   getPendingClaimsForBooking,
@@ -109,6 +111,20 @@ export async function PUT(
 
     if (action === 'resolve_repeat_flag') {
       const result = await enforceRepeatClientRule(booking, body.resolution, currentStaff)
+      return NextResponse.json(result, { status: result.success ? 200 : 400 })
+    }
+
+    if (action === 'manager_direct_share') {
+      const { secondStaffId, secondStaffShare } = body
+      if (!secondStaffId || !secondStaffShare) {
+        return NextResponse.json({ success: false, message: 'secondStaffId and secondStaffShare required' }, { status: 400 })
+      }
+      const result = await managerDirectShare(booking, Number(secondStaffId), Number(secondStaffShare), currentStaff)
+      return NextResponse.json(result, { status: result.success ? 200 : 400 })
+    }
+
+    if (action === 'manager_direct_unsplit') {
+      const result = await managerUndoShare(booking, currentStaff)
       return NextResponse.json(result, { status: result.success ? 200 : 400 })
     }
 

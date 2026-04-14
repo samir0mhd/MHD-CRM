@@ -3,6 +3,11 @@ import { buildFieldAuditEntries, logAuditEntries } from '@/lib/audit'
 import { dbMutate } from '@/lib/api-client'
 import type { StaffUser } from '@/lib/access'
 
+/** Returns 'YYYY-MM' from any ISO timestamp string. */
+function toYearMonth(iso: string): string {
+  return iso.slice(0, 7)
+}
+
 // ── TASK TEMPLATE ─────────────────────────────────────────────
 const TASK_TEMPLATE = [
   { key: 'deposit_received', name: 'Deposit received', category: 'Financial', sort: 1 },
@@ -43,12 +48,12 @@ function getFlightDerivedDates(flights: repo.Flight[]) {
 
 function calculateTaskDerivedDone(tasks: repo.BookingTask[], flights: repo.Flight[], accommodations: repo.Accommodation[], transfers: repo.Transfer[], payments: repo.Payment[], booking: repo.Booking): Record<string, boolean> {
   const totalPaid = payments.reduce((sum, payment) => sum + (payment.amount || 0), 0)
-  const sell = booking.total_sell || booking.deals?.deal_value || 0
+  const totalSell = booking.total_sell || booking.deals?.deal_value || 0
 
   return {
     deposit_received: totalPaid > 0 || !!booking.deposit_received,
     balance_due_set: !!booking.balance_due_date,
-    balance_received: sell > 0 ? totalPaid >= sell : false,
+    balance_received: totalSell > 0 ? totalPaid >= totalSell : false,
     final_costing: booking.total_net != null && (booking.final_profit != null || booking.gross_profit != null),
     flights_ticketed: flights.length === 0 || flights.every(flight => !!flight.pnr),
     hotel_confirmation: accommodations.length === 0 || accommodations.every(stay => !!stay.hotel_confirmation || ['confirmed', 'ref_received'].includes(stay.reservation_status)),
@@ -73,16 +78,18 @@ export async function loadBookingWithAllData(id: number | string) {
 }
 
 export async function loadBookingPageData(id: number | string) {
-  const [bookingData, hotels, suppliers] = await Promise.all([
+  const [bookingData, hotels, suppliers, commissions] = await Promise.all([
     repo.getBookingWithAllData(id),
     repo.getHotels(),
     repo.getSuppliers(),
+    repo.getBookingCommissions(Number(id)),
   ])
 
   return {
     ...bookingData,
     hotels,
     suppliers,
+    commissions,
   }
 }
 
@@ -360,6 +367,10 @@ export async function cancelBooking(bookingId: number, cancellationData: {
   }
 
   await repo.cancelBooking(bookingId, bookingUpdate)
+
+  if (cancellationData.type === 'deposit_only' && cancellationData.totalPaid > 0) {
+    await ensureRetainedDepositCancellationRecognition(bookingId, cancellationData.totalPaid, today)
+  }
 
   if (pendingFollowUps.length > 0) {
     const nextSort = Math.max(0, ...tasks.map(task => task.sort_order || 0)) + 1
@@ -701,16 +712,47 @@ export async function deleteExtraEntry(id: number) {
 
 export async function addPaymentToBooking(booking: repo.Booking, paymentData: Record<string, unknown>, currentStaff?: StaffUser | null) {
   try {
+    const sell = booking.total_sell || booking.deals?.deal_value || 0
+    if (sell > 0) {
+      const { payments: existingPayments } = await repo.getBookingWithAllData(booking.id)
+      const totalAlreadyPaid = existingPayments.reduce((sum, p) => sum + (p.amount || 0), 0)
+      const outstanding = Number((sell - totalAlreadyPaid).toFixed(2))
+      const incoming = Number(paymentData.amount) || 0
+      if (incoming > outstanding) {
+        return {
+          success: false,
+          message: `Payment of £${incoming.toLocaleString('en-GB', { minimumFractionDigits: 2 })} exceeds outstanding balance of £${outstanding.toLocaleString('en-GB', { minimumFractionDigits: 2 })}`,
+        }
+      }
+    }
+
     const payment = await repo.insertPayment(paymentData)
     const { payments } = await repo.getBookingWithAllData(booking.id)
     const totalPaid = payments.reduce((sum, entry) => sum + (entry.amount || 0), 0)
 
+    // balance_cleared_at is only set against total_sell (the confirmed costing figure).
+    // deal_value is used above for overpayment validation only — it must not trigger
+    // commission recognition, which requires real costing to have been pushed.
+    const confirmedSell = Number(booking.total_sell || 0)
+    const newBalanceClearedAt = confirmedSell > 0 && totalPaid >= confirmedSell
+      ? (booking.balance_cleared_at || new Date().toISOString())
+      : null
     await repo.updateBooking(booking.id, {
       deposit_received: totalPaid > 0,
-      balance_cleared_at: (booking.total_sell || booking.deals?.deal_value || 0) > 0 && totalPaid >= (booking.total_sell || booking.deals?.deal_value || 0)
-        ? (booking.balance_cleared_at || new Date().toISOString())
-        : null,
+      balance_cleared_at: newBalanceClearedAt,
     })
+
+    // When balance first clears, ensure commission is recognised automatically.
+    // ensureSingleOwnerCommissionPlan guarantees a commission record exists before
+    // ensureCommissionRecognition tries to snapshot allocations.
+    // ensureCommissionRecognition uses the current booking_commissions split, so it
+    // correctly handles split-claim-approved-before-payment without a separate
+    // split_correction pass — that pass only runs from approveOwnershipClaim when
+    // a split changes on an already-fully-paid booking.
+    if (!booking.balance_cleared_at && newBalanceClearedAt) {
+      await ensureSingleOwnerCommissionPlan(booking.id, booking.staff_id ?? null)
+      await ensureCommissionRecognition(booking.id)
+    }
 
     await logAuditEntries([{
       entity_type: 'booking',
@@ -756,9 +798,10 @@ export async function deletePaymentFromBooking(booking: repo.Booking, paymentId:
     const { payments: remainingPayments } = await repo.getBookingWithAllData(booking.id)
     const totalPaid = remainingPayments.reduce((sum, entry) => sum + (entry.amount || 0), 0)
 
+    const confirmedSell = Number(booking.total_sell || 0)
     await repo.updateBooking(booking.id, {
       deposit_received: totalPaid > 0,
-      balance_cleared_at: (booking.total_sell || booking.deals?.deal_value || 0) > 0 && totalPaid >= (booking.total_sell || booking.deals?.deal_value || 0)
+      balance_cleared_at: confirmedSell > 0 && totalPaid >= confirmedSell
         ? (booking.balance_cleared_at || new Date().toISOString())
         : null,
     })
@@ -834,7 +877,12 @@ export async function pushCostingToOverview(booking: repo.Booking, updates: {
       notes: 'Costing pushed to overview',
     }])
 
-    await recordBookingProfitDeltaEvent(booking.id, updates.final_profit)
+    await recordBookingProfitDeltaEvent(booking.id, updates.final_profit, balanceClearedAt)
+
+    // Ensure a commission plan exists for this booking's owner. Handles cases where
+    // the booking was created before the commissions table existed, or where the
+    // seed migration assigned the wrong owner.
+    await ensureSingleOwnerCommissionPlan(booking.id, booking.staff_id ?? null)
 
     // Re-run task reconciliation so balance_received reflects the new total_sell.
     const refreshed = await repo.getBookingWithAllData(booking.id)
@@ -874,18 +922,37 @@ async function ensureSingleOwnerCommissionPlan(bookingId: number, staffId: numbe
   }])
 }
 
-async function recordBookingProfitDeltaEvent(bookingId: number, nextFinalProfit: number | null) {
+async function recordBookingProfitDeltaEvent(
+  bookingId: number,
+  nextFinalProfit: number | null,
+  balanceClearedAt: string | null,
+) {
   const nextProfit = Number(nextFinalProfit || 0)
   const events = await repo.getBookingProfitEvents(bookingId)
-  const recordedTotal = events.reduce((sum, event) => sum + Number(event.profit_delta || 0), 0)
+
+  // Exclude 'recognition' events from delta accumulation — they are absolute
+  // snapshots, not commercial deltas, and must not inflate the running total.
+  const commercialEvents = events.filter(
+    e => e.type !== 'recognition' && e.type !== 'cancellation_retained_deposit',
+  )
+  const recordedTotal = commercialEvents.reduce((sum, e) => sum + Number(e.profit_delta || 0), 0)
   const delta = Number((nextProfit - recordedTotal).toFixed(2))
 
   if (delta === 0) return
 
+  const commissionable = balanceClearedAt !== null
+  // recognition_period = the payroll month this event belongs to.
+  // For commissionable events: the month balance cleared (or current month if unclear).
+  // For non-commissionable events: null — they don't belong to any payroll period yet.
+  const recognition_period = commissionable
+    ? toYearMonth(balanceClearedAt!)
+    : null
   const event = await repo.insertBookingProfitEvent({
     booking_id: bookingId,
-    type: events.length === 0 ? 'original' : 'amendment',
+    type: commercialEvents.length === 0 ? 'original' : 'amendment',
     profit_delta: delta,
+    commissionable,
+    recognition_period,
   })
 
   // Snapshot the current commission split at the moment this profit event is
@@ -897,6 +964,79 @@ async function recordBookingProfitDeltaEvent(bookingId: number, nextFinalProfit:
       staff_id: c.staff_id,
       share_percent: Number(c.share_percent),
       profit_share: Number((delta * Number(c.share_percent) / 100).toFixed(2)),
+    }))
+  )
+}
+
+// Called only when balance_cleared_at first transitions from null → set.
+// If costing was already pushed before payment, this creates a commissionable
+// 'recognition' event carrying the full current profit as its delta, giving the
+// report a correct commissionable baseline without corrupting the commercial delta chain.
+async function ensureCommissionRecognition(bookingId: number) {
+  const events = await repo.getBookingProfitEvents(bookingId)
+  // If a commissionable event already exists, recognition is already covered.
+  // e.commissionable may be undefined pre-migration — treat undefined as false.
+  if (events.some(e => e.commissionable === true)) return
+
+  const booking = await repo.getBookingById(bookingId)
+  const profit = Number(booking?.final_profit || 0)
+  // Nothing to recognize if profit is not yet set.
+  if (profit === 0) return
+
+  const event = await repo.insertBookingProfitEvent({
+    booking_id: bookingId,
+    type: 'recognition',
+    profit_delta: profit,
+    commissionable: true,
+    recognition_period: booking?.balance_cleared_at ? toYearMonth(booking.balance_cleared_at) : null,
+  })
+
+  const commissions = await repo.getBookingCommissions(bookingId)
+  await repo.insertProfitAllocations(
+    commissions.map(c => ({
+      profit_event_id: event.id,
+      staff_id: c.staff_id,
+      share_percent: Number(c.share_percent),
+      profit_share: Number((profit * Number(c.share_percent) / 100).toFixed(2)),
+    }))
+  )
+}
+
+async function ensureRetainedDepositCancellationRecognition(
+  bookingId: number,
+  retainedDepositAmount: number,
+  cancellationDate: string,
+) {
+  const retainedDeposit = Number(Number(retainedDepositAmount || 0).toFixed(2))
+  if (retainedDeposit <= 0) return
+
+  const booking = await repo.getBookingById(bookingId)
+  if (!booking) return
+  if (booking.balance_cleared_at) return
+  if (booking.cancellation_type !== 'deposit_only') return
+
+  const events = await repo.getBookingProfitEvents(bookingId)
+  if (events.some(e => e.type === 'cancellation_retained_deposit' && e.commissionable === true)) {
+    return
+  }
+
+  await ensureSingleOwnerCommissionPlan(bookingId, booking.staff_id ?? null)
+
+  const event = await repo.insertBookingProfitEvent({
+    booking_id: bookingId,
+    type: 'cancellation_retained_deposit',
+    profit_delta: retainedDeposit,
+    commissionable: true,
+    recognition_period: toYearMonth(`${cancellationDate}T00:00:00.000Z`),
+  })
+
+  const commissions = await repo.getBookingCommissions(bookingId)
+  await repo.insertProfitAllocations(
+    commissions.map(c => ({
+      profit_event_id: event.id,
+      staff_id: c.staff_id,
+      share_percent: Number(c.share_percent),
+      profit_share: Number((retainedDeposit * Number(c.share_percent) / 100).toFixed(2)),
     }))
   )
 }
@@ -931,8 +1071,8 @@ export async function submitOwnershipClaim(bookingId: number, claimantId: number
   try {
     await repo.insertOwnershipClaim({ booking_id: bookingId, claimant_id: claimantId, reason: reason.trim() })
     return { success: true, message: 'Share request submitted ✓' }
-  } catch (error: any) {
-    if (error?.code === '23505') {
+  } catch (error: unknown) {
+    if ((error as { code?: string } | null)?.code === '23505') {
       return { success: false, message: 'You already have a pending claim on this booking' }
     }
     return { success: false, message: error instanceof Error ? error.message : 'Failed to submit claim' }
@@ -960,13 +1100,18 @@ export async function approveOwnershipClaim(
       { booking_id: booking.id, staff_id: claim.claimant_id, share_percent: claimantSharePercent, is_primary: false },
     ]
     await repo.replaceBookingCommissions(booking.id, newCommissions)
-    await repo.updateOwnershipClaim(claim.id, {
-      status: 'approved',
-      reviewed_by: reviewedBy.id,
-      review_notes: reviewNotes || null,
-      approved_split: claimantSharePercent,
-      reviewed_at: now,
-    })
+    
+    // If this booking was already fully paid when the split changed, create a
+    // split_correction event with allocations that adjust each staff member's
+    // net share to match the new commission split. This ensures the report shows
+    // the correct allocation regardless of when the claim was approved.
+    if (booking.balance_cleared_at) {
+      await repo.createSplitCorrectionAllocations(booking.id, [
+        { staff_id: primaryStaffId, share_percent: primaryShare },
+        { staff_id: claim.claimant_id, share_percent: claimantSharePercent },
+      ])
+    }
+    
     await repo.insertOwnershipHistory({
       booking_id: booking.id,
       changed_by: reviewedBy.id,
@@ -977,9 +1122,178 @@ export async function approveOwnershipClaim(
       claim_id: claim.id,
       notes: reviewNotes || `Approved: ${claimantSharePercent}% to claimant`,
     })
+    await repo.updateOwnershipClaim(claim.id, {
+      status: 'approved',
+      reviewed_by: reviewedBy.id,
+      review_notes: reviewNotes || null,
+      approved_split: claimantSharePercent,
+      reviewed_at: now,
+    })
     return { success: true, message: 'Claim approved — split updated ✓' }
   } catch (error) {
-    return { success: false, message: error instanceof Error ? error.message : 'Failed to approve claim' }
+    // PostgrestError is not an Error subclass — extract its message explicitly
+    const msg =
+      error instanceof Error
+        ? error.message
+        : (error as { message?: string })?.message ?? 'Failed to approve claim'
+    console.error('[approveOwnershipClaim] error:', error)
+    return { success: false, message: msg }
+  }
+}
+
+function toCommissionSnapshot(
+  commissions: { staff_id: number; share_percent: number; is_primary: boolean }[],
+) {
+  return commissions.map(c => ({
+    staff_id: c.staff_id,
+    share_percent: c.share_percent,
+    is_primary: c.is_primary,
+  }))
+}
+
+function sameCommissionPlan(
+  current: { staff_id: number; share_percent: number; is_primary: boolean }[],
+  next: { staff_id: number; share_percent: number; is_primary: boolean }[],
+) {
+  if (current.length !== next.length) return false
+
+  const normalize = (rows: { staff_id: number; share_percent: number; is_primary: boolean }[]) =>
+    [...rows]
+      .map(row => ({
+        staff_id: row.staff_id,
+        share_percent: Number(row.share_percent),
+        is_primary: row.is_primary,
+      }))
+      .sort((a, b) => {
+        if (a.is_primary !== b.is_primary) return a.is_primary ? -1 : 1
+        return a.staff_id - b.staff_id
+      })
+
+  const currentNormalized = normalize(current)
+  const nextNormalized = normalize(next)
+
+  return currentNormalized.every((row, index) => {
+    const other = nextNormalized[index]
+    return row.staff_id === other.staff_id
+      && row.is_primary === other.is_primary
+      && Number(row.share_percent.toFixed(2)) === Number(other.share_percent.toFixed(2))
+  })
+}
+
+/**
+ * Manager directly creates a split without requiring a prior claim.
+ * Writes booking_commissions, optionally a split_correction event (if already paid),
+ * and an audit history entry.
+ */
+export async function managerDirectShare(
+  booking: repo.Booking,
+  secondStaffId: number,
+  secondStaffShare: number,
+  manager: StaffUser,
+): Promise<{ success: boolean; message: string }> {
+  if (secondStaffShare < 1 || secondStaffShare > 99) {
+    return { success: false, message: 'Share must be between 1 and 99%' }
+  }
+  const primaryStaffId = booking.staff_id
+  if (!primaryStaffId) return { success: false, message: 'Booking has no primary owner — assign an owner first' }
+  if (secondStaffId === primaryStaffId) return { success: false, message: 'Second staff member must be different from the primary owner' }
+
+  const primaryShare = Number((100 - secondStaffShare).toFixed(2))
+  const newCommissions = [
+    { booking_id: booking.id, staff_id: primaryStaffId, share_percent: primaryShare, is_primary: true },
+    { booking_id: booking.id, staff_id: secondStaffId,  share_percent: secondStaffShare, is_primary: false },
+  ]
+
+  try {
+    const currentCommissions = await repo.getBookingCommissions(booking.id)
+    const existingLiveSplit = currentCommissions.length > 1
+    if (sameCommissionPlan(currentCommissions, newCommissions)) {
+      return { success: true, message: 'Split already matches the current live ownership ✓' }
+    }
+
+    await repo.replaceBookingCommissions(booking.id, newCommissions)
+
+    if (booking.balance_cleared_at) {
+      await repo.createSplitCorrectionAllocations(booking.id, [
+        { staff_id: primaryStaffId, share_percent: primaryShare },
+        { staff_id: secondStaffId,  share_percent: secondStaffShare },
+      ])
+    }
+
+    await repo.insertOwnershipHistory({
+      booking_id: booking.id,
+      changed_by: manager.id,
+      change_type: existingLiveSplit ? 'manual_split_replaced' : 'manual_split',
+      previous_primary_staff_id: primaryStaffId,
+      new_primary_staff_id: primaryStaffId,
+      commission_snapshot: toCommissionSnapshot(newCommissions),
+      claim_id: null,
+      notes: existingLiveSplit
+        ? `Manager replaced split: ${primaryShare}% primary / ${secondStaffShare}% staff #${secondStaffId}`
+        : `Manager created split: ${primaryShare}% primary / ${secondStaffShare}% staff #${secondStaffId}`,
+    })
+
+    return {
+      success: true,
+      message: existingLiveSplit
+        ? `Split replaced safely — ${primaryShare}% / ${secondStaffShare}% ✓`
+        : `Split saved — ${primaryShare}% / ${secondStaffShare}% ✓`,
+    }
+  } catch (error) {
+    const msg = error instanceof Error
+      ? error.message
+      : (error as { message?: string })?.message ?? 'Failed to save split'
+    console.error('[managerDirectShare] error:', error)
+    return { success: false, message: msg }
+  }
+}
+
+export async function managerUndoShare(
+  booking: repo.Booking,
+  manager: StaffUser,
+): Promise<{ success: boolean; message: string }> {
+  const primaryStaffId = booking.staff_id
+  if (!primaryStaffId) return { success: false, message: 'Booking has no primary owner — assign an owner first' }
+
+  try {
+    const currentCommissions = await repo.getBookingCommissions(booking.id)
+    const singleOwnerCommission = [{
+      booking_id: booking.id,
+      staff_id: primaryStaffId,
+      share_percent: 100,
+      is_primary: true,
+    }]
+
+    if (sameCommissionPlan(currentCommissions, singleOwnerCommission)) {
+      return { success: true, message: 'Booking is already on a single-owner commission plan ✓' }
+    }
+
+    await repo.replaceBookingCommissions(booking.id, singleOwnerCommission)
+
+    if (booking.balance_cleared_at) {
+      await repo.createSplitCorrectionAllocations(booking.id, [
+        { staff_id: primaryStaffId, share_percent: 100 },
+      ])
+    }
+
+    await repo.insertOwnershipHistory({
+      booking_id: booking.id,
+      changed_by: manager.id,
+      change_type: 'manual_unsplit',
+      previous_primary_staff_id: primaryStaffId,
+      new_primary_staff_id: primaryStaffId,
+      commission_snapshot: toCommissionSnapshot(singleOwnerCommission),
+      claim_id: null,
+      notes: `Manager reverted booking to single owner: staff #${primaryStaffId} at 100%`,
+    })
+
+    return { success: true, message: 'Split removed — booking is back to a single owner ✓' }
+  } catch (error) {
+    const msg = error instanceof Error
+      ? error.message
+      : (error as { message?: string })?.message ?? 'Failed to undo split'
+    console.error('[managerUndoShare] error:', error)
+    return { success: false, message: msg }
   }
 }
 

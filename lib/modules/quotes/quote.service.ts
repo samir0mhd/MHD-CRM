@@ -56,9 +56,10 @@ export function fmtS(num: number): string {
 
 export function genRef(initials: string, count: number): string {
   const now = new Date()
-  const year = now.getFullYear().toString().slice(-2)
-  const month = (now.getMonth() + 1).toString().padStart(2, '0')
-  return `${initials}${year}${month}${(count + 1).toString().padStart(3, '0')}`
+  const dd  = now.getDate().toString().padStart(2, '0')
+  const mm  = (now.getMonth() + 1).toString().padStart(2, '0')
+  const yy  = now.getFullYear().toString().slice(-2)
+  return `${dd}${mm}${yy}${initials}${(count + 1).toString().padStart(2, '0')}`
 }
 
 // Constructor functions
@@ -503,5 +504,6 @@ export const quoteService = {
   saveToTable,
   saveQuote,
   saveQuoteFromRequest,
-  validateQuote
+  validateQuote,
+  getQuoteCountForDeal: quoteRepository.getQuoteCountForDeal,
 }

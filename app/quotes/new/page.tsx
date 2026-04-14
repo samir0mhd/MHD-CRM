@@ -3,6 +3,7 @@
 import { useEffect, useState, useRef } from 'react'
 import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
+import { authedFetch } from '@/lib/api-client'
 
 // ── CONSTANTS ─────────────────────────────────────────────
 type FlightLeg = {
@@ -83,6 +84,13 @@ type EmailTemplate = {
   closing_cta?: string
 }
 
+type AirportOption = {
+  code: string
+  name: string
+  city: string
+  country: string
+}
+
 const AIRLINES = [
   'British Airways', 'Virgin Atlantic', 'Emirates', 'Qatar Airways', 'Etihad Airways',
   'Air Mauritius', 'Air France', 'KLM', 'Lufthansa', 'Swiss Air', 'Austrian Airlines',
@@ -91,12 +99,56 @@ const AIRLINES = [
   'Condor', 'TUI', 'Thomas Cook', 'Monarch', 'EasyJet', 'Ryanair'
 ]
 
-const AIRPORTS = [
-  'LHR', 'LGW', 'LTN', 'STN', 'LCY', 'MAN', 'BHX', 'GLA', 'EDI', 'BRS', 'NCL',
-  'EMA', 'LBA', 'SOU', 'CWL', 'BFS', 'JER', 'GCI', 'DUB', 'ORK', 'SNN',
-  'CDG', 'ORY', 'FRA', 'MUC', 'FCO', 'AMS', 'ZRH', 'VIE', 'IST',
-  'DOH', 'AUH', 'DXB', 'SIN', 'HKG', 'BKK', 'KUL', 'JNB', 'NBO', 'ADD',
-  'CAI', 'MRU', 'SEZ', 'BEY', 'TLV', 'CPT', 'DAR', 'MBA', 'ZNZ'
+const DEFAULT_AIRPORTS: AirportOption[] = [
+  { code: 'LHR', name: 'London Heathrow', city: 'London', country: 'United Kingdom' },
+  { code: 'LGW', name: 'London Gatwick', city: 'London', country: 'United Kingdom' },
+  { code: 'LTN', name: 'London Luton', city: 'London', country: 'United Kingdom' },
+  { code: 'STN', name: 'London Stansted', city: 'London', country: 'United Kingdom' },
+  { code: 'LCY', name: 'London City', city: 'London', country: 'United Kingdom' },
+  { code: 'MAN', name: 'Manchester', city: 'Manchester', country: 'United Kingdom' },
+  { code: 'BHX', name: 'Birmingham', city: 'Birmingham', country: 'United Kingdom' },
+  { code: 'GLA', name: 'Glasgow', city: 'Glasgow', country: 'United Kingdom' },
+  { code: 'EDI', name: 'Edinburgh', city: 'Edinburgh', country: 'United Kingdom' },
+  { code: 'BRS', name: 'Bristol', city: 'Bristol', country: 'United Kingdom' },
+  { code: 'NCL', name: 'Newcastle', city: 'Newcastle', country: 'United Kingdom' },
+  { code: 'EMA', name: 'East Midlands', city: 'Nottingham', country: 'United Kingdom' },
+  { code: 'LBA', name: 'Leeds Bradford', city: 'Leeds', country: 'United Kingdom' },
+  { code: 'SOU', name: 'Southampton', city: 'Southampton', country: 'United Kingdom' },
+  { code: 'CWL', name: 'Cardiff', city: 'Cardiff', country: 'United Kingdom' },
+  { code: 'BFS', name: 'Belfast International', city: 'Belfast', country: 'United Kingdom' },
+  { code: 'JER', name: 'Jersey', city: 'Jersey', country: 'Channel Islands' },
+  { code: 'GCI', name: 'Guernsey', city: 'Guernsey', country: 'Channel Islands' },
+  { code: 'DUB', name: 'Dublin', city: 'Dublin', country: 'Ireland' },
+  { code: 'ORK', name: 'Cork', city: 'Cork', country: 'Ireland' },
+  { code: 'SNN', name: 'Shannon', city: 'Shannon', country: 'Ireland' },
+  { code: 'CDG', name: 'Charles de Gaulle', city: 'Paris', country: 'France' },
+  { code: 'ORY', name: 'Orly', city: 'Paris', country: 'France' },
+  { code: 'FRA', name: 'Frankfurt', city: 'Frankfurt', country: 'Germany' },
+  { code: 'MUC', name: 'Munich', city: 'Munich', country: 'Germany' },
+  { code: 'FCO', name: 'Fiumicino', city: 'Rome', country: 'Italy' },
+  { code: 'AMS', name: 'Schiphol', city: 'Amsterdam', country: 'Netherlands' },
+  { code: 'ZRH', name: 'Zurich', city: 'Zurich', country: 'Switzerland' },
+  { code: 'VIE', name: 'Vienna', city: 'Vienna', country: 'Austria' },
+  { code: 'IST', name: 'Istanbul', city: 'Istanbul', country: 'Turkey' },
+  { code: 'DOH', name: 'Hamad International', city: 'Doha', country: 'Qatar' },
+  { code: 'AUH', name: 'Abu Dhabi', city: 'Abu Dhabi', country: 'United Arab Emirates' },
+  { code: 'DXB', name: 'Dubai International', city: 'Dubai', country: 'United Arab Emirates' },
+  { code: 'SIN', name: 'Changi', city: 'Singapore', country: 'Singapore' },
+  { code: 'HKG', name: 'Hong Kong International', city: 'Hong Kong', country: 'Hong Kong' },
+  { code: 'BKK', name: 'Suvarnabhumi', city: 'Bangkok', country: 'Thailand' },
+  { code: 'KUL', name: 'Kuala Lumpur International', city: 'Kuala Lumpur', country: 'Malaysia' },
+  { code: 'JNB', name: 'O.R. Tambo', city: 'Johannesburg', country: 'South Africa' },
+  { code: 'NBO', name: 'Jomo Kenyatta', city: 'Nairobi', country: 'Kenya' },
+  { code: 'ADD', name: 'Bole International', city: 'Addis Ababa', country: 'Ethiopia' },
+  { code: 'CAI', name: 'Cairo International', city: 'Cairo', country: 'Egypt' },
+  { code: 'MRU', name: 'Sir Seewoosagur Ramgoolam', city: 'Mauritius', country: 'Mauritius' },
+  { code: 'SEZ', name: 'Mahé Seychelles', city: 'Mahé', country: 'Seychelles' },
+  { code: 'BEY', name: 'Beirut Rafic Hariri', city: 'Beirut', country: 'Lebanon' },
+  { code: 'TLV', name: 'Ben Gurion', city: 'Tel Aviv', country: 'Israel' },
+  { code: 'CPT', name: 'Cape Town International', city: 'Cape Town', country: 'South Africa' },
+  { code: 'DAR', name: 'Julius Nyerere', city: 'Dar es Salaam', country: 'Tanzania' },
+  { code: 'MBA', name: 'Moi International', city: 'Mombasa', country: 'Kenya' },
+  { code: 'ZNZ', name: 'Abeid Amani Karume', city: 'Zanzibar', country: 'Tanzania' },
 ]
 
 const CABIN_CLASS = ['Economy', 'Premium Economy', 'Business', 'First']
@@ -136,9 +188,10 @@ function fmtS(num: number): string {
 
 function genRef(initials: string, count: number): string {
   const now = new Date()
-  const year = now.getFullYear().toString().slice(-2)
-  const month = (now.getMonth() + 1).toString().padStart(2, '0')
-  return `${initials}${year}${month}${(count + 1).toString().padStart(3, '0')}`
+  const dd  = now.getDate().toString().padStart(2, '0')
+  const mm  = (now.getMonth() + 1).toString().padStart(2, '0')
+  const yy  = now.getFullYear().toString().slice(-2)
+  return `${dd}${mm}${yy}${initials}${(count + 1).toString().padStart(2, '0')}`
 }
 
 function newLeg(direction: 'out' | 'ret'): FlightLeg {
@@ -200,6 +253,10 @@ function newCentre(destination: string): Centre {
 function fmtDate(d: string | undefined): string {
   if (!d) return '—'
   return new Date(d + 'T12:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+}
+
+function sortAirportOptions(airports: AirportOption[]): AirportOption[] {
+  return [...airports].sort((a, b) => a.code.localeCompare(b.code))
 }
 
 
@@ -270,6 +327,11 @@ function buildChronologicalItinerary(centres: Centre[]): Array<{
   centre?: Centre
   centreIndex?: number
 }> {
+  // A leg is only real if it has a date (prevents stray placeholder rows)
+  function isRealLeg(leg: FlightLeg): boolean {
+    return !!(leg.date)
+  }
+
   const events: Array<{
     type: 'flights' | 'stay'
     timestamp: number
@@ -279,55 +341,48 @@ function buildChronologicalItinerary(centres: Centre[]): Array<{
     centreIndex?: number
   }> = []
 
-  // Collect all flight legs from all centres
-  const allFlightLegs: Array<{ leg: FlightLeg, centre: Centre, centreIndex: number, legType: 'inbound' | 'outbound' }> = []
-
   centres.forEach((centre, index) => {
-    centre.inboundLegs?.forEach(leg => {
-      allFlightLegs.push({ leg, centre, centreIndex: index, legType: 'inbound' })
-    })
-    centre.outboundLegs?.forEach(leg => {
-      allFlightLegs.push({ leg, centre, centreIndex: index, legType: 'outbound' })
-    })
+    // Inbound legs for this centre (e.g. LHR→MRU or MRU→RRG)
+    const inLegs = sortFlightLegs((centre.inboundLegs || []).filter(isRealLeg))
+    if (inLegs.length > 0) {
+      events.push({
+        type: 'flights',
+        timestamp: getLegTimestamp(inLegs[0]),
+        title: index === 0
+          ? 'Outbound Flights'
+          : `Flights to ${centre.destination || `Centre ${index + 1}`}`,
+        legs: inLegs,
+      })
+    }
+
+    // Stay at this centre
+    const stayTs = getStayTimestamp(centre.checkinDate, centre.checkinNextDay)
+    if (stayTs !== Number.MAX_SAFE_INTEGER) {
+      events.push({
+        type: 'stay',
+        timestamp: stayTs,
+        centre,
+        centreIndex: index,
+      })
+    }
+
+    // Outbound legs from this centre — only emit if this is the last centre
+    // (inter-centre legs appear as the *next* centre's inbound legs)
+    // However if the last centre has outbound legs, those are the return flights
+    if (index === centres.length - 1) {
+      const outLegs = sortFlightLegs((centre.outboundLegs || []).filter(isRealLeg))
+      if (outLegs.length > 0) {
+        events.push({
+          type: 'flights',
+          timestamp: getLegTimestamp(outLegs[0]),
+          title: 'Return Flights',
+          legs: outLegs,
+        })
+      }
+    }
   })
 
-  // Sort all flight legs chronologically — include legs with any meaningful data (date OR depart_time),
-  // matching old rendering behaviour which showed flights when either field was set.
-  const sortedFlights = allFlightLegs
-    .filter(item => item.leg.date || item.leg.depart_time || item.leg.flight_number)
-    .sort((a, b) => getLegTimestamp(a.leg) - getLegTimestamp(b.leg))
-
-  // Get stay timestamps to determine journey segments
-  const stayEvents = centres
-    .map((centre, index) => ({
-      centre,
-      centreIndex: index,
-      timestamp: getStayTimestamp(centre.checkinDate, centre.checkinNextDay)
-    }))
-    .filter(item => item.timestamp !== Number.MAX_SAFE_INTEGER)
-    .sort((a, b) => a.timestamp - b.timestamp)
-
-  // All flights in one chronological block — one segment, all legs sorted by date/time
-  if (sortedFlights.length > 0) {
-    events.push({
-      type: 'flights',
-      timestamp: getLegTimestamp(sortedFlights[0].leg),
-      title: 'Flights',
-      legs: sortedFlights.map(f => f.leg)
-    })
-  }
-
-  // Add stays
-  stayEvents.forEach(stay => {
-    events.push({
-      type: 'stay',
-      timestamp: stay.timestamp,
-      centre: stay.centre,
-      centreIndex: stay.centreIndex
-    })
-  })
-
-  // Sort all events chronologically
+  // Final chronological sort (handles edge cases where dates entered out of order)
   return events.sort((a, b) => a.timestamp - b.timestamp)
 }
 
@@ -413,10 +468,50 @@ function DBSearch({ table, field='name', value, onChange, placeholder, extraQuer
 }
 
 // ── FLIGHT LEG ROW ────────────────────────────────────────
-function LegRow({leg,legs,setLegs,canRemove}:{leg:FlightLeg;legs:FlightLeg[];setLegs:(l:FlightLeg[])=>void;canRemove:boolean}){
+function LegRow({
+  leg,
+  legs,
+  setLegs,
+  canRemove,
+  airports,
+  onCreateAirport,
+}:{
+  leg:FlightLeg
+  legs:FlightLeg[]
+  setLegs:(l:FlightLeg[])=>void
+  canRemove:boolean
+  airports: AirportOption[]
+  onCreateAirport: (airport: AirportOption) => Promise<AirportOption>
+}){
   const upd=(field:keyof FlightLeg,val:any)=>setLegs(legs.map(l=>l.id===leg.id?{...l,[field]:val}:l))
+  const [addField,setAddField] = useState<'from'|'to'|null>(null)
+  const [airportForm,setAirportForm] = useState<AirportOption>({ code:'', name:'', city:'', country:'' })
+  const [airportSaving,setAirportSaving] = useState(false)
+  const [airportError,setAirportError] = useState('')
+
+  function openAirportForm(field: 'from'|'to') {
+    const suggestedCode = ((field === 'from' ? leg.from : leg.to) || '').replace(/[^a-z]/gi, '').slice(0, 3).toUpperCase()
+    setAddField(field)
+    setAirportError('')
+    setAirportForm({ code: suggestedCode, name: '', city: '', country: '' })
+  }
+
+  async function saveAirport() {
+    setAirportSaving(true)
+    setAirportError('')
+    try {
+      const airport = await onCreateAirport(airportForm)
+      upd(addField === 'from' ? 'from' : 'to', airport.code)
+      setAddField(null)
+    } catch (error) {
+      setAirportError(error instanceof Error ? error.message : 'Failed to save airport')
+    } finally {
+      setAirportSaving(false)
+    }
+  }
+
   return(
-    <div style={{background:'var(--bg-tertiary)',border:'1px solid var(--border)',borderRadius:'10px',padding:'12px 14px',marginBottom:'8px'}}>
+    <div style={{background:'var(--bg-tertiary)',border:'1px solid var(--border)',borderRadius:'10px',padding:'12px 14px',marginBottom:'8px',position:'relative'}}>
       <div style={{display:'grid',gridTemplateColumns:'1fr repeat(4,1fr)',gap:'8px',marginBottom:'8px'}}>
         <div><label className="label">Flight No.</label><input className="input" placeholder="MK053" value={leg.flight_number||''} onChange={e=>upd('flight_number',e.target.value)} style={{fontFamily:'monospace',textTransform:'uppercase'}}/></div>
         <div><label className="label">Date</label><input className="input" type="date" value={leg.date} onChange={e=>upd('date',e.target.value)}/></div>
@@ -427,10 +522,28 @@ function LegRow({leg,legs,setLegs,canRemove}:{leg:FlightLeg;legs:FlightLeg[];set
       <div style={{display:'grid',gridTemplateColumns:'2fr 1fr 1fr 1fr auto',gap:'8px',alignItems:'flex-end'}}>
         <div><label className="label">Airline</label>
           <select className="input" value={leg.airline} onChange={e=>upd('airline',e.target.value)}>{AIRLINES.map(a=><option key={a}>{a}</option>)}</select></div>
-        <div><label className="label">From</label>
-          <select className="input" value={leg.from} onChange={e=>upd('from',e.target.value)}>{AIRPORTS.map(a=><option key={a}>{a}</option>)}</select></div>
-        <div><label className="label">To</label>
-          <select className="input" value={leg.to} onChange={e=>upd('to',e.target.value)}>{AIRPORTS.map(a=><option key={a}>{a}</option>)}</select></div>
+        <div><label className="label" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+          <span>From</span>
+          <button type="button" onClick={()=>openAirportForm('from')}
+            style={{fontSize:'10.5px',color:'var(--text-muted)',background:'none',border:'none',padding:'0',cursor:'pointer',textDecoration:'underline',textUnderlineOffset:'2px'}}>
+            + Add new
+          </button>
+        </label>
+          <select className="input" value={leg.from} onChange={e=>upd('from',e.target.value)}>
+            <option value="">Select airport</option>
+            {airports.map(a=><option key={a.code} value={a.code}>{a.code}{a.name?` — ${a.name}`:''}</option>)}
+          </select></div>
+        <div><label className="label" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+          <span>To</span>
+          <button type="button" onClick={()=>openAirportForm('to')}
+            style={{fontSize:'10.5px',color:'var(--text-muted)',background:'none',border:'none',padding:'0',cursor:'pointer',textDecoration:'underline',textUnderlineOffset:'2px'}}>
+            + Add new
+          </button>
+        </label>
+          <select className="input" value={leg.to} onChange={e=>upd('to',e.target.value)}>
+            <option value="">Select airport</option>
+            {airports.map(a=><option key={a.code} value={a.code}>{a.code}{a.name?` — ${a.name}`:''}</option>)}
+          </select></div>
         <div><label className="label">Cabin</label>
           <select className="input" value={leg.cabin} onChange={e=>upd('cabin',e.target.value)}>{CABIN_CLASS.map(c=><option key={c}>{c}</option>)}</select></div>
         <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:'4px',paddingBottom:'2px'}}>
@@ -438,13 +551,61 @@ function LegRow({leg,legs,setLegs,canRemove}:{leg:FlightLeg;legs:FlightLeg[];set
           <input type="checkbox" checked={leg.overnight} onChange={e=>upd('overnight',e.target.checked)} style={{width:'18px',height:'18px',cursor:'pointer'}}/>
         </div>
       </div>
+      {addField && (
+        <div style={{position:'absolute',left:'14px',right:'14px',top:'100%',marginTop:'8px',padding:'10px 12px',border:'1px solid var(--border)',borderRadius:'8px',background:'var(--surface)',boxShadow:'var(--shadow-lg)',zIndex:30}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'8px'}}>
+            <span style={{fontSize:'11px',fontWeight:'600',color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.07em'}}>Add new airport</span>
+            <button type="button" onClick={()=>setAddField(null)} style={{fontSize:'11px',color:'var(--text-muted)',background:'none',border:'none',padding:'0',cursor:'pointer'}}>Cancel</button>
+          </div>
+          <div style={{display:'grid',gridTemplateColumns:'90px 1.5fr 1fr 1fr auto',gap:'8px',alignItems:'flex-end'}}>
+            <div><label className="label">IATA Code</label>
+              <input className="input" maxLength={3} placeholder="RRG" value={airportForm.code}
+                onChange={e=>setAirportForm(p=>({...p,code:e.target.value.toUpperCase().replace(/[^A-Z]/g,'')}))}
+                style={{textTransform:'uppercase',fontFamily:'monospace',textAlign:'center',letterSpacing:'0.12em'}}/></div>
+            <div><label className="label">Airport Name</label>
+              <input className="input" placeholder="Plaine Corail Airport" value={airportForm.name}
+                onChange={e=>setAirportForm(p=>({...p,name:e.target.value}))}/></div>
+            <div><label className="label">City</label>
+              <input className="input" placeholder="Rodrigues" value={airportForm.city}
+                onChange={e=>setAirportForm(p=>({...p,city:e.target.value}))}/></div>
+            <div><label className="label">Country</label>
+              <input className="input" placeholder="Mauritius" value={airportForm.country}
+                onChange={e=>setAirportForm(p=>({...p,country:e.target.value}))}/></div>
+            <div style={{paddingBottom:'1px'}}>
+              <button type="button" className="btn btn-cta btn-sm" onClick={saveAirport}
+                disabled={airportSaving||airportForm.code.length!==3}>
+                {airportSaving?'Saving…':'Save'}
+              </button>
+            </div>
+          </div>
+          {airportError && <div style={{marginTop:'6px',fontSize:'11.5px',color:'var(--red)'}}>{airportError}</div>}
+        </div>
+      )}
       {canRemove&&<button onClick={()=>setLegs(legs.filter(l=>l.id!==leg.id))} style={{marginTop:'8px',background:'var(--red-light)',color:'var(--red)',border:'none',borderRadius:'6px',padding:'4px 10px',cursor:'pointer',fontSize:'11.5px',fontFamily:'Outfit,sans-serif'}}>Remove leg</button>}
     </div>
   )
 }
 
 // ── HOTEL OPTION PANEL (Single Destination) ───────────────
-function HotelOptionPanel({option,index,totalOptions,onChange,onRemove,onDuplicate}:{option:HotelOption;index:number;totalOptions:number;onChange:(o:HotelOption)=>void;onRemove:()=>void;onDuplicate:()=>void}){
+function HotelOptionPanel({
+  option,
+  index,
+  totalOptions,
+  onChange,
+  onRemove,
+  onDuplicate,
+  airports,
+  onCreateAirport,
+}:{
+  option:HotelOption
+  index:number
+  totalOptions:number
+  onChange:(o:HotelOption)=>void
+  onRemove:()=>void
+  onDuplicate:()=>void
+  airports: AirportOption[]
+  onCreateAirport: (airport: AirportOption) => Promise<AirportOption>
+}){
   const [collapsed,setCollapsed]=useState(false)
   const upd=(field:keyof HotelOption,val:any)=>onChange({...option,[field]:val})
   const updLeg=(dir:'out'|'ret',legs:FlightLeg[])=>onChange({...option,[dir==='out'?'outLegs':'retLegs']:legs})
@@ -553,12 +714,12 @@ function HotelOptionPanel({option,index,totalOptions,onChange,onRemove,onDuplica
           {/* Flights */}
           <div style={{marginBottom:'14px'}}>
             <div style={{fontWeight:'600',fontSize:'12px',color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'8px'}}>✈ Outbound Flights</div>
-            {option.outLegs.map(leg=><LegRow key={leg.id} leg={leg} legs={option.outLegs} setLegs={l=>updLeg('out',l)} canRemove={option.outLegs.length>1}/>)}
+            {option.outLegs.map(leg=><LegRow key={leg.id} leg={leg} legs={option.outLegs} setLegs={l=>updLeg('out',l)} canRemove={option.outLegs.length>1} airports={airports} onCreateAirport={onCreateAirport}/>)}
             <button className="btn btn-ghost btn-sm" style={{border:'1.5px dashed var(--border)',width:'100%',justifyContent:'center'}} onClick={()=>updLeg('out',[...option.outLegs,newLeg('out')])}>+ Add outbound leg</button>
           </div>
           <div style={{marginBottom:'14px'}}>
             <div style={{fontWeight:'600',fontSize:'12px',color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'8px'}}>↩ Return Flights</div>
-            {option.retLegs.map(leg=><LegRow key={leg.id} leg={leg} legs={option.retLegs} setLegs={l=>updLeg('ret',l)} canRemove={option.retLegs.length>1}/>)}
+            {option.retLegs.map(leg=><LegRow key={leg.id} leg={leg} legs={option.retLegs} setLegs={l=>updLeg('ret',l)} canRemove={option.retLegs.length>1} airports={airports} onCreateAirport={onCreateAirport}/>)}
             <button className="btn btn-ghost btn-sm" style={{border:'1.5px dashed var(--border)',width:'100%',justifyContent:'center'}} onClick={()=>updLeg('ret',[...option.retLegs,newLeg('ret')])}>+ Add return leg</button>
           </div>
 
@@ -627,7 +788,23 @@ function HotelOptionPanel({option,index,totalOptions,onChange,onRemove,onDuplica
 }
 
 // ── CENTRE PANEL (Multi-Centre) ───────────────────────────
-function CentrePanel({centre,index,total,onChange,onRemove}:{centre:Centre;index:number;total:number;onChange:(c:Centre)=>void;onRemove:()=>void}){
+function CentrePanel({
+  centre,
+  index,
+  total,
+  onChange,
+  onRemove,
+  airports,
+  onCreateAirport,
+}:{
+  centre:Centre
+  index:number
+  total:number
+  onChange:(c:Centre)=>void
+  onRemove:()=>void
+  airports: AirportOption[]
+  onCreateAirport: (airport: AirportOption) => Promise<AirportOption>
+}){
   const [collapsed,setCollapsed]=useState(false)
   const upd=(field:keyof Centre,val:any)=>onChange({...centre,[field]:val})
   const updExtra=(id:string,field:keyof ExtraItem,val:any)=>upd('extras',centre.extras.map(e=>e.id===id?{...e,[field]:val}:e))
@@ -703,7 +880,7 @@ function CentrePanel({centre,index,total,onChange,onRemove}:{centre:Centre;index
               <div style={{fontWeight:'600',fontSize:'11.5px',color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'8px'}}>
                 ✈ Flights {isFirst?'from UK':'between centres'} → {centre.destination||'Destination'}
               </div>
-              {centre.inboundLegs.map(leg=><LegRow key={leg.id} leg={leg} legs={centre.inboundLegs} setLegs={l=>upd('inboundLegs',l)} canRemove={centre.inboundLegs.length>1}/>)}
+              {centre.inboundLegs.map(leg=><LegRow key={leg.id} leg={leg} legs={centre.inboundLegs} setLegs={l=>upd('inboundLegs',l)} canRemove={centre.inboundLegs.length>1} airports={airports} onCreateAirport={onCreateAirport}/>)}
               <button className="btn btn-ghost btn-sm" style={{border:'1.5px dashed var(--border)',width:'100%',justifyContent:'center'}} onClick={()=>upd('inboundLegs',[...centre.inboundLegs,{...newLeg('out'),from:'',to:''}])}>+ Add leg</button>
             </div>
 
@@ -713,7 +890,7 @@ function CentrePanel({centre,index,total,onChange,onRemove}:{centre:Centre;index
                 <div style={{fontWeight:'600',fontSize:'11.5px',color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'8px'}}>
                   ↩ Return Flights → UK
                 </div>
-                {centre.outboundLegs.map(leg=><LegRow key={leg.id} leg={leg} legs={centre.outboundLegs} setLegs={l=>upd('outboundLegs',l)} canRemove={centre.outboundLegs.length>1}/>)}
+                {centre.outboundLegs.map(leg=><LegRow key={leg.id} leg={leg} legs={centre.outboundLegs} setLegs={l=>upd('outboundLegs',l)} canRemove={centre.outboundLegs.length>1} airports={airports} onCreateAirport={onCreateAirport}/>)}
                 <button className="btn btn-ghost btn-sm" style={{border:'1.5px dashed var(--border)',width:'100%',justifyContent:'center'}} onClick={()=>upd('outboundLegs',[...centre.outboundLegs,{...newLeg('ret'),from:'',to:''}])}>+ Add leg</button>
               </div>
             )}
@@ -786,6 +963,7 @@ export default function NewQuotePage(){
   const [additionalServices,setAdditionalServices] = useState('')
   const [quoteCount,setQuoteCount] = useState(0)
   const [editingRef,setEditingRef] = useState('')
+  const [airportOptions,setAirportOptions] = useState<AirportOption[]>(sortAirportOptions(DEFAULT_AIRPORTS))
   const [customTemplates,setCustomTemplates] = useState<{id:number;name:string;description:string;opening_hook:string;why_choose_us:string;urgency_notice:string;closing_cta:string}[]>([])
   const [selectedCustomTemplate,setSelectedCustomTemplate] = useState<number|null>(null)
 
@@ -803,7 +981,33 @@ export default function NewQuotePage(){
     loadDeals()
     if(editQuoteId) loadExistingQuote(editQuoteId)
     loadCustomTemplates()
+    loadAirports()
   },[dealId,editQuoteId])
+
+  async function loadAirports() {
+    try {
+      const response = await authedFetch('/api/airports')
+      if (!response.ok) return
+      const data = await response.json()
+      setAirportOptions(sortAirportOptions(data.airports || []))
+    } catch (error) {
+      console.error('Failed to load airports:', error)
+    }
+  }
+
+  async function createAirport(airport: AirportOption) {
+    const response = await authedFetch('/api/airports', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(airport),
+    })
+    const data = await response.json().catch(() => ({}))
+    if (!response.ok || !data.airport) {
+      throw new Error(data.error || 'Failed to save airport')
+    }
+    setAirportOptions(prev => sortAirportOptions([...prev, data.airport]))
+    return data.airport as AirportOption
+  }
 
   async function loadCustomTemplates(){
     try {
@@ -827,12 +1031,11 @@ export default function NewQuotePage(){
           setCentres(prev=>prev.map((c,i)=>i===prev.length-1?{...c,checkinDate:data.departure_date||''}:c))
         }
       }
-      // Get quote count for reference generation
-      const countResponse = await fetch(`/api/deals?id=${id}`)
+      // Get quote count for reference generation (per-deal sequence)
+      const countResponse = await authedFetch(`/api/quotes?count=${id}`)
       if (countResponse.ok) {
-        const dealData = await countResponse.json()
-        // For now, we'll estimate the count - this could be improved with a separate endpoint
-        setQuoteCount(0) // TODO: Add quote count endpoint
+        const countData = await countResponse.json()
+        setQuoteCount(countData.count ?? 0)
       }
     } catch (error) {
       console.error('Failed to load deal:', error)
@@ -926,7 +1129,7 @@ export default function NewQuotePage(){
     setMcProfit(v)
   }
 
-  const quoteRef = isEditMode ? editingRef : genRef(initials, quoteCount)
+  const quoteRef = isEditMode ? editingRef : (savedRefs.length > 0 ? savedRefs[0] : genRef(initials, quoteCount))
 
   async function handleSave(){
     const tid = Number(dealIdVal)
@@ -994,7 +1197,7 @@ export default function NewQuotePage(){
           </div>
         </div>
         <div style={{display:'flex',gap:'8px'}}>
-          {hotel(hotelOptions)&&<button className="btn btn-secondary" onClick={()=>setShowPreview(true)}>👁 Preview Email</button>}
+          {hotel(hotelOptions)&&<button className="btn btn-secondary" onClick={()=>setShowPreview(true)}>👁 Preview Quote</button>}
           {saved
             ?<Link href={`/deals/${dealIdVal}`}><button className="btn btn-primary">← Back to Deal</button></Link>
             :<button className="btn btn-cta btn-lg" onClick={handleSave} disabled={saving}>{saving?'Saving…':isEditMode?'Update Quote':'Save Quote'}</button>}
@@ -1007,7 +1210,7 @@ export default function NewQuotePage(){
           <div style={{background:'var(--green-light)',color:'var(--green)',padding:'12px 16px',borderRadius:'8px',fontSize:'13px',marginBottom:'16px',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
             <span>✓ {savedRefs.length} quote{savedRefs.length>1?'s':''} saved! Refs: {savedRefs.join(', ')}</span>
             <div style={{display:'flex',gap:'8px'}}>
-              <button onClick={()=>setShowPreview(true)} style={{background:'var(--green)',color:'white',border:'none',borderRadius:'6px',padding:'5px 12px',fontSize:'12px',cursor:'pointer',fontFamily:'Outfit,sans-serif'}}>👁 Preview Email</button>
+              <button onClick={()=>setShowPreview(true)} style={{background:'var(--green)',color:'white',border:'none',borderRadius:'6px',padding:'5px 12px',fontSize:'12px',cursor:'pointer',fontFamily:'Outfit,sans-serif'}}>👁 Preview Quote</button>
               <Link href={`/deals/${dealIdVal}`}><button className="btn btn-secondary btn-sm">Back to Deal →</button></Link>
             </div>
           </div>
@@ -1082,7 +1285,9 @@ export default function NewQuotePage(){
                   <HotelOptionPanel key={o.id} option={o} index={i} totalOptions={hotelOptions.length}
                     onChange={updated=>{ markDirty(); setHotelOptions(p=>p.map(x=>x.id===updated.id?normalizeHotelOption(updated):x)) }}
                     onRemove={()=>{ markDirty(); setHotelOptions(p=>p.filter(x=>x.id!==o.id)) }}
-                    onDuplicate={()=>{ const src=hotelOptions.find(x=>x.id===o.id); if(src){ markDirty(); setHotelOptions(p=>[...p,normalizeHotelOption({...src,id:uid(),hotel:''})]) } }}/>
+                    onDuplicate={()=>{ const src=hotelOptions.find(x=>x.id===o.id); if(src){ markDirty(); setHotelOptions(p=>[...p,normalizeHotelOption({...src,id:uid(),hotel:''})]) } }}
+                    airports={airportOptions}
+                    onCreateAirport={createAirport}/>
                 ))}
                 {!isEditMode&&hotelOptions.length<6&&(
                   <button onClick={()=>{ markDirty(); setHotelOptions(p=>[...p,normalizeHotelOption(newHotelOption())]) }}
@@ -1107,7 +1312,9 @@ export default function NewQuotePage(){
                 {centres.map((c,i)=>(
                   <CentrePanel key={c.id} centre={c} index={i} total={centres.length}
                     onChange={updated=>{ markDirty(); setCentres(p=>sortCentresChronologically(p.map(x=>x.id===updated.id?normalizeCentre(updated):x))) }}
-                    onRemove={()=>{ markDirty(); setCentres(p=>sortCentresChronologically(p.filter(x=>x.id!==c.id))) }}/>
+                    onRemove={()=>{ markDirty(); setCentres(p=>sortCentresChronologically(p.filter(x=>x.id!==c.id))) }}
+                    airports={airportOptions}
+                    onCreateAirport={createAirport}/>
                 ))}
 
                 {centres.length<6&&(
@@ -1241,14 +1448,14 @@ export default function NewQuotePage(){
             </div>
 
             <button className="btn btn-secondary" style={{width:'100%',justifyContent:'center',padding:'11px'}} onClick={()=>setShowPreview(true)}>
-              👁 Preview & Copy Email
+              👁 Preview & Deliver Quote
             </button>
           </div>
         </div>
       </div>
 
       {showPreview&&(
-        <EmailPreviewModal
+        <QuoteDeliveryModal
           deal={deal} quoteMode={quoteMode}
           hotelOptions={hotelOptions} centres={centres}
           adults={adults} children={children} infants={infants}
@@ -1266,371 +1473,628 @@ export default function NewQuotePage(){
 // helper to check hotel var
 function hotel(hotelOptions: HotelOption[]) { return hotelOptions[0]?.hotel || '' }
 
-// ── EMAIL PREVIEW MODAL ───────────────────────────────────
-function EmailPreviewModal({deal,quoteMode,hotelOptions,centres,adults,children,infants,additionalServices,sellPrice,quoteRef,template,selectedCustomTemplate,customTemplates,onClose}:any){
-  const emailRef  = useRef<HTMLDivElement>(null)
-  const client    = deal?.clients as any
-  const firstName = client?.first_name||'Valued Client'
+// ── QUOTE DELIVERY ────────────────────────────────────────
+
+const QN = '#1a2e4a'   // navy
+const QG = '#b8922e'   // gold
+const QB = '#f5f2ee'   // warm background
+const QT = '#2c2c2c'   // body text
+const QM = '#6b6b6b'   // muted text
+const QD = '#e2ddd8'   // border
+
+function qEsc(s: string): string {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')
+}
+
+function qOptionPriceRow(price: number, label: string, nights?: number): string {
+  if (!(price > 0)) return ''
+  const dep = price * 0.1
+  const fp  = '&pound;' + price.toLocaleString('en-GB',{minimumFractionDigits:2,maximumFractionDigits:2})
+  const fd  = '&pound;' + dep.toLocaleString('en-GB',{minimumFractionDigits:2,maximumFractionDigits:2})
+  const nightCount = Math.max(1, Number(nights || 0))
+  const perNight = nightCount > 0 ? price / nightCount : price
+  const pn = '&pound;' + perNight.toLocaleString('en-GB',{minimumFractionDigits:0,maximumFractionDigits:0})
+  return `<tr><td style="padding:0 36px 20px;">
+    <p style="font-size:11px;font-weight:700;color:${QG};text-transform:uppercase;letter-spacing:0.1em;margin:0 0 12px;">${label}</p>
+    <table width="100%" cellpadding="0" cellspacing="0" bgcolor="${QN}" style="border-radius:4px;">
+      <tr>
+        <td style="padding:16px 20px;vertical-align:middle;">
+          <p style="font-size:9px;text-transform:uppercase;letter-spacing:0.14em;color:rgba(184,146,46,0.65);margin:0 0 4px;">Total Investment</p>
+          <p style="font-size:30px;color:${QG};font-family:Georgia,serif;font-weight:bold;margin:0;line-height:1;">${fp}</p>
+          <p style="font-size:11px;color:rgba(255,255,255,0.36);margin:6px 0 0;">From ${pn} per night for your stay</p>
+        </td>
+        <td style="padding:16px 20px;text-align:right;vertical-align:middle;border-left:1px solid rgba(255,255,255,0.06);">
+          <p style="font-size:9px;text-transform:uppercase;letter-spacing:0.1em;color:rgba(255,255,255,0.3);margin:0 0 3px;">Secure from</p>
+          <p style="font-size:20px;color:${QG};font-family:Georgia,serif;font-weight:bold;margin:0;">${fd}</p>
+        </td>
+      </tr>
+    </table>
+  </td></tr>`
+}
+
+function qSectionHead(title: string): string {
+  return `<p style="font-size:10.5px;font-weight:700;color:${QN};text-transform:uppercase;letter-spacing:0.1em;margin:0 0 12px;padding-bottom:8px;border-bottom:2px solid ${QG};">${title}</p>`
+}
+
+function qFlightsSection(legs: FlightLeg[]): string {
+  const rows = legs.filter(l => l.date || l.depart_time || l.flight_number || l.airline)
+  if (!rows.length) return ''
+  const cols = ['Flight','Date','Departs','Arrives','Airline','Route','Cabin']
+  return `
+  <tr><td style="padding:0 36px 24px;">
+    ${qSectionHead('Flights')}
+    <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:12px;">
+      <thead><tr bgcolor="${QN}">
+        ${cols.map(h=>`<th style="padding:7px 9px;text-align:left;color:white;font-weight:500;font-size:10.5px;">${h}</th>`).join('')}
+      </tr></thead>
+      <tbody>
+        ${rows.map((f,i)=>`
+          <tr bgcolor="${i%2===0?'#f8f6f3':'#ffffff'}">
+            <td style="padding:7px 9px;font-family:monospace;font-weight:600;font-size:11px;">${f.flight_number||'&mdash;'}</td>
+            <td style="padding:7px 9px;">${fmtDate(f.date)}</td>
+            <td style="padding:7px 9px;font-family:monospace;">${f.depart_time||'&mdash;'}</td>
+            <td style="padding:7px 9px;font-family:monospace;">${f.arrival_time||'&mdash;'}${f.overnight?' (+1)':''}</td>
+            <td style="padding:7px 9px;">${f.airline||'&mdash;'}</td>
+            <td style="padding:7px 9px;font-weight:500;">${[f.from,f.to].filter(Boolean).join(' &rarr; ')}</td>
+            <td style="padding:7px 9px;">${f.cabin||'&mdash;'}</td>
+          </tr>`).join('')}
+      </tbody>
+    </table>
+  </td></tr>`
+}
+
+function qAccomRow(l1:string,v1:string,l2:string,v2:string,bg:string): string {
+  return `<tr bgcolor="${bg}">
+    <td style="padding:8px 12px;font-weight:700;font-size:10.5px;color:${QM};width:90px;white-space:nowrap;">${l1}</td>
+    <td style="padding:8px 12px;font-size:13px;color:${QT};">${v1||'&mdash;'}</td>
+    <td style="padding:8px 12px;font-weight:700;font-size:10.5px;color:${QM};width:80px;white-space:nowrap;">${l2}</td>
+    <td style="padding:8px 12px;font-size:13px;color:${QT};">${v2||'&mdash;'}</td>
+  </tr>`
+}
+
+function generateQuoteHtml(p: {
+  deal: DealInfo|null
+  quoteMode: 'single'|'multi'
+  hotelOptions: HotelOption[]
+  centres: Centre[]
+  adults: string; children: string; infants: string
+  additionalServices: string
+  sellPrice: number
+  quoteRef: string
+  templateId: number
+  customTemplate: any
+  isPdf: boolean
+}): string {
+  const client    = p.deal?.clients as any
+  const firstName = client?.first_name || 'Valued Client'
   const today     = new Date().toLocaleDateString('en-GB',{day:'2-digit',month:'long',year:'numeric'})
+  const isMulti   = p.quoteMode === 'multi'
+  const ordC      = isMulti ? sortCentresChronologically(p.centres) : []
+  const tpl       = p.templateId
+  const multiOpts = !isMulti && p.hotelOptions.length > 1
+
+  // Pax
+  const pax: string[] = [`${p.adults} Adult${parseInt(p.adults)!==1?'s':''}`]
+  if (parseInt(p.children)>0) pax.push(`${p.children} Child${parseInt(p.children)!==1?'ren':''}`)
+  if (parseInt(p.infants)>0)  pax.push(`${p.infants} Infant${parseInt(p.infants)!==1?'s':''}`)
+  const paxLine = pax.join(' &middot; ')
+
+  // Trip title + subtitle
+  let tripTitle = '', tripSub = ''
+  if (isMulti) {
+    const dests = ordC.map(c=>c.destination).filter(Boolean)
+    const nights = ordC.reduce((s,c)=>s+(parseInt(c.nights)||0),0)
+    tripTitle = `${qEsc(firstName)}&rsquo;s ${qEsc(dests[dests.length-1]||'Indian Ocean')} Journey`
+    tripSub   = `${dests.map(d=>qEsc(d)).join(' &rarr; ')} &mdash; ${nights} nights`
+  } else if (!multiOpts) {
+    const opt = p.hotelOptions[0]
+    tripTitle = `${qEsc(firstName)}&rsquo;s Mauritius Escape`
+    tripSub   = `${opt?.nights||''} nights at ${qEsc(opt?.hotel||'your resort')}`
+  } else {
+    tripTitle = `${qEsc(firstName)}&rsquo;s Mauritius Holiday`
+    tripSub   = `${p.hotelOptions.length} tailored options &mdash; your choice`
+  }
+
+  // Tone tagline (T1/T2: single italic line under subtitle; T3/T4: structural blocks)
+  let toneTagline = ''
+  if (p.customTemplate?.opening_hook) {
+    toneTagline = qEsc(p.customTemplate.opening_hook
+      .replace(/\[Client Name\]/g, firstName)
+      .replace(/\[Hotel Name\]/g, isMulti ? (ordC[0]?.hotel||'') : (p.hotelOptions[0]?.hotel||'')))
+  } else if (tpl===1) {
+    toneTagline = isMulti
+      ? 'A journey crafted around you &mdash; every detail personally selected.'
+      : 'Personally curated for you &mdash; I am confident this will exceed every expectation.'
+  } else if (tpl===2) {
+    toneTagline = 'With over 25 years of exclusive Mauritius expertise, every property in this proposal has been personally visited and reviewed.'
+  }
+
+  // Deposit + price display
+  const dep        = p.sellPrice
+  const depositAmt = dep * 0.1
+  const depositFmt = '&pound;' + depositAmt.toLocaleString('en-GB',{minimumFractionDigits:2,maximumFractionDigits:2})
+  const priceFmt   = '&pound;' + dep.toLocaleString('en-GB',{minimumFractionDigits:2,maximumFractionDigits:2})
+  const showTopPrice = dep > 0 && (!multiOpts || isMulti)
+  const totalNights = isMulti
+    ? ordC.reduce((s,c)=>s+(parseInt(c.nights)||0),0)
+    : (parseInt(p.hotelOptions[0]?.nights || '0') || 0)
+  const perNight = totalNights > 0 ? dep / totalNights : dep
+  const perNightFmt = '&pound;' + perNight.toLocaleString('en-GB',{minimumFractionDigits:0,maximumFractionDigits:0})
+
+  function buildOpeningParagraph(): string {
+    if (isMulti) {
+      const destinations = ordC.map(c => c.destination).filter(Boolean).map(qEsc)
+      return `From your first view of the Indian Ocean to the final evening of your journey, this itinerary is designed to feel effortless, indulgent and beautifully well-paced. Moving through ${destinations.join(' &rarr; ')}, you experience Mauritius as more than a hotel stay: a sequence of memorable settings, hand-picked so the holiday feels exclusive from the moment you arrive.`
+    }
+
+    const opt = p.hotelOptions[0]
+    const hotelName = qEsc(opt?.hotel || 'your resort')
+    const boardBasis = qEsc(opt?.boardBasis || 'your preferred meal plan')
+    return `Imagine stepping into ${hotelName}, settling immediately into island time, and letting the rest of the world fall away. This proposal is built around the kind of Mauritius escape clients usually want most: smooth travel, a beautiful resort base, ${boardBasis.toLowerCase()}, and enough time to properly unwind rather than simply pass through.`
+  }
+
+  function buildPersonalReasons(): string[] {
+    const reasons: string[] = []
+    const primaryOption = p.hotelOptions[0]
+    const firstOutLeg = sortFlightLegs([
+      ...(primaryOption?.outLegs || []),
+      ...(primaryOption?.retLegs || []),
+    ]).find(leg => leg.from || leg.date || leg.airline)
+    const dealTitle = (p.deal?.title || '').toLowerCase()
+    const adultsCount = parseInt(p.adults) || 0
+    const childrenCount = parseInt(p.children) || 0
+
+    if (childrenCount > 0) {
+      reasons.push(`It works well for your party because the trip is planned for ${p.adults} adults and ${p.children} children, with flights, resort stay and transfers kept simple from the start.`)
+    } else if (adultsCount >= 2) {
+      reasons.push(`It is shaped for shared downtime, giving you the kind of escape that feels romantic, restorative and easy to enjoy together from day one.`)
+    } else {
+      reasons.push(`It keeps the journey smooth and well-supported, so the holiday feels easy to enjoy from the moment you depart.`)
+    }
+
+    if (isMulti) {
+      const destinations = ordC.map(c => c.destination).filter(Boolean).map(qEsc)
+      reasons.push(`You get more than one version of Mauritius in a single trip, combining ${destinations.join(' and ')} so the holiday feels richer and more memorable.`)
+    } else if (primaryOption?.hotel) {
+      reasons.push(`${qEsc(primaryOption.hotel)} gives you a strong resort anchor, so you can settle into one exceptional base instead of constantly repacking or moving around.`)
+    }
+
+    if (primaryOption?.boardBasis) {
+      reasons.push(`${qEsc(primaryOption.boardBasis)} helps keep the holiday feeling relaxed and premium on the ground, with less day-to-day planning once you are there.`)
+    }
+
+    if (firstOutLeg?.from || firstOutLeg?.airline || firstOutLeg?.date) {
+      const routeBits = [
+        firstOutLeg.from ? `from ${qEsc(firstOutLeg.from)}` : '',
+        firstOutLeg.airline ? `with ${qEsc(firstOutLeg.airline)}` : '',
+        firstOutLeg.date ? `on ${fmtDate(firstOutLeg.date)}` : '',
+      ].filter(Boolean)
+      reasons.push(`The travel plan is already aligned around a clear outbound journey ${routeBits.join(' ')}, which makes the holiday easier to commit to with confidence.`)
+    }
+
+    if (p.additionalServices.trim()) {
+      reasons.push(`The extras already included add value beyond the core package, helping the holiday feel more complete and more tailored to how you want to travel.`)
+    } else {
+      reasons.push(`Private transfers and the essential trip logistics are already built in, which removes friction and keeps the experience polished from arrival to departure.`)
+    }
+
+    if (dealTitle.includes('honeymoon') || dealTitle.includes('anniversary') || dealTitle.includes('birthday')) {
+      reasons.unshift(`The brief already points toward a special-occasion trip, and this proposal leans into that with a more elevated, experience-led feel rather than a standard package.`)
+    }
+
+    return reasons.slice(0, 5)
+  }
+
+  const openingParagraph = buildOpeningParagraph()
+  const personalReasons = buildPersonalReasons()
+  const reasonsHtml = `<tr><td style="padding:0 36px 28px;">
+    ${qSectionHead('Why This Trip Is Perfect For You')}
+    <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+      ${personalReasons.map(reason => `
+        <tr>
+          <td style="padding:10px 0;border-bottom:1px solid ${QD};vertical-align:top;">
+            <span style="display:inline-block;width:22px;color:${QG};font-weight:700;font-size:12px;">&#10003;</span>
+            <span style="display:inline-block;width:calc(100% - 26px);font-size:13.5px;color:${QT};line-height:1.7;">${reason}</span>
+          </td>
+        </tr>`).join('')}
+    </table>
+  </td></tr>`
+
+  // ── EXPERIENCE BULLETS ────────────────────────────────────
+  function expBullets(opt: HotelOption|null, centres: Centre[]): string {
+    let rows = ''
+    const bullet = (content: string) =>
+      `<tr><td style="padding:8px 0;border-bottom:1px solid ${QD};"><span style="color:${QG};font-size:11px;margin-right:10px;font-weight:700;">&#9670;</span><span style="font-size:13.5px;color:${QT};line-height:1.5;">${content}</span></td></tr>`
+
+    if (isMulti) {
+      const nights = centres.reduce((s,c)=>s+(parseInt(c.nights)||0),0)
+      const dests  = centres.map(c=>c.destination).filter(Boolean)
+      rows += bullet(`${dests.map(d=>qEsc(d)).join(' &rarr; ')} &mdash; <strong>${nights} nights</strong>`)
+      centres.forEach(c => {
+        const ci = c.checkinDate ? fmtDate(c.checkinNextDay ? addDays(c.checkinDate,1) : c.checkinDate) : null
+        rows += `<tr><td style="padding:5px 0 5px 32px;border-bottom:1px solid ${QD};font-size:13px;color:${QM};">
+          <strong style="color:${QT};">${qEsc(c.destination||'')}</strong> &mdash; ${qEsc(c.hotel||'')} &middot; ${c.nights} nights &middot; ${qEsc(c.boardBasis)}${ci?` &middot; check-in ${ci}`:''}
+        </td></tr>`
+      })
+    } else if (opt) {
+      const ci = opt.checkinDate ? fmtDate(opt.checkinNextDay ? addDays(opt.checkinDate,1) : opt.checkinDate) : null
+      const allLegs = sortFlightLegs([...(opt.outLegs||[]),...(opt.retLegs||[])])
+      const fOut = allLegs.find(l=>l.from && (l.date||l.depart_time))
+      rows += bullet(`<strong>${qEsc(opt.hotel||'Resort to confirm')}</strong>${opt.roomType?` &mdash; ${qEsc(opt.roomType)}`:''}`)
+      rows += bullet(`${opt.nights} nights &middot; <strong>${qEsc(opt.boardBasis)}</strong>${ci?` &middot; check-in ${ci}`:''}`)
+      if (fOut) rows += bullet(`Flights from <strong>${fOut.from||'UK'}</strong>${fOut.date?` &mdash; ${fmtDate(fOut.date)}`:''}${fOut.airline?` &middot; ${fOut.airline}`:''}`)
+    }
+    rows += bullet(`${paxLine} &middot; transfers &amp; all taxes included`)
+    return `<table width="100%" cellpadding="0" cellspacing="0">${rows}</table>`
+  }
+
+  // ── OPTION BULLETS (for multi-option single quotes) ───────
+  function optBullets(opt: HotelOption): string {
+    const ci = opt.checkinDate ? fmtDate(opt.checkinNextDay ? addDays(opt.checkinDate,1) : opt.checkinDate) : null
+    const allLegs = sortFlightLegs([...(opt.outLegs||[]),...(opt.retLegs||[])])
+    const fOut = allLegs.find(l=>l.from && (l.date||l.depart_time))
+    const bullet = (content: string) =>
+      `<tr><td style="padding:6px 0;border-bottom:1px solid ${QD};"><span style="color:${QG};font-size:11px;margin-right:10px;font-weight:700;">&#9670;</span><span style="font-size:13px;color:${QT};">${content}</span></td></tr>`
+    let rows = bullet(`<strong>${qEsc(opt.hotel||'Resort to confirm')}</strong>${opt.roomType?` &mdash; ${qEsc(opt.roomType)}`:''}`)
+    rows += bullet(`${opt.nights} nights &middot; <strong>${qEsc(opt.boardBasis)}</strong>${ci?` &middot; check-in ${ci}`:''}`)
+    if (fOut) rows += bullet(`Flights from <strong>${fOut.from||'UK'}</strong>${fOut.date?` &mdash; ${fmtDate(fOut.date)}`:''}`)
+    rows += bullet(`${paxLine} &middot; transfers &amp; all taxes included`)
+    return `<table width="100%" cellpadding="0" cellspacing="0">${rows}</table>`
+  }
+
+  // ── BUILD DETAILS BODY ────────────────────────────────────
+  let body = ''
+
+  if (isMulti) {
+    const itin = buildChronologicalItinerary(ordC)
+    let cc = 0
+    itin.forEach(ev => {
+      if (ev.type==='flights' && ev.legs?.length) {
+        body += qFlightsSection(ev.legs)
+      } else if (ev.type==='stay' && ev.centre) {
+        cc++
+        const c  = ev.centre
+        const ci = c.checkinDate ? fmtDate(c.checkinNextDay ? addDays(c.checkinDate,1) : c.checkinDate) : '&mdash;'
+        body += `<tr><td style="padding:0 36px 22px;">
+          <p style="font-size:9.5px;font-weight:700;color:${QG};text-transform:uppercase;letter-spacing:0.12em;margin:0 0 8px;">Centre ${cc} &mdash; ${qEsc(c.destination||'')}</p>
+          ${qSectionHead(qEsc(c.hotel||`Centre ${cc}`))}
+          <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;border:1px solid ${QD};">
+            <tbody>
+              ${qAccomRow('Hotel',qEsc(c.hotel||''),'Meal Plan',qEsc(c.boardBasis),'#f8f6f3')}
+              ${qAccomRow('Room',qEsc(c.roomType||'To be confirmed'),'Nights',c.nights,'#ffffff')}
+              ${qAccomRow('Check-In',ci,'Destination',qEsc(c.destination||''),'#f8f6f3')}
+            </tbody>
+          </table>
+        </td></tr>`
+      }
+    })
+  } else if (!multiOpts) {
+    const opt = p.hotelOptions[0]
+    if (opt) {
+      body += qFlightsSection(sortFlightLegs([...(opt.outLegs||[]),...(opt.retLegs||[])]))
+      const ci = opt.checkinDate ? fmtDate(opt.checkinNextDay ? addDays(opt.checkinDate,1) : opt.checkinDate) : '&mdash;'
+      body += `<tr><td style="padding:0 36px 24px;">${qSectionHead('Accommodation')}
+        <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;border:1px solid ${QD};">
+          <tbody>
+            ${qAccomRow('Resort',qEsc(opt.hotel||''),'Meal Plan',qEsc(opt.boardBasis),'#f8f6f3')}
+            ${qAccomRow('Room',qEsc(opt.roomType||'To be confirmed'),'Nights',opt.nights,'#ffffff')}
+            ${qAccomRow('Check-In',ci,'Destination','Mauritius, Indian Ocean','#f8f6f3')}
+          </tbody>
+        </table>
+      </td></tr>`
+    }
+  } else {
+    // Multiple options — per-option blocks
+    p.hotelOptions.forEach((opt, idx) => {
+      const sellN = parseFloat(opt.sellPrice)||0
+      const ci    = opt.checkinDate ? fmtDate(opt.checkinNextDay ? addDays(opt.checkinDate,1) : opt.checkinDate) : '&mdash;'
+      body += `<tr><td style="padding:0 36px 8px;">
+        <table width="100%" cellpadding="0" cellspacing="0"><tr><td style="border-top:2px solid ${QD};padding-top:28px;"></td></tr></table>
+      </td></tr>`
+      body += qOptionPriceRow(sellN, `Option ${idx+1}`, parseInt(opt.nights || '0') || 0)
+      body += `<tr><td style="padding:0 36px 16px;">${optBullets(opt)}</td></tr>`
+      body += qFlightsSection(sortFlightLegs([...(opt.outLegs||[]),...(opt.retLegs||[])]))
+      body += `<tr><td style="padding:0 36px 24px;">${qSectionHead('Accommodation')}
+        <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;border:1px solid ${QD};">
+          <tbody>
+            ${qAccomRow('Resort',qEsc(opt.hotel||''),'Meal Plan',qEsc(opt.boardBasis),'#f8f6f3')}
+            ${qAccomRow('Room',qEsc(opt.roomType||'To be confirmed'),'Nights',opt.nights,'#ffffff')}
+            ${qAccomRow('Check-In',ci,'Destination','Mauritius, Indian Ocean','#f8f6f3')}
+          </tbody>
+        </table>
+      </td></tr>`
+    })
+  }
+
+  // Additional services
+  const svcHtml = p.additionalServices ? `
+  <tr><td style="padding:0 36px 24px;">
+    <table width="100%" cellpadding="0" cellspacing="0" style="background:#fdf6e8;border-left:3px solid ${QG};">
+      <tr><td style="padding:14px 18px;">
+        <p style="font-size:9.5px;font-weight:700;color:${QN};text-transform:uppercase;letter-spacing:0.1em;margin:0 0 8px;">Also Included</p>
+        <p style="font-size:13px;color:${QT};margin:0;line-height:1.8;white-space:pre-line;">${qEsc(p.additionalServices)}</p>
+      </td></tr>
+    </table>
+  </td></tr>` : ''
+
+  // Urgency notice (T3)
+  const urgHtml = tpl===3 ? `
+  <tr><td style="padding:0 36px 24px;">
+    <table width="100%" cellpadding="0" cellspacing="0" style="border-left:3px solid #c9820a;background:#fff9f0;">
+      <tr><td style="padding:12px 16px;">
+        <p style="font-size:9.5px;font-weight:700;color:#7a4f00;text-transform:uppercase;letter-spacing:0.1em;margin:0 0 5px;">Availability Notice</p>
+        <p style="font-size:12.5px;color:#7a4f00;margin:0;line-height:1.65;">This quote is based on live availability. Prices and rooms can change at any time. Confirming today locks in everything shown.</p>
+      </td></tr>
+    </table>
+  </td></tr>` : ''
+
+  // VIP promise block (T4 — replaces standard trust grid)
+  const vipHtml = tpl===4 ? `
+  <tr bgcolor="${QN}"><td style="padding:24px 36px;">
+    <p style="font-size:9.5px;font-weight:700;color:${QG};text-transform:uppercase;letter-spacing:0.14em;margin:0 0 16px;">Your Dedicated Service Promise</p>
+    <table width="100%" cellpadding="0" cellspacing="0">
+      <tr>
+        <td width="50%" style="padding:0 14px 12px 0;vertical-align:top;border-right:1px solid rgba(255,255,255,0.06);">
+          <p style="color:${QG};font-weight:600;font-size:12px;margin:0 0 4px;">Personal Consultant</p>
+          <p style="color:rgba(255,255,255,0.5);font-size:12px;margin:0;line-height:1.6;">Samir manages your booking personally from first contact to your return</p>
+        </td>
+        <td width="50%" style="padding:0 0 12px 14px;vertical-align:top;">
+          <p style="color:${QG};font-weight:600;font-size:12px;margin:0 0 4px;">24/7 In-Resort Support</p>
+          <p style="color:rgba(255,255,255,0.5);font-size:12px;margin:0;line-height:1.6;">Direct line to us throughout your entire holiday</p>
+        </td>
+      </tr>
+      <tr>
+        <td width="50%" style="padding:12px 14px 0 0;vertical-align:top;border-right:1px solid rgba(255,255,255,0.06);">
+          <p style="color:${QG};font-weight:600;font-size:12px;margin:0 0 4px;">Airport Representative</p>
+          <p style="color:rgba(255,255,255,0.5);font-size:12px;margin:0;line-height:1.6;">Our team meets you personally on arrival in Mauritius</p>
+        </td>
+        <td width="50%" style="padding:12px 0 0 14px;vertical-align:top;">
+          <p style="color:${QG};font-weight:600;font-size:12px;margin:0 0 4px;">Full Financial Protection</p>
+          <p style="color:rgba(255,255,255,0.5);font-size:12px;margin:0;line-height:1.6;">ABTA &middot; IATA &middot; ATOL 5744 &mdash; fully protected</p>
+        </td>
+      </tr>
+    </table>
+  </td></tr>` : ''
+
+  // Confirmation steps (T3)
+  const confirmHtml = tpl===3 ? `
+  <tr><td style="padding:0 36px 24px;">
+    <table width="100%" cellpadding="0" cellspacing="0" style="background:#f2f9f2;border:1px solid #b0d4b0;">
+      <tr><td style="padding:16px 20px;">
+        <p style="font-size:12.5px;font-weight:700;color:#1a4a1a;margin:0 0 12px;">How to Confirm Today</p>
+        <table cellpadding="0" cellspacing="0" width="100%">
+          <tr><td style="padding:5px 0;font-size:13px;color:#333;line-height:1.6;"><span style="display:inline-block;width:20px;height:20px;background:#2d6a2d;color:white;text-align:center;border-radius:50%;font-size:10px;line-height:20px;margin-right:9px;font-weight:700;vertical-align:middle;">1</span>Call <strong>${CONTACT.direct}</strong> or reply to this email</td></tr>
+          <tr><td style="padding:5px 0;font-size:13px;color:#333;line-height:1.6;"><span style="display:inline-block;width:20px;height:20px;background:#2d6a2d;color:white;text-align:center;border-radius:50%;font-size:10px;line-height:20px;margin-right:9px;font-weight:700;vertical-align:middle;">2</span>Pay your 10% deposit of <strong>${depositFmt}</strong> by card or bank transfer</td></tr>
+          <tr><td style="padding:5px 0;font-size:13px;color:#333;line-height:1.6;"><span style="display:inline-block;width:20px;height:20px;background:#2d6a2d;color:white;text-align:center;border-radius:50%;font-size:10px;line-height:20px;margin-right:9px;font-weight:700;vertical-align:middle;">3</span>Receive confirmation &amp; ATOL certificate within 24 hours</td></tr>
+        </table>
+      </td></tr>
+    </table>
+  </td></tr>` : ''
+
+  const printCss = p.isPdf ? `
+    @page { margin: 10mm 12mm; size: A4; }
+    @media print { body { margin:0; } * { -webkit-print-color-adjust:exact!important; print-color-adjust:exact!important; } }` : ''
+  const autoPrint = p.isPdf ? `<script>window.onload=function(){setTimeout(function(){window.print();},500);}</script>` : ''
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Quote ${qEsc(p.quoteRef)} &mdash; Mauritius Holidays Direct</title>
+<style>
+  body{margin:0;padding:24px 0;background:${QB};font-family:Arial,Helvetica,sans-serif;}
+  a{color:${QN};}
+  ${printCss}
+</style>
+${autoPrint}
+</head><body>
+<table width="100%" cellpadding="0" cellspacing="0" bgcolor="${QB}">
+<tr><td align="center" style="padding:0 16px 32px;">
+<table width="600" cellpadding="0" cellspacing="0" style="max-width:600px;background:#ffffff;border:1px solid ${QD};font-family:Arial,Helvetica,sans-serif;">
+
+  <!-- 1. HEADER -->
+  <tr bgcolor="${QN}"><td align="center" style="padding:22px 36px 20px;">
+    <p style="color:${QG};font-size:20px;font-weight:bold;letter-spacing:0.09em;font-family:Georgia,serif;margin:0 0 4px;">MAURITIUS HOLIDAYS DIRECT</p>
+    <p style="color:rgba(255,255,255,0.28);font-size:9px;margin:0;letter-spacing:0.22em;text-transform:uppercase;">Your Luxury Mauritius Specialist &nbsp;&middot;&nbsp; Est. 1999</p>
+  </td></tr>
+
+  <!-- 2. HERO: Trip identity (no "Dear...") -->
+  <tr bgcolor="${QB}"><td style="padding:28px 36px 22px;">
+    <p style="font-size:27px;color:${QN};font-family:Georgia,serif;margin:0 0 5px;font-weight:normal;line-height:1.15;">${tripTitle}</p>
+    <p style="font-size:15px;color:${QM};margin:0 0 ${toneTagline?'16px':'0'};line-height:1.4;">${tripSub}</p>
+    ${toneTagline ? `<p style="font-size:12.5px;color:${QT};margin:0;line-height:1.8;border-left:2px solid ${QG};padding-left:14px;font-style:italic;">${toneTagline}</p>` : ''}
+  </td></tr>
+
+  <!-- META BAR -->
+  <tr><td style="padding:0 36px 28px;">
+    <table width="100%" cellpadding="0" cellspacing="0"><tr>
+      <td style="border-top:1px solid ${QD};border-bottom:1px solid ${QD};padding:8px 0;">
+        <p style="font-size:11px;color:${QM};margin:0;line-height:1.9;">
+          <strong style="color:${QN};">Ref:</strong> <span style="font-family:monospace;color:${QN};">${qEsc(p.quoteRef)}</span>
+          &nbsp;&nbsp;<strong style="color:${QN};">Date:</strong> ${today}
+          &nbsp;&nbsp;<strong style="color:${QN};">Party:</strong> ${paxLine}
+        </p>
+      </td>
+    </tr></table>
+  </td></tr>
+
+  <!-- 3. PRICE — primary visual weight -->
+  ${showTopPrice ? `<tr><td style="padding:0 36px 32px;">
+    <table width="100%" cellpadding="0" cellspacing="0" bgcolor="${QN}" style="border-radius:5px;">
+      <tr><td align="center" style="padding:30px 24px 16px;">
+        <p style="font-size:9px;text-transform:uppercase;letter-spacing:0.2em;color:rgba(184,146,46,0.6);margin:0 0 8px;">Total Investment</p>
+        <p style="font-size:54px;color:${QG};font-family:Georgia,serif;font-weight:bold;margin:0;line-height:1;">${priceFmt}</p>
+        <p style="font-size:12px;color:rgba(255,255,255,0.4);margin:8px 0 0;">From ${perNightFmt} per night for your stay &nbsp;&middot;&nbsp; flights, hotel, transfers and taxes included</p>
+      </td></tr>
+      <tr><td align="center" style="border-top:1px solid rgba(255,255,255,0.06);padding:12px 24px;">
+        <p style="font-size:12.5px;color:rgba(255,255,255,0.45);margin:0;">Secure your dates from just <strong style="color:${QG};font-size:15px;">${depositFmt}</strong> today &nbsp;&middot;&nbsp; Balance due 12 weeks before departure</p>
+      </td></tr>
+    </table>
+  </td></tr>` : ''}
+
+  ${urgHtml}
+
+  <!-- 4. EMOTIONAL OPENING -->
+  <tr><td style="padding:0 36px 24px;">
+    ${qSectionHead('The Experience')}
+    <p style="font-size:14px;color:${QT};margin:0;line-height:1.9;">${openingParagraph}</p>
+  </td></tr>
+
+  <!-- 5. EXPERIENCE SUMMARY -->
+  <tr><td style="padding:0 36px 28px;">
+    ${qSectionHead('Your Holiday at a Glance')}
+    ${isMulti ? expBullets(null,ordC) : (!multiOpts && p.hotelOptions[0] ? expBullets(p.hotelOptions[0],[]) : `<p style="font-size:13px;color:${QM};margin:0;line-height:1.7;"><strong style="color:${QN};">${p.hotelOptions.length} tailored options</strong> &mdash; see pricing and full details for each below. Each includes flights, accommodation, transfers and all taxes.</p>`)}
+  </td></tr>
+
+  <!-- 6. PERSONALISED REASONS -->
+  ${reasonsHtml}
+
+  <!-- 7. DETAILS (lower visual weight) -->
+  <tr><td style="padding:0 36px 16px;">
+    <p style="font-size:11px;font-weight:700;color:${QM};text-transform:uppercase;letter-spacing:0.12em;margin:0;">Journey details</p>
+    <p style="font-size:13px;color:${QM};margin:8px 0 0;line-height:1.7;">Below are the practical details of the itinerary. They are there to support the holiday story above, not define it.</p>
+  </td></tr>
+  ${body}
+  ${svcHtml}
+
+  <!-- 6. TRUST -->
+  ${tpl!==4 ? `<tr bgcolor="${QB}"><td style="padding:24px 36px;">
+    ${qSectionHead('Why Book With Us')}
+    <table width="100%" cellpadding="0" cellspacing="0">
+      <tr>
+        <td width="50%" style="padding:0 14px 14px 0;vertical-align:top;">
+          <p style="font-weight:700;font-size:13px;color:${QN};margin:0 0 3px;">25 Years of Expertise</p>
+          <p style="font-size:12px;color:${QM};margin:0;line-height:1.65;">Mauritius specialists since 1999 &mdash; every resort personally visited and reviewed.</p>
+        </td>
+        <td width="50%" style="padding:0 0 14px 14px;vertical-align:top;">
+          <p style="font-weight:700;font-size:13px;color:${QN};margin:0 0 3px;">ATOL &amp; ABTA Protected</p>
+          <p style="font-size:12px;color:${QM};margin:0;line-height:1.65;">ABTA &middot; IATA &middot; ATOL 5744. Your money is 100% protected from the moment you pay.</p>
+        </td>
+      </tr>
+      <tr>
+        <td width="50%" style="padding:0 14px 0 0;vertical-align:top;">
+          <p style="font-weight:700;font-size:13px;color:${QN};margin:0 0 3px;">5-Star Trustpilot</p>
+          <p style="font-size:12px;color:${QM};margin:0;line-height:1.65;">Thousands of verified reviews from clients who trusted us with their dream holidays.</p>
+        </td>
+        <td width="50%" style="padding:0 0 0 14px;vertical-align:top;">
+          <p style="font-weight:700;font-size:13px;color:${QN};margin:0 0 3px;">Best Price Guarantee</p>
+          <p style="font-size:12px;color:${QM};margin:0;line-height:1.65;">Find it cheaper within 72 hours &mdash; we&apos;ll refund the difference, guaranteed.</p>
+        </td>
+      </tr>
+    </table>
+  </td></tr>` : ''}
+
+  ${vipHtml}
+  ${confirmHtml}
+
+  <!-- 8. CLOSING CTA -->
+  <tr bgcolor="${QN}"><td align="center" style="padding:32px 36px 28px;">
+    <p style="font-size:9px;text-transform:uppercase;letter-spacing:0.18em;color:rgba(184,146,46,0.6);margin:0 0 8px;">Your Next Step</p>
+    <p style="font-size:22px;color:white;font-family:Georgia,serif;margin:0 0 8px;font-weight:normal;">If this feels like the right Mauritius escape, I can secure it from <span style="color:${QG};">${depositFmt}</span></p>
+    <p style="font-size:12px;color:rgba(255,255,255,0.42);margin:0 0 22px;line-height:1.7;">Reply to this quote, WhatsApp me, or call directly and I will guide you through the next step personally before availability changes.</p>
+    <table cellpadding="0" cellspacing="0" align="center">
+      <tr>
+        <td style="padding:0 4px;"><a href="tel:02089516922" style="display:inline-block;background:${QG};color:white;padding:13px 22px;text-decoration:none;font-size:12.5px;font-weight:700;letter-spacing:0.04em;font-family:Arial,sans-serif;">Call Samir</a></td>
+        <td style="padding:0 4px;"><a href="https://wa.me/447881551204" style="display:inline-block;background:#25D366;color:white;padding:13px 22px;text-decoration:none;font-size:12.5px;font-weight:700;letter-spacing:0.04em;font-family:Arial,sans-serif;">Message on WhatsApp</a></td>
+        <td style="padding:0 4px;"><a href="mailto:${CONTACT.email}" style="display:inline-block;border:1.5px solid rgba(255,255,255,0.2);color:white;padding:13px 22px;text-decoration:none;font-size:12.5px;font-weight:700;letter-spacing:0.04em;font-family:Arial,sans-serif;">Reply by Email</a></td>
+      </tr>
+    </table>
+    <p style="font-size:10.5px;color:rgba(255,255,255,0.22);margin:18px 0 0;">${CONTACT.direct} &nbsp;&middot;&nbsp; ${CONTACT.email}</p>
+  </td></tr>
+
+  <!-- 8. CONSULTANT -->
+  <tr><td style="padding:18px 36px;border-top:3px solid ${QG};">
+    <table width="100%" cellpadding="0" cellspacing="0"><tr>
+      <td style="vertical-align:middle;">
+        <p style="font-size:10.5px;color:${QM};margin:0 0 2px;">Your dedicated specialist</p>
+        <p style="font-size:20px;color:${QN};font-family:Georgia,serif;margin:0 0 2px;font-weight:normal;">Samir Abattouy</p>
+        <p style="font-size:11px;color:${QG};font-style:italic;margin:0;">Mauritius Expert &nbsp;&middot;&nbsp; Senior Travel Consultant</p>
+      </td>
+      <td style="vertical-align:middle;text-align:right;">
+        <p style="font-size:11.5px;color:${QM};margin:0;line-height:2.1;">${CONTACT.direct}<br>${CONTACT.email}</p>
+      </td>
+    </tr></table>
+  </td></tr>
+
+  <!-- FOOTER -->
+  <tr bgcolor="${QN}"><td style="padding:11px 36px;text-align:center;">
+    <p style="font-size:9px;color:${QG};letter-spacing:0.12em;margin:0;font-weight:700;">ABTA &nbsp;&middot;&nbsp; IATA &nbsp;&middot;&nbsp; ATOL PROTECTED 5744</p>
+    <p style="font-size:9px;color:rgba(255,255,255,0.22);margin:4px 0 0;">${CONTACT.address} &nbsp;&middot;&nbsp; ${CONTACT.web}</p>
+  </td></tr>
+
+</table>
+</td></tr>
+</table>
+</body></html>`
+}
+
+// ── QUOTE DELIVERY MODAL ──────────────────────────────────
+function QuoteDeliveryModal({deal,quoteMode,hotelOptions,centres,adults,children,infants,additionalServices,sellPrice,quoteRef,template,selectedCustomTemplate,customTemplates,onClose}:any){
   const [activeTemplate,setActiveTemplate]=useState<1|2|3|4>(template)
   const [activeCustom,setActiveCustom]=useState<number|null>(selectedCustomTemplate)
-  const isMulti   = quoteMode==='multi'
-  const depositAmt= (sellPrice*0.1).toLocaleString('en-GB',{minimumFractionDigits:2,maximumFractionDigits:2})
-  const orderedCentres = sortCentresChronologically(centres || [])
+  const [downloading,setDownloading]=useState<'pdf'|'email'|null>(null)
 
-  const TEMPLATES=[{id:1,label:'The Dream Seller'},{id:2,label:'The Trusted Expert'},{id:3,label:'The Urgency Close'},{id:4,label:'The VIP Treatment'}] as const
+  const TEMPLATES=[{id:1,label:'Dream Seller'},{id:2,label:'Trusted Expert'},{id:3,label:'Urgency Close'},{id:4,label:'VIP Treatment'}] as const
+  const activeCustomData=activeCustom?customTemplates?.find((t:any)=>t.id===activeCustom):null
 
-  function copyEmail(){
-    if(!emailRef.current) return
-    const range=document.createRange(); range.selectNodeContents(emailRef.current)
-    const sel=window.getSelection(); sel?.removeAllRanges(); sel?.addRange(range)
-    document.execCommand('copy'); sel?.removeAllRanges()
-    alert('Email copied! Paste directly into Outlook or Gmail.')
+  const htmlParams={
+    deal,quoteMode,hotelOptions,centres,adults,children,infants,
+    additionalServices,sellPrice,quoteRef,
+    templateId:(activeCustomData?1:activeTemplate) as number,
+    customTemplate:activeCustomData,
+    isPdf:false,
   }
 
-  // Shared components
-  const EHeader=()=>(
-    <div style={{background:'#1a3a5c',padding:'22px 30px',textAlign:'center'}}>
-      <div style={{color:'#c9963a',fontFamily:'Georgia,serif',fontSize:'22px',letterSpacing:'0.08em',fontWeight:'bold'}}>MAURITIUS HOLIDAYS DIRECT</div>
-      <div style={{color:'rgba(255,255,255,0.45)',fontSize:'10px',marginTop:'4px',letterSpacing:'0.16em'}}>YOUR LUXURY MAURITIUS SPECIALIST · EST. 1999</div>
-    </div>
-  )
-  const EMeta=()=>(
-    <table style={{width:'100%',marginBottom:'24px'}}><tbody><tr>
-      <td style={{width:'55%'}}/>
-      <td style={{textAlign:'right',fontSize:'12px',color:'#666',lineHeight:'2'}}>
-        <div><strong>Quote Date:</strong> {today}</div>
-        <div><strong>Quote Ref:</strong> <span style={{fontFamily:'monospace',color:'#1a3a5c'}}>{quoteRef}</span></div>
-        <div><strong>Your Consultant:</strong> Samir Abattouy — Mauritius Expert</div>
-      </td>
-    </tr></tbody></table>
-  )
-  const ETravellers=()=>(
-    <div style={{background:'#eef2f8',padding:'9px 14px',borderRadius:'5px',marginBottom:'18px',fontSize:'13px',fontWeight:'600',color:'#1a3a5c'}}>
-      Travellers: {adults} Adult{parseInt(adults)>1?'s':''}{parseInt(children)>0?`, ${children} Child${parseInt(children)>1?'ren':''}`:''}{parseInt(infants)>0?`, ${infants} Infant${parseInt(infants)>1?'s':''}`:''} 
-    </div>
-  )
-  const EServices=()=>additionalServices?(
-    <div style={{background:'#f0f7f0',border:'1px solid #c3dfc3',borderRadius:'7px',padding:'13px 16px',marginBottom:'18px'}}>
-      <div style={{fontWeight:'700',fontSize:'12px',color:'#2d6a2d',marginBottom:'6px'}}>Also Included in Your Quote</div>
-      <div style={{fontSize:'13px',color:'#444',lineHeight:'1.7',whiteSpace:'pre-wrap'}}>{additionalServices}</div>
-    </div>
-  ):null
-  const EPrice=()=>(
-    <div style={{background:'#1a3a5c',color:'white',padding:'16px 20px',borderRadius:'9px',display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'18px'}}>
-      <div>
-        <div style={{fontSize:'10px',color:'rgba(201,150,58,0.8)',textTransform:'uppercase',letterSpacing:'0.1em',marginBottom:'3px'}}>Total Investment</div>
-        <div style={{fontSize:'12px',color:'rgba(255,255,255,0.5)'}}>All inclusive — flights · transfers · accommodation · taxes</div>
-      </div>
-      <div style={{textAlign:'right'}}>
-        <div style={{fontFamily:'Georgia,serif',fontSize:'28px',color:'#c9963a',fontWeight:'bold'}}>£{sellPrice.toLocaleString('en-GB',{minimumFractionDigits:2})}</div>
-        <div style={{fontSize:'10px',color:'rgba(255,255,255,0.35)'}}>10% deposit = £{depositAmt}</div>
-      </div>
-    </div>
-  )
-  const ECredentials=()=>(
-    <div style={{background:'#f8f8f6',borderRadius:'7px',padding:'14px 18px',marginBottom:'18px',fontSize:'12px'}}>
-      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px'}}>
-        {[['25 Years of Expertise','Specialists in Mauritius since 1999 — every resort personally visited.'],['Best Price Guarantee','Find it cheaper within 72 hours and we\'ll refund the difference.'],['Fully Protected','ABTA · IATA · ATOL Protected (5744) — your money is 100% safe.'],['5-Star Rated','Award-winning service — thousands of happy clients on Trustpilot.']].map(([t,d])=>(
-          <div key={t}><div style={{fontWeight:'700',color:'#1a3a5c',marginBottom:'2px'}}>{t}</div><div style={{color:'#666',lineHeight:'1.5'}}>{d}</div></div>
-        ))}
-      </div>
-    </div>
-  )
-  const EContact=()=>(
-    <div style={{background:'#eef2f8',borderRadius:'7px',padding:'14px 18px',marginBottom:'18px',fontSize:'13px'}}>
-      <div style={{fontWeight:'700',color:'#1a3a5c',marginBottom:'8px'}}>Ready to book? Contact Samir directly:</div>
-      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'6px',color:'#444'}}>
-        <div>Direct: {CONTACT.direct}</div><div>WhatsApp: {CONTACT.whatsapp}</div>
-        <div>Email: {CONTACT.email}</div><div><a href={CONTACT.calendly} style={{color:'#1a3a5c'}}>Schedule a call</a></div>
-      </div>
-      <div style={{marginTop:'8px',fontSize:'11px',color:'#888'}}><a href={CONTACT.trustpilot} style={{color:'#1a3a5c'}}>Read our Trustpilot reviews</a></div>
-    </div>
-  )
-  const EDeposit=()=>(
-    <div style={{background:'#fffbf0',border:'1px solid #f0d080',borderRadius:'7px',padding:'13px 16px',marginBottom:'18px',fontSize:'13px'}}>
-      <strong>To secure your booking:</strong> A 10% deposit of <strong>£{depositAmt}</strong> is all that's needed today. Balance due 12 weeks before departure. Local accommodation tax of approx. €3 per adult per night payable at resort.
-    </div>
-  )
-  const ESignature=()=>(
-    <div style={{borderTop:'2px solid #e5e7eb',paddingTop:'18px'}}>
-      <div style={{fontSize:'13px',color:'#666',marginBottom:'3px'}}>Warm regards,</div>
-      <div style={{fontFamily:'Georgia,serif',fontSize:'19px',color:'#1a3a5c',marginBottom:'1px'}}>Samir Abattouy</div>
-      <div style={{fontSize:'12px',color:'#c9963a',marginBottom:'10px',fontStyle:'italic'}}>Mauritius Expert · Senior Travel Consultant</div>
-      <div style={{fontSize:'12px',color:'#555',lineHeight:'2'}}>
-        Direct: {CONTACT.direct} · WhatsApp: {CONTACT.whatsapp}<br/>
-        {CONTACT.email} · {CONTACT.web}
-      </div>
-      <div style={{marginTop:'14px',textAlign:'center',padding:'10px',background:'#1a3a5c',borderRadius:'5px',fontSize:'10px',fontWeight:'600',color:'#c9963a',letterSpacing:'0.08em'}}>
-        ABTA · IATA · ATOL PROTECTED 5744 — BOOK WITH COMPLETE CONFIDENCE
-      </div>
-    </div>
-  )
-
-  // Single hotel block
-  const SingleHotelBlock=({option,index,showLabel}:{option:HotelOption;index:number;showLabel:boolean})=>{
-    const allLegs=sortFlightLegs([...(option.outLegs||[]),...(option.retLegs||[])])
-    const checkinDisplay = fmtDate(option.checkinNextDay && option.checkinDate ? addDays(option.checkinDate, 1) : option.checkinDate)
-    const COLORS=['#8b5cf6','#3b82f6','#10b981','#f59e0b','#ec4899']
-    const col=COLORS[index%COLORS.length]
-    const sellN=parseFloat(option.sellPrice)||0
-    return(
-      <div style={{marginBottom:'22px',border:`1.5px solid ${col}22`,borderRadius:'9px',overflow:'hidden'}}>
-        {showLabel&&<div style={{background:col,padding:'9px 16px',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-          <div style={{color:'white',fontWeight:'700',fontSize:'13px'}}>Option {index+1}: {option.hotel}</div>
-          {sellN>0&&<div style={{color:'white',fontFamily:'Georgia,serif',fontSize:'16px',fontWeight:'bold'}}>£{sellN.toLocaleString('en-GB',{minimumFractionDigits:2})}</div>}
-        </div>}
-        <div style={{padding:'14px 16px'}}>
-          <div style={{marginBottom:'14px'}}>
-            <div style={{fontWeight:'700',marginBottom:'8px',fontSize:'12px',color:'#1a3a5c',borderBottom:'1.5px solid #c9963a',paddingBottom:'5px'}}>Accommodation</div>
-            <table style={{width:'100%',borderCollapse:'collapse',fontSize:'13px',border:'1px solid #e5e7eb'}}>
-              <tbody>
-                {[['Resort',option.hotel,'Meal Plan',option.boardBasis],['Room',option.roomType||'To be confirmed','Duration',`${option.nights} nights`],['Check-In',checkinDisplay,'Destination','Mauritius, Indian Ocean']].map(([l1,v1,l2,v2],i)=>(
-                  <tr key={i} style={{background:i%2===0?'#f8f9fb':'white'}}>
-                    <td style={{padding:'7px 11px',fontWeight:'600',width:'100px',fontSize:'11px',color:'#555'}}>{l1}</td><td style={{padding:'7px 11px',fontWeight:'500'}}>{v1}</td>
-                    <td style={{padding:'7px 11px',fontWeight:'600',width:'90px',fontSize:'11px',color:'#555'}}>{l2}</td><td style={{padding:'7px 11px',fontWeight:'500'}}>{v2}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          {allLegs.some(l=>l.date||l.depart_time)&&(
-            <div>
-              <div style={{fontWeight:'700',marginBottom:'8px',fontSize:'12px',color:'#1a3a5c',borderBottom:'1.5px solid #c9963a',paddingBottom:'5px'}}>Flights</div>
-              <table style={{width:'100%',borderCollapse:'collapse',fontSize:'11.5px'}}>
-                <thead><tr style={{background:'#1a3a5c',color:'white'}}>{['Flight','Date','Departs','Arrives','Airline','Route','Cabin'].map(h=><th key={h} style={{padding:'6px 9px',textAlign:'left',fontWeight:'500',fontSize:'10.5px'}}>{h}</th>)}</tr></thead>
-                <tbody>{allLegs.map((f,i)=>(
-                  <tr key={f.id} style={{background:i%2===0?'#f8f9fb':'white',borderBottom:'1px solid #eee'}}>
-                    <td style={{padding:'6px 9px',fontFamily:'monospace',fontWeight:'600'}}>{f.flight_number||'—'}</td>
-                    <td style={{padding:'6px 9px'}}>{fmtDate(f.date)}</td>
-                    <td style={{padding:'6px 9px',fontFamily:'monospace'}}>{f.depart_time||'—'}</td>
-                    <td style={{padding:'6px 9px',fontFamily:'monospace'}}>{f.arrival_time||'—'}{f.overnight?' (+1)':''}</td>
-                    <td style={{padding:'6px 9px'}}>{f.airline}</td>
-                    <td style={{padding:'6px 9px',fontWeight:'500'}}>{f.from} → {f.to}</td>
-                    <td style={{padding:'6px 9px'}}>{f.cabin}</td>
-                  </tr>
-                ))}</tbody>
-              </table>
-            </div>
-          )}
-          {!showLabel&&sellN>0&&<div style={{background:'#1a3a5c',color:'white',padding:'12px 16px',borderRadius:'7px',display:'flex',justifyContent:'space-between',alignItems:'center',marginTop:'14px'}}>
-            <div><div style={{fontSize:'10px',color:'rgba(201,150,58,0.8)',textTransform:'uppercase',letterSpacing:'0.1em'}}>Total Investment</div><div style={{fontSize:'11px',color:'rgba(255,255,255,0.5)'}}>Flights · transfers · accommodation</div></div>
-            <div style={{fontFamily:'Georgia,serif',fontSize:'24px',color:'#c9963a',fontWeight:'bold'}}>£{sellN.toLocaleString('en-GB',{minimumFractionDigits:2})}</div>
-          </div>}
-        </div>
-      </div>
-    )
+  function downloadPdf(){
+    setDownloading('pdf')
+    const html=generateQuoteHtml({...htmlParams,isPdf:true})
+    const win=window.open('','_blank')
+    if(!win){setDownloading(null);return}
+    win.document.write(html)
+    win.document.close()
+    win.focus()
+    setDownloading(null)
   }
 
-  // Multi-centre block
-  const MultiCentreBlocks=()=>(
-    <div>
-      <div style={{background:'#f0f4f9',borderRadius:'7px',padding:'12px 16px',marginBottom:'18px',fontSize:'12px',color:'#555'}}>
-        <strong style={{color:'#1a3a5c'}}>Your Multi-Centre Holiday Itinerary</strong>
-        <div style={{marginTop:'4px'}}>{orderedCentres.map((c:Centre)=>c.destination).filter(Boolean).join(' → ')}</div>
-      </div>
-      {(() => {
-        const itinerary = buildChronologicalItinerary(orderedCentres)
-        let centreCounter = 0
+  function downloadEmail(){
+    setDownloading('email')
+    const html=generateQuoteHtml(htmlParams)
+    const blob=new Blob([html],{type:'text/html;charset=utf-8'})
+    const url=URL.createObjectURL(blob)
+    const a=document.createElement('a')
+    a.href=url
+    a.download=`quote-${quoteRef}.html`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+    setDownloading(null)
+  }
 
-        return itinerary.map((event, eventIndex) => {
-          if (event.type === 'stay') {
-            const c = event.centre!
-            const DEST_COLORS=['#f59e0b','#8b5cf6','#10b981','#3b82f6','#ec4899']
-            const col = DEST_COLORS[centreCounter % DEST_COLORS.length]
-            centreCounter++
-
-            const checkinDisplay = fmtDate(c.checkinNextDay && c.checkinDate ? addDays(c.checkinDate, 1) : c.checkinDate)
-
-            return (
-              <div key={`stay-${eventIndex}`} style={{marginBottom:'20px',borderLeft:`3px solid ${col}`,paddingLeft:'14px'}}>
-                <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'10px'}}>
-                  <div style={{width:'22px',height:'22px',borderRadius:'50%',background:col,color:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:'11px',fontWeight:'700',flexShrink:0}}>{centreCounter}</div>
-                  <div style={{fontWeight:'700',fontSize:'14px',color:'#1a3a5c'}}>{c.destination || `Centre ${centreCounter}`}</div>
-                  <div style={{fontSize:'12px',color:'#888'}}>· {c.nights} nights</div>
-                </div>
-                <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px',border:'1px solid #e5e7eb',marginBottom:'10px'}}>
-                  <tbody>
-                    {[['Hotel', c.hotel, 'Meal Plan', c.boardBasis], ['Room', c.roomType || 'To be confirmed', 'Check-In', checkinDisplay]].map(([l1, v1, l2, v2], j) => (
-                      <tr key={j} style={{background: j % 2 === 0 ? '#f8f9fb' : 'white'}}>
-                        <td style={{padding:'7px 10px',fontWeight:'600',width:'90px',fontSize:'11px',color:'#555'}}>{l1}</td><td style={{padding:'7px 10px'}}>{v1}</td>
-                        <td style={{padding:'7px 10px',fontWeight:'600',width:'80px',fontSize:'11px',color:'#555'}}>{l2}</td><td style={{padding:'7px 10px'}}>{v2}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )
-          } else if (event.type === 'flights') {
-            return (
-              <div key={`flights-${eventIndex}`} style={{marginBottom:'10px'}}>
-                <div style={{fontWeight:'700',marginBottom:'6px',fontSize:'12px',color:'#1a3a5c'}}>{event.title}</div>
-                <table style={{width:'100%',borderCollapse:'collapse',fontSize:'11px',marginBottom:'6px'}}>
-                  <thead><tr style={{background:'#1a3a5c',color:'white'}}>{['Date','Departs','Arrives','Airline','Route'].map(h=><th key={h} style={{padding:'5px 8px',textAlign:'left',fontWeight:'500',fontSize:'10px'}}>{h}</th>)}</tr></thead>
-                  <tbody>{event.legs?.map((f: FlightLeg, j: number) => (
-                    <tr key={f.id} style={{background: j % 2 === 0 ? '#f8f9fb' : 'white', borderBottom:'1px solid #eee'}}>
-                      <td style={{padding:'5px 8px'}}>{fmtDate(f.date)}</td>
-                      <td style={{padding:'5px 8px',fontFamily:'monospace'}}>{f.depart_time || '—'}</td>
-                      <td style={{padding:'5px 8px',fontFamily:'monospace'}}>{f.arrival_time || '—'}{f.overnight ? ' (+1)' : ''}</td>
-                      <td style={{padding:'5px 8px'}}>{f.airline}</td>
-                      <td style={{padding:'5px 8px',fontWeight:'500'}}>{f.from} → {f.to}</td>
-                    </tr>
-                  ))}</tbody>
-                </table>
-              </div>
-            )
-          }
-          return null
-        })
-      })()}
-    </div>
-  )
-
-  // Build 4 templates
-  const multiDesc=isMulti?`a multi-centre holiday across ${orderedCentres.map((c:Centre)=>c.destination).filter(Boolean).join(', ')}`:`a luxury holiday at ${hotelOptions[0]?.hotel||'the resort'}`
-  const singleHotelName=hotelOptions[0]?.hotel||'the resort'
-
-  const T1=()=>(
-    <div style={{background:'white',color:'#333',fontFamily:'Arial,sans-serif',fontSize:'14px',lineHeight:'1.6'}}>
-      <EHeader/>
-      <div style={{padding:'28px 32px'}}>
-        <EMeta/>
-        <p style={{marginBottom:'8px'}}><strong>Dear {firstName},</strong></p>
-        <p style={{marginBottom:'18px',fontSize:'15px',lineHeight:'1.8',color:'#1a3a5c',fontStyle:'italic',borderLeft:'3px solid #c9963a',paddingLeft:'14px'}}>
-          {isMulti?`Imagine the perfect journey — the glamour of ${orderedCentres[0]?.destination||'your first destination'}, then the turquoise waters and warm sands of Mauritius. This is the holiday I've crafted for you.`:`Imagine waking up to the sound of the Indian Ocean, stepping onto your private terrace as the Mauritian sun rises over a turquoise lagoon. This is the holiday I've crafted for you.`}
-        </p>
-        <p style={{marginBottom:'18px'}}>Thank you for entrusting us with your {isMulti?'dream multi-centre holiday':'dream holiday to Mauritius'}. I've personally curated this quote for you — {isMulti?`a carefully planned itinerary across ${orderedCentres.map((c:Centre)=>c.destination).filter(Boolean).join(' and ')}`:`selecting ${singleHotelName} because I believe it perfectly matches what you're looking for`}.</p>
-        <ETravellers/>
-        {isMulti?<MultiCentreBlocks/>:hotelOptions.map((o:HotelOption,i:number)=><SingleHotelBlock key={o.id} option={o} index={i} showLabel={hotelOptions.length>1}/>)}
-        <EServices/>
-        <EPrice/>
-        <ECredentials/>
-        <EContact/>
-        <EDeposit/>
-        <ESignature/>
-      </div>
-    </div>
-  )
-  const T2=()=>(
-    <div style={{background:'white',color:'#333',fontFamily:'Arial,sans-serif',fontSize:'14px',lineHeight:'1.6'}}>
-      <EHeader/>
-      <div style={{padding:'28px 32px'}}>
-        <EMeta/>
-        <p style={{marginBottom:'8px'}}><strong>Dear {firstName},</strong></p>
-        <p style={{marginBottom:'14px'}}>My name is Samir Abattouy. For over 25 years I have specialised exclusively in {isMulti?'luxury long-haul holidays including Mauritius':'Mauritius'} — I have personally visited the island many times, staying at over 40 resorts, and have arranged thousands of holidays for discerning travellers. When I prepare a quote, it reflects genuine expertise.</p>
-        <p style={{marginBottom:'18px'}}>Having considered your requirements carefully, I have prepared {isMulti?`a bespoke multi-centre itinerary — ${orderedCentres.map((c:Centre)=>c.destination).filter(Boolean).join(' followed by ')}`:`this quote for ${singleHotelName}`}. Please find the full details below.</p>
-        <ETravellers/>
-        {isMulti?<MultiCentreBlocks/>:hotelOptions.map((o:HotelOption,i:number)=><SingleHotelBlock key={o.id} option={o} index={i} showLabel={hotelOptions.length>1}/>)}
-        <EServices/>
-        <EPrice/>
-        <ECredentials/>
-        <EContact/>
-        <EDeposit/>
-        <ESignature/>
-      </div>
-    </div>
-  )
-  const T3=()=>(
-    <div style={{background:'white',color:'#333',fontFamily:'Arial,sans-serif',fontSize:'14px',lineHeight:'1.6'}}>
-      <EHeader/>
-      <div style={{padding:'28px 32px'}}>
-        <EMeta/>
-        <p style={{marginBottom:'8px'}}><strong>Dear {firstName},</strong></p>
-        <div style={{background:'#fff4e5',border:'1px solid #f0a830',borderRadius:'7px',padding:'12px 16px',marginBottom:'18px',fontSize:'13px'}}>
-          <strong style={{color:'#c07000'}}>Important:</strong> This quote is based on live availability. Prices and room availability can change without notice — we recommend confirming at your earliest convenience.
-        </div>
-        <p style={{marginBottom:'18px'}}>Your complete {isMulti?'multi-centre holiday':'holiday'} quote is ready — everything is in place. All we need to secure your dates is a 10% deposit today.</p>
-        <ETravellers/>
-        {isMulti?<MultiCentreBlocks/>:hotelOptions.map((o:HotelOption,i:number)=><SingleHotelBlock key={o.id} option={o} index={i} showLabel={hotelOptions.length>1}/>)}
-        <EServices/>
-        <EPrice/>
-        <div style={{background:'#f0faf0',border:'1px solid #80c080',borderRadius:'7px',padding:'13px 16px',marginBottom:'18px',fontSize:'13px'}}>
-          <strong style={{color:'#2d6a2d'}}>How to Confirm Today</strong>
-          <ol style={{margin:'7px 0 0 16px',lineHeight:'2',color:'#444'}}>
-            <li>Call <strong>{CONTACT.direct}</strong> or reply to this email</li>
-            <li>Pay your 10% deposit of <strong>£{depositAmt}</strong> by card or bank transfer</li>
-            <li>Receive your booking confirmation and ATOL certificate within 24 hours</li>
-          </ol>
-        </div>
-        <ECredentials/>
-        <EContact/>
-        <ESignature/>
-      </div>
-    </div>
-  )
-  const T4=()=>(
-    <div style={{background:'white',color:'#333',fontFamily:'Arial,sans-serif',fontSize:'14px',lineHeight:'1.6'}}>
-      <EHeader/>
-      <div style={{padding:'28px 32px'}}>
-        <EMeta/>
-        <p style={{marginBottom:'8px'}}><strong>Dear {firstName},</strong></p>
-        <p style={{marginBottom:'14px',fontSize:'15px',lineHeight:'1.8'}}>What follows is not an off-the-shelf package. This is a personally curated {isMulti?`multi-centre itinerary — ${orderedCentres.map((c:Centre)=>c.destination).filter(Boolean).join(' and ')} — `:'Mauritius holiday '}prepared exclusively for you by our senior Indian Ocean specialist.</p>
-        <ETravellers/>
-        {isMulti?<MultiCentreBlocks/>:hotelOptions.map((o:HotelOption,i:number)=><SingleHotelBlock key={o.id} option={o} index={i} showLabel={hotelOptions.length>1}/>)}
-        <EServices/>
-        <EPrice/>
-        <div style={{background:'#1a3a5c',color:'white',borderRadius:'9px',padding:'16px 20px',marginBottom:'18px',fontSize:'12px'}}>
-          <div style={{color:'#c9963a',fontWeight:'700',marginBottom:'9px',fontSize:'13px'}}>Your Dedicated Service Promise</div>
-          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'9px'}}>
-            {[['Personal Consultant','Samir handles your booking personally from enquiry to return'],['Airport Representative','Our team greets you on arrival'],['24/7 In-Resort Support','Direct line to us throughout your holiday'],['Full Financial Protection','ABTA · IATA · ATOL 5744 — fully safeguarded']].map(([t,d])=>(
-              <div key={t}><div style={{color:'#c9963a',fontWeight:'600',marginBottom:'2px',fontSize:'11px'}}>{t}</div><div style={{color:'rgba(255,255,255,0.7)',fontSize:'11px',lineHeight:'1.5'}}>{d}</div></div>
-            ))}
-          </div>
-        </div>
-        <EContact/>
-        <EDeposit/>
-        <ESignature/>
-      </div>
-    </div>
-  )
-
-  const templates={1:<T1/>,2:<T2/>,3:<T3/>,4:<T4/>}
-
-  // Custom template renderer
-  const CustomTemplateView=({ct}:{ct:any})=>(
-    <div style={{background:'white',color:'#333',fontFamily:'Arial,sans-serif',fontSize:'14px',lineHeight:'1.6'}}>
-      <EHeader/>
-      <div style={{padding:'28px 32px'}}>
-        <EMeta/>
-        <p style={{marginBottom:'8px'}}><strong>Dear {firstName},</strong></p>
-        {ct.opening_hook&&<p style={{marginBottom:'18px',whiteSpace:'pre-wrap'}}>{ct.opening_hook.replace(/\[Client Name\]/g,firstName).replace(/\[Hotel Name\]/g,isMulti?orderedCentres[0]?.hotel||'the resort':hotelOptions[0]?.hotel||'the resort')}</p>}
-        {ct.urgency_notice&&(
-          <div style={{background:'#fff4e5',border:'1px solid #f0a830',borderRadius:'7px',padding:'12px 16px',marginBottom:'18px',fontSize:'13px'}}>
-            <strong style={{color:'#c07000'}}>⚠ </strong>{ct.urgency_notice}
-          </div>
-        )}
-        <ETravellers/>
-        {isMulti?<MultiCentreBlocks/>:hotelOptions.map((o:HotelOption,i:number)=><SingleHotelBlock key={o.id} option={o} index={i} showLabel={hotelOptions.length>1}/>)}
-        <EServices/>
-        <EPrice/>
-        {ct.why_choose_us&&(
-          <div style={{background:'#f8f8f6',borderRadius:'7px',padding:'14px 18px',marginBottom:'18px',fontSize:'12px'}}>
-            <div style={{fontWeight:'bold',marginBottom:'8px',color:'#1a3a5c'}}>Why Choose Us?</div>
-            <div style={{whiteSpace:'pre-wrap',color:'#555'}}>{ct.why_choose_us}</div>
-          </div>
-        )}
-        <EContact/>
-        {ct.closing_cta&&<p style={{marginBottom:'18px',whiteSpace:'pre-wrap',fontSize:'13px'}}>{ct.closing_cta}</p>}
-        <EDeposit/>
-        <ESignature/>
-      </div>
-    </div>
-  )
-
-  const activeCustomData = activeCustom ? customTemplates?.find((t:any)=>t.id===activeCustom) : null
+  const previewHtml=generateQuoteHtml(htmlParams)
 
   return(
     <div className="modal-backdrop" onClick={e=>{if(e.target===e.currentTarget)onClose()}}>
-      <div style={{background:'var(--surface)',borderRadius:'16px',width:'100%',maxWidth:'800px',maxHeight:'94vh',overflow:'hidden',display:'flex',flexDirection:'column',boxShadow:'var(--shadow-lg)'}}>
+      <div style={{background:'var(--surface)',borderRadius:'16px',width:'100%',maxWidth:'760px',maxHeight:'94vh',overflow:'hidden',display:'flex',flexDirection:'column',boxShadow:'var(--shadow-lg)'}}>
+        {/* Header */}
         <div style={{padding:'14px 22px',borderBottom:'1px solid var(--border)',display:'flex',justifyContent:'space-between',alignItems:'center',flexShrink:0}}>
-          <div style={{fontFamily:'Fraunces,serif',fontSize:'18px',fontWeight:'300'}}>Email Preview — {quoteRef}</div>
+          <div style={{fontFamily:'Fraunces,serif',fontSize:'17px',fontWeight:'300'}}>Quote Preview — {quoteRef}</div>
           <div style={{display:'flex',gap:'8px',alignItems:'center'}}>
-            <button className="btn btn-cta btn-sm" onClick={copyEmail}>📋 Copy to Clipboard</button>
+            <button className="btn btn-cta btn-sm" onClick={downloadPdf} disabled={!!downloading}
+              title="Opens print-ready version — save as PDF from the print dialog">
+              {downloading==='pdf'?'Opening…':'↓ Download PDF'}
+            </button>
+            <button className="btn btn-secondary btn-sm" onClick={downloadEmail} disabled={!!downloading}
+              title="Downloads Outlook-compatible HTML file — open in browser then paste into email">
+              {downloading==='email'?'Saving…':'✉ Download Email HTML'}
+            </button>
             <button className="btn btn-ghost btn-sm" onClick={onClose}>Close</button>
           </div>
         </div>
-        <div style={{padding:'10px 22px',borderBottom:'1px solid var(--border)',display:'flex',gap:'6px',flexShrink:0,background:'var(--bg-tertiary)',alignItems:'center',flexWrap:'wrap'}}>
-          <span style={{fontSize:'11.5px',color:'var(--text-muted)',marginRight:'4px'}}>Template:</span>
+        {/* Tone selector */}
+        <div style={{padding:'8px 22px',borderBottom:'1px solid var(--border)',display:'flex',gap:'6px',flexShrink:0,background:'var(--bg-tertiary)',alignItems:'center',flexWrap:'wrap'}}>
+          <span style={{fontSize:'11px',color:'var(--text-muted)',marginRight:'4px',fontWeight:'600',textTransform:'uppercase',letterSpacing:'0.06em'}}>Tone:</span>
           {TEMPLATES.map(t=>(
             <button key={t.id} onClick={()=>{setActiveTemplate(t.id as 1|2|3|4);setActiveCustom(null)}}
               style={{padding:'4px 12px',borderRadius:'20px',border:'1.5px solid',fontSize:'11.5px',cursor:'pointer',fontFamily:'Outfit,sans-serif',
@@ -1650,8 +2114,14 @@ function EmailPreviewModal({deal,quoteMode,hotelOptions,centres,adults,children,
             </button>
           ))}
         </div>
-        <div style={{overflow:'auto',flex:1,padding:'18px'}}>
-          <div ref={emailRef}>{activeCustomData?<CustomTemplateView ct={activeCustomData}/>:templates[activeTemplate]}</div>
+        {/* Preview */}
+        <div style={{overflow:'auto',flex:1}}>
+          <iframe srcDoc={previewHtml} style={{width:'100%',border:'none',minHeight:'600px'}}
+            title="Quote Preview"
+            onLoad={e=>{
+              const f=e.currentTarget,doc=f.contentDocument||f.contentWindow?.document
+              if(doc?.body) f.style.height=(doc.body.scrollHeight+40)+'px'
+            }}/>
         </div>
       </div>
     </div>

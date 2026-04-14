@@ -1,4 +1,5 @@
 import { supabase } from '@/lib/supabase'
+import { supabaseAdmin } from '@/lib/supabase-admin'
 import { dbMutate } from '@/lib/api-client'
 
 // ── TYPES ────────────────────────────────────────────────────
@@ -114,8 +115,10 @@ export type BookingCommission = {
 export type BookingProfitEvent = {
   id: number
   booking_id: number
-  type: 'original' | 'amendment'
+  type: 'original' | 'amendment' | 'recognition' | 'split_correction' | 'cancellation_retained_deposit'
   profit_delta: number
+  commissionable: boolean
+  recognition_period?: string | null  // 'YYYY-MM' — payroll period this event belongs to
   created_at: string
 }
 
@@ -147,7 +150,15 @@ export type OwnershipHistory = {
   id: number
   booking_id: number
   changed_by: number | null
-  change_type: 'initial_assignment' | 'manager_reassignment' | 'claim_approved' | 'claim_rejected' | 'repeat_client_enforcement'
+  change_type:
+    | 'initial_assignment'
+    | 'manager_reassignment'
+    | 'claim_approved'
+    | 'claim_rejected'
+    | 'repeat_client_enforcement'
+    | 'manual_split'
+    | 'manual_unsplit'
+    | 'manual_split_replaced'
   previous_primary_staff_id: number | null
   new_primary_staff_id: number | null
   commission_snapshot: Record<string, unknown>[] | null
@@ -373,17 +384,31 @@ export async function replaceBookingCommissions(
   bookingId: number,
   rows: Omit<BookingCommission, 'id' | 'created_at'>[],
 ): Promise<BookingCommission[]> {
-  const { error: deleteError } = await supabase
+  if (rows.length === 0) throw new Error('replaceBookingCommissions: rows must not be empty')
+
+  // booking_commissions has RLS that blocks anonymous writes.
+  // This function is only called server-side (from API routes), so we use the
+  // service-role client to bypass RLS. Fall back to anon if admin is unavailable.
+  const client = supabaseAdmin ?? supabase
+
+  // Upsert all new rows in a single statement. The AFTER STATEMENT trigger that
+  // enforces sum = 100 fires once with all rows in place, not after a DELETE
+  // (where sum = 0 would violate the constraint).
+  const { data, error } = await client
+    .from('booking_commissions')
+    .upsert(rows, { onConflict: 'booking_id,staff_id' })
+    .select('*')
+  if (error) throw error
+
+  // Remove stale rows (staff no longer in the new split) — sum remains 100.
+  const newStaffIds = rows.map(r => r.staff_id)
+  const { error: deleteError } = await client
     .from('booking_commissions')
     .delete()
     .eq('booking_id', bookingId)
+    .not('staff_id', 'in', `(${newStaffIds.join(',')})`)
   if (deleteError) throw deleteError
 
-  const { data, error } = await supabase
-    .from('booking_commissions')
-    .insert(rows)
-    .select('*')
-  if (error) throw error
   return (data || []) as BookingCommission[]
 }
 
@@ -396,14 +421,30 @@ export async function getBookingProfitEvents(bookingId: number): Promise<Booking
   return (data || []) as BookingProfitEvent[]
 }
 
-export async function insertBookingProfitEvent(values: Omit<BookingProfitEvent, 'id' | 'created_at'>) {
+export async function insertBookingProfitEvent(
+  values: Omit<BookingProfitEvent, 'id' | 'created_at'>,
+): Promise<BookingProfitEvent> {
+  const { commissionable, recognition_period, ...rest } = values
+
   const { data, error } = await supabase
     .from('booking_profit_events')
-    .insert(values)
+    .insert({ ...rest })
     .select('*')
     .single()
   if (error) throw error
-  return data as BookingProfitEvent
+
+  // Set commissionable and recognition_period via service-role client (bypasses RLS).
+  if (commissionable || recognition_period) {
+    await (supabaseAdmin ?? supabase)
+      .from('booking_profit_events')
+      .update({
+        ...(commissionable ? { commissionable: true } : {}),
+        ...(recognition_period ? { recognition_period } : {}),
+      })
+      .eq('id', data.id)
+  }
+
+  return { ...data, commissionable: commissionable ?? false, recognition_period: recognition_period ?? null } as BookingProfitEvent
 }
 
 export async function insertProfitAllocations(
@@ -414,6 +455,80 @@ export async function insertProfitAllocations(
     .from('booking_profit_allocations')
     .insert(rows)
   if (error) throw error
+}
+
+// Creates a split_correction event with profit_delta=0 and allocation rows that
+// adjust each staff member's net share to match the new commission split.
+// Called when a claim is approved on a booking that was already fully paid —
+// existing allocation rows captured the old split, so corrections are needed.
+export async function createSplitCorrectionAllocations(
+  bookingId: number,
+  newSplit: { staff_id: number; share_percent: number }[],
+): Promise<void> {
+  // Get all existing allocations for this booking to compute current net per staff
+  const { data: existingEvents } = await supabase
+    .from('booking_profit_events')
+    .select('id')
+    .eq('booking_id', bookingId)
+  const eventIds = (existingEvents || []).map((e: { id: number }) => e.id)
+  if (eventIds.length === 0) return
+
+  const { data: existingAllocs } = await supabase
+    .from('booking_profit_allocations')
+    .select('staff_id, profit_share')
+    .in('profit_event_id', eventIds)
+
+  // Sum existing net profit_share per staff member
+  const existingByStaff = new Map<number, number>()
+  ;(existingAllocs || []).forEach((a: { staff_id: number; profit_share: number }) => {
+    existingByStaff.set(a.staff_id, (existingByStaff.get(a.staff_id) ?? 0) + Number(a.profit_share))
+  })
+
+  // Total realized profit = sum of all existing allocations for the primary staff
+  // (same as sum of all unique profit values since pre-split there's one staff at 100%)
+  const totalRealized = [...existingByStaff.values()].reduce((sum, v) => sum + v, 0)
+  if (totalRealized <= 0) return
+
+  // Calculate what each staff member in the new split SHOULD have
+  const shouldHave = new Map<number, number>()
+  newSplit.forEach(s => {
+    shouldHave.set(s.staff_id, Number((totalRealized * s.share_percent / 100).toFixed(2)))
+  })
+
+  // Compute corrections: shouldHave - existingNet
+  const corrections: { staff_id: number; share_percent: number; correction: number }[] = []
+  const allStaffIds = new Set([...existingByStaff.keys(), ...shouldHave.keys()])
+  allStaffIds.forEach(staffId => {
+    const has = existingByStaff.get(staffId) ?? 0
+    const should = shouldHave.get(staffId) ?? 0
+    const correction = Number((should - has).toFixed(2))
+    if (Math.abs(correction) < 0.01) return // no meaningful correction needed
+    const split = newSplit.find(s => s.staff_id === staffId)
+    corrections.push({ staff_id: staffId, share_percent: split?.share_percent ?? 0, correction })
+  })
+
+  if (corrections.length === 0) return
+
+  // Create the split_correction event (profit_delta = 0, excluded from delta chain).
+  // recognition_period = current month — the correction is attributed to when it was made.
+  const now = new Date()
+  const correctionPeriod = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+  const event = await insertBookingProfitEvent({
+    booking_id: bookingId,
+    type: 'split_correction',
+    profit_delta: 0,
+    commissionable: true,
+    recognition_period: correctionPeriod,
+  })
+
+  await insertProfitAllocations(
+    corrections.map(c => ({
+      profit_event_id: event.id,
+      staff_id: c.staff_id,
+      share_percent: c.share_percent,
+      profit_share: c.correction,
+    }))
+  )
 }
 
 // ── PASSENGER OPERATIONS ──────────────────────────────────────
