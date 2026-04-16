@@ -1870,7 +1870,7 @@ export default function NewQuotePage(){
                 flightNet: String(option.flightNet || ''),
                 transNet: String(option.transNet || ''),
               }, nextSharedDefaults))
-            const nextDefaultFlightOptionId = nextFlightOptions.some(option => option.id === builderState.defaultFlightOptionId)
+            const nextDefaultFlightOptionId = nextFlightOptions.some((option: FlightOption) => option.id === builderState.defaultFlightOptionId)
               ? builderState.defaultFlightOptionId
               : nextFlightOptions[0]?.id || ''
             const nextAccommodationOptions = (builderState.accommodationOptions?.length > 0 ? builderState.accommodationOptions : [newAccOption(nextSharedDefaults)])

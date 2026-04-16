@@ -21,6 +21,8 @@ type DealAction = {
   urgency: ActionUrgency
   days_overdue: number
   days_until: number
+  next_activity_type?: string | null
+  next_activity_note?: string | null
   clients?: { first_name: string; last_name: string; phone?: string; email?: string }
 }
 
@@ -852,10 +854,10 @@ export default function TodayPage() {
                                 >
                                   {copied === deal.id ? '✓ Copied' : '📋 Copy Number'}
                                 </button>
-                                <a href={buildWhatsApp(client.phone, clientName, deal.next_activity_type, deal.title)} target="_blank" rel="noreferrer" style={{ ...smallLinkStyle, border: '1.5px solid #25d366', background: '#e8f9ef', color: '#1a9e52' }}>💬 WhatsApp</a>
+                                <a href={buildWhatsApp(client.phone, clientName, deal.next_activity_type ?? null, deal.title)} target="_blank" rel="noreferrer" style={{ ...smallLinkStyle, border: '1.5px solid #25d366', background: '#e8f9ef', color: '#1a9e52' }}>💬 WhatsApp</a>
                               </>
                             )}
-                            {client?.email && <a href={buildMailto(client.email, clientName, deal.next_activity_type, deal.title)} style={smallLinkStyle}>📧 Email</a>}
+                            {client?.email && <a href={buildMailto(client.email, clientName, deal.next_activity_type ?? null, deal.title)} style={smallLinkStyle}>📧 Email</a>}
                             <div style={{ flex: 1 }} />
                             {[1, 3, 7].map(days => (
                               <button key={days} onClick={() => snoozeDealAction(deal, days)} disabled={isActive} style={tinyButtonStyle}>
@@ -886,7 +888,7 @@ export default function TodayPage() {
                   {data.upcoming.map(deal => {
                     const client = deal.clients
                     const clientName = client ? `${client.first_name} ${client.last_name}` : 'Unknown'
-                    const dueDate = new Date(deal.next_activity_at).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })
+                    const dueDate = new Date(deal.due_date).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })
                     return (
                       <div key={deal.id} className="card" style={{ padding: '14px 18px', display: 'flex', justifyContent: 'space-between', gap: '16px' }}>
                         <div>
@@ -902,8 +904,8 @@ export default function TodayPage() {
                           </div>
                         </div>
                         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                          {client?.phone && <a href={buildWhatsApp(client.phone, clientName, deal.next_activity_type, deal.title)} target="_blank" rel="noreferrer" style={{ ...smallLinkStyle, border: '1.5px solid #25d366', background: '#e8f9ef', color: '#1a9e52' }}>💬 WhatsApp</a>}
-                          {client?.email && <a href={buildMailto(client.email, clientName, deal.next_activity_type, deal.title)} style={smallLinkStyle}>📧 Email</a>}
+                          {client?.phone && <a href={buildWhatsApp(client.phone, clientName, deal.next_activity_type ?? null, deal.title)} target="_blank" rel="noreferrer" style={{ ...smallLinkStyle, border: '1.5px solid #25d366', background: '#e8f9ef', color: '#1a9e52' }}>💬 WhatsApp</a>}
+                          {client?.email && <a href={buildMailto(client.email, clientName, deal.next_activity_type ?? null, deal.title)} style={smallLinkStyle}>📧 Email</a>}
                           <Link href={`/deals/${deal.id}`}><button style={smallButtonStyle}>Open deal →</button></Link>
                         </div>
                       </div>
