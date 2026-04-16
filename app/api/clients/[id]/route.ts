@@ -6,9 +6,10 @@ import { getAccessContext } from '@/lib/access'
 // GET /api/clients/[id] - Get a specific client
 export async function GET(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const { id } = await params
     const token = request.headers.get('authorization')?.replace('Bearer ', '') ?? null
     const { currentStaff } = await getAccessContext(token)
 
@@ -16,7 +17,7 @@ export async function GET(
       return NextResponse.json({ success: false, message: 'Unauthorized' }, { status: 401 })
     }
 
-    const clientId = parseInt(params.id)
+    const clientId = parseInt(id)
     if (isNaN(clientId)) {
       return NextResponse.json({ success: false, message: 'Invalid client ID' }, { status: 400 })
     }
@@ -43,9 +44,10 @@ export async function GET(
 // PUT /api/clients/[id] - Update a specific client
 export async function PUT(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const { id } = await params
     const token = request.headers.get('authorization')?.replace('Bearer ', '') ?? null
     const { currentStaff } = await getAccessContext(token)
 
@@ -53,7 +55,7 @@ export async function PUT(
       return NextResponse.json({ success: false, message: 'Unauthorized' }, { status: 401 })
     }
 
-    const clientId = parseInt(params.id)
+    const clientId = parseInt(id)
     if (isNaN(clientId)) {
       return NextResponse.json({ success: false, message: 'Invalid client ID' }, { status: 400 })
     }

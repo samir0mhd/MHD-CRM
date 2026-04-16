@@ -3,10 +3,11 @@ import { loadPricingVersionData } from '@/lib/modules/pricing/pricing.service'
 
 export async function GET(
   request: Request,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const data = await loadPricingVersionData(Number(params.id))
+    const { id } = await params
+    const data = await loadPricingVersionData(Number(id))
     return NextResponse.json({ data })
   } catch (error) {
     console.error('Error loading pricing version data:', error)

@@ -3,11 +3,12 @@ import * as lostService from '@/lib/modules/lost/lost.service'
 
 export async function PATCH(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const { id } = await params
     const body = await request.json()
-    const deal = { id: Number(params.id) }
+    const deal = { id: Number(id) }
 
     if (body.action === 'reopen') {
       const result = await lostService.reopenLostDeal(deal)

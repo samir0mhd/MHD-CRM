@@ -3,11 +3,12 @@ import * as templateService from '@/lib/modules/templates/template.service'
 
 export async function PATCH(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const { id } = await params
     const body = await request.json()
-    const { error } = await templateService.updateTemplate(Number(params.id), body)
+    const { error } = await templateService.updateTemplate(Number(id), body)
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 400 })
     }
@@ -20,10 +21,11 @@ export async function PATCH(
 
 export async function DELETE(
   _request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { error } = await templateService.removeTemplate(Number(params.id))
+    const { id } = await params
+    const { error } = await templateService.removeTemplate(Number(id))
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 400 })
     }

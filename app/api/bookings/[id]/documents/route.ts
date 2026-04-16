@@ -3,11 +3,12 @@ import { loadBookingWithAllData, markDocumentIssued } from '@/lib/modules/bookin
 
 export async function POST(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const { id } = await params
     const { docId } = await request.json()
-    const { tasks } = await loadBookingWithAllData(params.id)
+    const { tasks } = await loadBookingWithAllData(id)
     const result = await markDocumentIssued(docId, tasks)
     return NextResponse.json(result, { status: result.success ? 200 : 400 })
   } catch (error) {
