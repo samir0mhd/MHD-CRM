@@ -7,16 +7,27 @@ import { useAuth } from '../providers'
 
 // --- Types (same contract as /api/today) ---
 
+type ActionUrgency = 'overdue' | 'today' | 'coming_up'
+
 type DealAction = {
   id: number
   title: string
   stage: string
   deal_value: number
-  next_activity_at: string
-  next_activity_type: string | null
+  action_type: string
+  action_note: string
+  due_date: string
   priority_score: number
+  urgency: ActionUrgency
   days_overdue: number
+  days_until: number
   clients?: { first_name: string; last_name: string; phone?: string; email?: string }
+}
+
+type ActionSection = {
+  key: ActionUrgency
+  label: string
+  items: DealAction[]
 }
 
 type BalanceAlert = {
@@ -74,6 +85,7 @@ type BookingTaskAlert = {
 }
 
 type TodayData = {
+  actionSections: ActionSection[]
   actions: DealAction[]
   upcoming: DealAction[]
   balanceAlerts: BalanceAlert[]
@@ -113,20 +125,25 @@ const STAGE_COLORS: Record<string, string> = {
 
 const ACT_ICONS: Record<string, string> = {
   CALL: '📞',
-  EMAIL: '📧',
+  EMAIL: '✉️',
   WHATSAPP: '💬',
   NOTE: '📝',
   MEETING: '🤝',
-  FOLLOW_UP: '🔔',
+  FOLLOW_UP: '🔁',
+  DECISION_PUSH: '⚡',
 }
 
-const ACT_LABELS: Record<string, string> = {
-  CALL: 'Call client',
-  EMAIL: 'Email client',
-  WHATSAPP: 'WhatsApp client',
-  NOTE: 'Add note',
-  MEETING: 'Schedule meeting',
-  FOLLOW_UP: 'Follow up',
+// Safe icon lookup — normalises case, never returns undefined
+function actIcon(type: string | null | undefined): string {
+  if (!type) return '🔁'
+  return ACT_ICONS[type.toUpperCase()] ?? '🔁'
+}
+
+// Readable label for action type — used as fallback when no note exists
+
+function fmtActionLabel(type: string | null | undefined): string {
+  if (!type) return 'Follow up'
+  return type.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
 }
 
 // --- Helpers ---
@@ -216,6 +233,7 @@ const smallLinkStyle = {
 // --- Page ---
 
 const EMPTY_DATA: TodayData = {
+  actionSections: [],
   actions: [],
   upcoming: [],
   balanceAlerts: [],
@@ -248,6 +266,7 @@ export default function TodayPage() {
       if (!res.ok) throw new Error('Failed to load today data')
       const next = (await res.json()) as TodayData
       setData({
+        actionSections: next.actionSections ?? [],
         actions: next.actions ?? [],
         upcoming: next.upcoming ?? [],
         balanceAlerts: next.balanceAlerts ?? [],
@@ -316,15 +335,11 @@ export default function TodayPage() {
       const res = await authedFetch(`/api/today/deals/${deal.id}/complete`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ stage: STAGE_LABELS[deal.stage] || deal.stage, next_activity_type: deal.next_activity_type }),
+        body: JSON.stringify({ stage: STAGE_LABELS[deal.stage] || deal.stage, action_type: deal.action_type }),
       })
       const result = await res.json().catch(() => null)
       if (!res.ok) throw new Error(result?.error || 'Could not complete action')
-      setData(prev => ({
-        ...prev,
-        actions: prev.actions.filter(d => d.id !== deal.id),
-        upcoming: prev.upcoming.filter(d => d.id !== deal.id),
-      }))
+      removeDealAction(deal.id)
       showToast('✓ Action completed')
       void load(true)
     } catch (err) {
@@ -345,11 +360,7 @@ export default function TodayPage() {
       })
       const result = await res.json().catch(() => null)
       if (!res.ok) throw new Error(result?.error || 'Could not snooze action')
-      setData(prev => ({
-        ...prev,
-        actions: prev.actions.filter(d => d.id !== deal.id),
-        upcoming: prev.upcoming.filter(d => d.id !== deal.id),
-      }))
+      removeDealAction(deal.id)
       showToast(`Snoozed ${days} day${days > 1 ? 's' : ''}`)
       void load(true)
     } catch (err) {
@@ -363,6 +374,16 @@ export default function TodayPage() {
     navigator.clipboard.writeText(phone)
     setCopied(id)
     window.setTimeout(() => setCopied(null), 2000)
+  }
+
+  function removeDealAction(dealId: number) {
+    setData(prev => ({
+      ...prev,
+      actionSections: prev.actionSections.map(section => ({
+        ...section,
+        items: section.items.filter(item => item.id !== dealId),
+      })),
+    }))
   }
 
   // --- Display sections (single derivation, no duplicate rendering) ---
@@ -380,8 +401,20 @@ export default function TodayPage() {
     data.ticketAlerts.filter(t => t.days_until > (win3 ? 3 : 0)).length +
     data.departureAlerts.filter(d => d.days_until > (win3 ? 3 : 1)).length
 
+  const actionSections = data.actionSections.length > 0
+    ? data.actionSections
+    : [
+        { key: 'overdue' as const, label: 'Overdue', items: [] },
+        { key: 'today' as const, label: 'Today', items: [] },
+        { key: 'coming_up' as const, label: 'Coming Up', items: [] },
+      ]
+  const allActionItems = actionSections.flatMap(section => section.items)
+  const overdueActionCount = actionSections.find(section => section.key === 'overdue')?.items.length ?? 0
+  const todayActionCount = actionSections.find(section => section.key === 'today')?.items.length ?? 0
+  const comingUpActionCount = actionSections.find(section => section.key === 'coming_up')?.items.length ?? 0
+
   // Only count what is actually rendered — drives the empty state
-  const totalVisible = tasksDue.length + opsItems.length + data.actions.length + data.upcoming.length
+  const totalVisible = tasksDue.length + opsItems.length + allActionItems.length
 
   const today = new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })
 
@@ -395,7 +428,9 @@ export default function TodayPage() {
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
           {isManagerUser && requests.length > 0 && <span style={{ fontSize: '13px', color: '#7c3aed', fontWeight: '600' }}>{requests.length} pending request{requests.length !== 1 ? 's' : ''}</span>}
           {tasksDue.length > 0 && <span style={{ fontSize: '13px', color: 'var(--red)', fontWeight: '600' }}>{tasksDue.length} booking task{tasksDue.length !== 1 ? 's' : ''} due</span>}
-          {data.actions.length > 0 && <span style={{ fontSize: '13px', color: 'var(--amber)', fontWeight: '600' }}>{data.actions.length} follow-up{data.actions.length !== 1 ? 's' : ''} due</span>}
+          {overdueActionCount > 0 && <span style={{ fontSize: '13px', color: 'var(--red)', fontWeight: '600' }}>{overdueActionCount} overdue action{overdueActionCount !== 1 ? 's' : ''}</span>}
+          {todayActionCount > 0 && <span style={{ fontSize: '13px', color: 'var(--amber)', fontWeight: '600' }}>{todayActionCount} due today</span>}
+          {comingUpActionCount > 0 && <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>{comingUpActionCount} coming up</span>}
           <Link href="/pipeline"><button className="btn btn-secondary btn-sm">Pipeline →</button></Link>
         </div>
       </div>
@@ -538,6 +573,131 @@ export default function TodayPage() {
               </section>
             )}
 
+            {allActionItems.length > 0 && (
+              <section>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>
+                  <div style={{ fontFamily: 'Fraunces,serif', fontSize: '19px', fontWeight: '300' }}>Deal Actions</div>
+                  <div style={{ background: 'var(--accent)', color: 'white', borderRadius: '20px', padding: '2px 10px', fontSize: '12px', fontWeight: '700' }}>{allActionItems.length}</div>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                  {actionSections.map(section => (
+                    <div key={section.key}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px' }}>
+                        <div style={{ fontFamily: 'Fraunces,serif', fontSize: '17px', fontWeight: '300' }}>{section.label}</div>
+                        <div
+                          style={{
+                            background: section.key === 'overdue' ? 'var(--red-light)' : section.key === 'today' ? 'var(--amber-light)' : 'var(--bg-secondary)',
+                            color: section.key === 'overdue' ? 'var(--red)' : section.key === 'today' ? '#92400e' : 'var(--text-muted)',
+                            borderRadius: '20px',
+                            padding: '2px 10px',
+                            fontSize: '12px',
+                            fontWeight: '700',
+                          }}
+                        >
+                          {section.items.length}
+                        </div>
+                      </div>
+
+                      {section.items.length === 0 ? (
+                        <div className="card" style={{ padding: '12px 16px', background: 'var(--bg-secondary)', color: 'var(--text-muted)', fontSize: '13px' }}>
+                          No {section.label.toLowerCase()} actions.
+                        </div>
+                      ) : (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                          {section.items.map(deal => {
+                            const client = deal.clients
+                            const clientName = client ? `${client.first_name} ${client.last_name}` : 'Unknown client'
+                            const priority = priorityLabel(deal.priority_score)
+                            const stageCol = STAGE_COLORS[deal.stage] || 'var(--accent)'
+                            const isActive = completingId === `deal-${deal.id}` || completingId === `snooze-${deal.id}`
+                            const isOverdue = deal.urgency === 'overdue'
+                            const isDueToday = deal.urgency === 'today'
+                            const urgencyCopy = isOverdue
+                              ? `${deal.days_overdue} day${deal.days_overdue === 1 ? '' : 's'} overdue`
+                              : isDueToday
+                                ? 'Due today'
+                                : `Due ${fmtDate(deal.due_date)}`
+
+                            return (
+                              <div
+                                key={`${section.key}-${deal.id}`}
+                                className="card"
+                                style={{
+                                  overflow: 'hidden',
+                                  borderLeft: `4px solid ${isOverdue ? 'var(--red)' : isDueToday ? 'var(--amber)' : 'var(--border)'}`,
+                                  background: isDueToday ? '#fff8e7' : undefined,
+                                }}
+                              >
+                                <div style={{ padding: '14px 18px' }}>
+                                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '16px', marginBottom: '10px' }}>
+                                    <div style={{ flex: 1 }}>
+                                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px', flexWrap: 'wrap' }}>
+                                        <span style={{ fontSize: '11px', fontWeight: '700', padding: '2px 8px', borderRadius: '4px', background: priority.bg, color: priority.color }}>{priority.label}</span>
+                                        <span style={{ fontSize: '11px', fontWeight: '600', color: stageCol, background: `${stageCol}18`, padding: '2px 8px', borderRadius: '4px' }}>{STAGE_LABELS[deal.stage] || deal.stage}</span>
+                                        <span
+                                          style={{
+                                            fontSize: '11px',
+                                            fontWeight: '700',
+                                            color: isOverdue ? 'var(--red)' : isDueToday ? '#92400e' : 'var(--text-muted)',
+                                            background: isOverdue ? 'var(--red-light)' : isDueToday ? 'var(--amber-light)' : 'var(--bg-secondary)',
+                                            padding: '2px 8px',
+                                            borderRadius: '4px',
+                                          }}
+                                        >
+                                          {urgencyCopy}
+                                        </span>
+                                      </div>
+                                      <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', marginBottom: '6px' }}>
+                                        <span style={{ fontSize: '16px', flexShrink: 0 }}>{actIcon(deal.action_type)}</span>
+                                        <span style={{ fontSize: '15px', fontWeight: '600', color: isOverdue ? 'var(--red)' : isDueToday ? '#92400e' : 'var(--text-primary)', lineHeight: '1.35' }}>
+                                          {deal.action_note}
+                                        </span>
+                                      </div>
+                                      <div style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: '1.5' }}>
+                                        {clientName} | {deal.title} | {fmtDate(deal.due_date)}
+                                      </div>
+                                    </div>
+                                  </div>
+                                  <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', paddingTop: '10px', borderTop: '1px solid var(--border)' }}>
+                                    {client?.phone && (
+                                      <>
+                                        <button
+                                          onClick={() => copyPhone(client.phone!, deal.id)}
+                                          style={{ padding: '6px 12px', borderRadius: '7px', border: '1.5px solid var(--border)', background: copied === deal.id ? 'var(--green-light)' : 'transparent', color: copied === deal.id ? 'var(--green)' : 'var(--text-secondary)', fontSize: '12px', cursor: 'pointer', fontFamily: 'Outfit,sans-serif' }}
+                                        >
+                                          {copied === deal.id ? 'Copied' : 'Copy Number'}
+                                        </button>
+                                        <a href={buildWhatsApp(client.phone, clientName, deal.action_type, deal.title)} target="_blank" rel="noreferrer" style={{ ...smallLinkStyle, border: '1.5px solid #25d366', background: '#e8f9ef', color: '#1a9e52' }}>WhatsApp</a>
+                                      </>
+                                    )}
+                                    {client?.email && <a href={buildMailto(client.email, clientName, deal.action_type, deal.title)} style={smallLinkStyle}>Email</a>}
+                                    <Link href={`/deals/${deal.id}`}><button style={smallButtonStyle}>Open deal</button></Link>
+                                    <div style={{ flex: 1 }} />
+                                    {[1, 3, 7].map(days => (
+                                      <button key={days} onClick={() => snoozeDealAction(deal, days)} disabled={isActive} style={tinyButtonStyle}>
+                                        +{days}d
+                                      </button>
+                                    ))}
+                                    <button
+                                      onClick={() => completeDealAction(deal)}
+                                      disabled={isActive}
+                                      style={{ padding: '6px 14px', borderRadius: '7px', border: 'none', background: 'var(--green)', color: 'white', fontSize: '12px', cursor: 'pointer', fontFamily: 'Outfit,sans-serif', fontWeight: '600' }}
+                                    >
+                                      {completingId === `deal-${deal.id}` ? '...' : 'Done'}
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+
             {/* ── Operations Radar ── */}
             {(opsItems.length > 0 || opsUpcomingCount > 0) && (
               <section>
@@ -657,21 +817,26 @@ export default function TodayPage() {
                     const isDueToday = deal.days_overdue === 0
                     const isOverdue = deal.days_overdue > 0
                     return (
-                      <div key={deal.id} className="card" style={{ overflow: 'hidden', borderLeft: `3px solid ${stageCol}` }}>
+                      <div key={deal.id} className="card" style={{ overflow: 'hidden', borderLeft: `3px solid ${isOverdue ? 'var(--red)' : isDueToday ? 'var(--amber)' : stageCol}` }}>
                         <div style={{ padding: '14px 18px' }}>
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '8px' }}>
                             <div style={{ flex: 1 }}>
-                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '3px', flexWrap: 'wrap' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px', flexWrap: 'wrap' }}>
                                 <span style={{ fontSize: '11px', fontWeight: '700', padding: '2px 8px', borderRadius: '4px', background: priority.bg, color: priority.color }}>{priority.label}</span>
                                 <span style={{ fontSize: '11px', fontWeight: '600', color: stageCol, background: `${stageCol}18`, padding: '2px 8px', borderRadius: '4px' }}>{STAGE_LABELS[deal.stage] || deal.stage}</span>
-                                {deal.next_activity_type && <span title={ACT_LABELS[deal.next_activity_type] || deal.next_activity_type} style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{ACT_ICONS[deal.next_activity_type]} {deal.next_activity_type.charAt(0) + deal.next_activity_type.slice(1).toLowerCase().replace('_', ' ')}</span>}
-                                {isOverdue && <span style={{ fontSize: '11px', color: 'var(--red)', fontWeight: '600' }}>⚠ {deal.days_overdue}d overdue</span>}
-                                {isDueToday && <span style={{ fontSize: '11px', color: 'var(--amber)', fontWeight: '600' }}>Due today</span>}
+                                {isOverdue && <span style={{ fontSize: '11px', color: 'var(--red)', fontWeight: '700', background: 'var(--red-light)', padding: '2px 8px', borderRadius: '4px' }}>⚠ {deal.days_overdue}d overdue</span>}
+                                {isDueToday && <span style={{ fontSize: '11px', color: 'var(--amber)', fontWeight: '700', background: 'var(--amber-light)', padding: '2px 8px', borderRadius: '4px' }}>Due today</span>}
+                              </div>
+                              <div style={{ display: 'flex', alignItems: 'baseline', gap: '6px', marginBottom: '4px' }}>
+                                <span style={{ fontSize: '15px', flexShrink: 0 }}>{actIcon(deal.next_activity_type)}</span>
+                                <span style={{ fontSize: '14px', fontWeight: '600', color: isOverdue ? 'var(--red)' : isDueToday ? 'var(--amber-dark, #b45309)' : 'var(--text-primary)', lineHeight: '1.3' }}>
+                                  {deal.next_activity_note || fmtActionLabel(deal.next_activity_type)}
+                                </span>
                               </div>
                               <Link href={`/deals/${deal.id}`} style={{ textDecoration: 'none' }}>
-                                <div style={{ fontFamily: 'Fraunces,serif', fontSize: '17px', fontWeight: '300', color: 'var(--text-primary)', marginBottom: '2px' }}>{deal.title}</div>
+                                <div style={{ fontFamily: 'Fraunces,serif', fontSize: '15px', fontWeight: '300', color: 'var(--text-muted)', marginBottom: '2px' }}>{deal.title}</div>
                               </Link>
-                              <div style={{ fontSize: '12.5px', color: 'var(--text-muted)' }}>{clientName}{deal.deal_value ? ` · ${fmt(deal.deal_value)}` : ''}</div>
+                              <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>{clientName}{deal.deal_value ? ` · ${fmt(deal.deal_value)}` : ''}</div>
                             </div>
                             <div style={{ textAlign: 'right', marginLeft: '12px', flexShrink: 0 }}>
                               <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '4px' }}>Priority score</div>
@@ -725,11 +890,15 @@ export default function TodayPage() {
                     return (
                       <div key={deal.id} className="card" style={{ padding: '14px 18px', display: 'flex', justifyContent: 'space-between', gap: '16px' }}>
                         <div>
-                          <div style={{ fontFamily: 'Fraunces,serif', fontSize: '16px', fontWeight: '300', color: 'var(--text-primary)' }}>{deal.title}</div>
+                          <div style={{ display: 'flex', alignItems: 'baseline', gap: '6px', marginBottom: '3px' }}>
+                            <span style={{ fontSize: '14px', flexShrink: 0 }}>{actIcon(deal.next_activity_type)}</span>
+                            <span style={{ fontSize: '14px', fontWeight: '600', color: 'var(--text-primary)' }}>
+                              {deal.next_activity_note || fmtActionLabel(deal.next_activity_type)}
+                            </span>
+                          </div>
+                          <div style={{ fontFamily: 'Fraunces,serif', fontSize: '14px', fontWeight: '300', color: 'var(--text-muted)' }}>{deal.title}</div>
                           <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '3px' }}>
-                            {ACT_ICONS[deal.next_activity_type || 'FOLLOW_UP']} {ACT_LABELS[deal.next_activity_type || 'FOLLOW_UP'] || deal.next_activity_type}
-                            {` · ${dueDate}`}
-                            {client ? ` · ${clientName}` : ''}
+                            {dueDate}{client ? ` · ${clientName}` : ''}
                           </div>
                         </div>
                         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>

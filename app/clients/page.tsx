@@ -433,8 +433,8 @@ export default function ClientsPage() {
           client={editClient}
           staffUsers={staffUsers}
           currentStaff={currentStaff}
-          onClose={() => setShowModal(false)}
-          onSaved={() => { setShowModal(false); loadClients(); showToast(editClient ? 'Client updated ✓' : 'Client created ✓') }}
+          onClose={() => { setShowModal(false); setEditClient(null) }}
+          onSaved={() => { setShowModal(false); setEditClient(null); loadClients(); showToast(editClient ? 'Client updated ✓' : 'Client created ✓') }}
         />
       )}
 
@@ -667,6 +667,11 @@ function ClientModal({ client, staffUsers, currentStaff, onClose, onSaved }: {
 
   async function handleSave() {
     if (!form.first_name.trim()) { setError('First name is required'); return }
+
+    // Guard: if client prop is set but has no valid integer id, it's a corrupted edit state.
+    // Treat it as a new client rather than silently hitting PUT /api/clients/undefined.
+    const isEdit = client != null && Number.isFinite(Number(client.id))
+
     setSaving(true); setError('')
 
     const payload = {
@@ -692,8 +697,8 @@ function ClientModal({ client, staffUsers, currentStaff, onClose, onSaved }: {
     }
 
     try {
-      const response = await authedFetch(client ? `/api/clients/${client.id}` : '/api/clients', {
-        method: client ? 'PUT' : 'POST',
+      const response = await authedFetch(isEdit ? `/api/clients/${client!.id}` : '/api/clients', {
+        method: isEdit ? 'PUT' : 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       })

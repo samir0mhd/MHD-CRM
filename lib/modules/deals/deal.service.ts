@@ -2,6 +2,14 @@ import * as repo from './deal.repository'
 import { buildFieldAuditEntries, logAuditEntries } from '@/lib/audit'
 import { isManager, type StaffUser } from '@/lib/access'
 import { replaceBookingCommissions, insertRepeatFlag } from '@/lib/modules/bookings/booking.repository'
+import {
+  getDisplayActionNote,
+  getDisplayActionType,
+  normalizeActionNote,
+  toActionDueAtIso,
+  toDateOnly,
+  validateNextActionInput,
+} from './next-action'
 
 export type CelebrationMilestone = {
   tier: 'bronze' | 'silver' | 'gold'
@@ -128,16 +136,52 @@ export async function logActivity(dealId: number, activityType: string, notes: s
   await repo.insertActivity({ deal_id: dealId, activity_type: activityType, notes })
 }
 
-export async function saveNextAction(dealId: number, nextActivityType: string | null, nextActivityAt: string | null) {
-  await repo.updateDeal(dealId, {
-    next_activity_type: nextActivityType || null,
-    next_activity_at: nextActivityAt ? new Date(nextActivityAt).toISOString() : null,
+export async function saveNextAction(
+  dealId: number,
+  nextActivityType: string | null,
+  nextActivityAt: string | null,
+  nextActivityNote: string | null,
+) {
+  const validationError = validateNextActionInput({
+    actionType: nextActivityType,
+    dueDate: nextActivityAt,
+    actionNote: nextActivityNote,
   })
+
+  if (validationError) {
+    throw new Error(validationError)
+  }
+
+  const actionType = getDisplayActionType(nextActivityType, true)
+  const actionNote = getDisplayActionNote(nextActivityNote, true)
+  const dueDate = toDateOnly(nextActivityAt)
+
+  await repo.updateDeal(dealId, {
+    next_activity_type: actionType,
+    next_activity_at: dueDate ? toActionDueAtIso(dueDate) : null,
+    next_activity_note: actionNote ? normalizeActionNote(actionNote) : null,
+  })
+
+  return {
+    next_activity_type: actionType,
+    next_activity_at: dueDate ? toActionDueAtIso(dueDate) : null,
+    next_activity_note: actionNote,
+  }
 }
 
-export async function markQuoteSent(deal: { id: number; stage: string | undefined }, quoteId: number) {
-  await repo.updateQuoteSent(quoteId)
-  await repo.insertActivity({ deal_id: deal.id, activity_type: 'QUOTE_SENT', notes: 'Quote sent to client' })
+export async function markQuoteSent(
+  deal: { id: number; stage: string | undefined },
+  quoteId: number | number[],
+  quoteRef?: string,
+) {
+  const quoteIds = Array.isArray(quoteId) ? quoteId : [quoteId]
+
+  await repo.updateQuotesSent(quoteIds)
+  await repo.insertActivity({
+    deal_id: deal.id,
+    activity_type: 'QUOTE_SENT',
+    notes: quoteRef ? `Quote ${quoteRef} sent to client` : 'Quote sent to client'
+  })
 
   // Auto-create follow-up sequences (Day 2, 5, 10)
   const existingSequences = await repo.getFollowUpSequencesByDeal(deal.id)
@@ -158,9 +202,19 @@ export async function markQuoteSent(deal: { id: number; stage: string | undefine
   }
 }
 
-export async function deleteQuote(dealId: number, quoteId: number) {
-  await repo.deleteQuote(quoteId)
-  await repo.insertActivity({ deal_id: dealId, activity_type: 'QUOTE_CREATED', notes: `Quote #${quoteId} deleted` })
+export async function deleteQuote(
+  dealId: number,
+  quoteId: number | number[],
+  quoteRef?: string,
+) {
+  const quoteIds = Array.isArray(quoteId) ? quoteId : [quoteId]
+
+  await repo.deleteQuotes(quoteIds)
+  await repo.insertActivity({
+    deal_id: dealId,
+    activity_type: 'QUOTE_CREATED',
+    notes: quoteRef ? `Quote ${quoteRef} deleted` : `Quote #${quoteIds[0]} deleted`
+  })
 }
 
 export function isExistingBookingResult(result: MarkBookedResult): result is ExistingBookingResult {

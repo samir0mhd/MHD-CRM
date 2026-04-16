@@ -3,12 +3,12 @@
 import { useEffect, useState, useRef, type CSSProperties } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { getAccessContext, isManager, type StaffUser } from '@/lib/access'
+import { authedFetch } from '@/lib/api-client'
 import Link from 'next/link'
 import {
   fetchDealById,
   changeStage as changeStageService,
   logActivity as logActivityService,
-  saveNextAction as saveNextActionService,
   markQuoteSent as markQuoteSentService,
   deleteQuote as deleteQuoteService,
   markBooked as markBookedService,
@@ -18,6 +18,12 @@ import {
   type CelebrationMilestone,
 } from '@/lib/modules/deals/deal.service'
 import type { Activity, Deal, Quote } from '@/lib/modules/deals/deal.repository'
+import {
+  getDisplayActionNote,
+  getDisplayActionType,
+  NEXT_ACTION_TYPES,
+  validateNextActionInput,
+} from '@/lib/modules/deals/next-action'
 
 const STAGES = ['NEW_LEAD','QUOTE_SENT','ENGAGED','FOLLOW_UP','DECISION_PENDING','BOOKED']
 
@@ -40,7 +46,7 @@ const ACT_COLORS: Record<string,string> = {
   MEETING:'#ec4899', FOLLOW_UP:'#f97316', QUOTE_CREATED:'#10b981',
   QUOTE_SENT:'#10b981', STAGE_CHANGE:'#6366f1', BOOKING_CREATED:'#10b981',
 }
-const ACTION_TYPES = ['CALL','EMAIL','WHATSAPP','NOTE','MEETING','FOLLOW_UP']
+const LOG_ACTION_TYPES = ['CALL','EMAIL','WHATSAPP','NOTE','MEETING','FOLLOW_UP']
 const ACT_ICONS: Record<string,string> = {
   CALL:'📞', EMAIL:'📧', WHATSAPP:'💬', NOTE:'📝', MEETING:'🤝', FOLLOW_UP:'🔔'
 }
@@ -55,6 +61,47 @@ const FIREWORKS = [
 
 const fmt     = (n:number) => '£'+(n||0).toLocaleString('en-GB',{maximumFractionDigits:0})
 const fmtDate = (d:string|null) => !d ? '—' : new Date(d).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})
+
+type QuoteGroup = {
+  key: string
+  quoteRef: string
+  quoteIds: number[]
+  optionCount: number
+  quote: Quote
+}
+
+function buildQuoteGroups(quotes: Quote[]): QuoteGroup[] {
+  const orderedQuotes = [...quotes].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+  const groups: QuoteGroup[] = []
+  const groupIndexByKey = new Map<string, number>()
+
+  orderedQuotes.forEach(quote => {
+    const key = quote.quote_ref?.trim() || `quote-${quote.id}`
+    const existingIndex = groupIndexByKey.get(key)
+
+    if (existingIndex === undefined) {
+      groups.push({
+        key,
+        quoteRef: quote.quote_ref?.trim() || `Quote #${quote.id}`,
+        quoteIds: [quote.id],
+        optionCount: 1,
+        quote: { ...quote },
+      })
+      groupIndexByKey.set(key, groups.length - 1)
+      return
+    }
+
+    const group = groups[existingIndex]
+    group.quoteIds.push(quote.id)
+    group.optionCount += 1
+    group.quote = {
+      ...group.quote,
+      sent_to_client: !!group.quote.sent_to_client || !!quote.sent_to_client,
+    }
+  })
+
+  return groups
+}
 
 export default function DealDetailPage() {
   const { id }    = useParams()
@@ -71,9 +118,10 @@ export default function DealDetailPage() {
   const [loggingAct, setLoggingAct]   = useState(false)
   const [nextActType, setNextActType] = useState('')
   const [nextActDate, setNextActDate] = useState('')
+  const [nextActNote, setNextActNote] = useState('')
   const [savingNext, setSavingNext]   = useState(false)
   const [nextSaved, setNextSaved]     = useState(false)
-  const [expandedQuote, setExpandedQuote] = useState<number|null>(null)
+  const [expandedQuote, setExpandedQuote] = useState<string|null>(null)
   const [celebration, setCelebration] = useState<{
     ref: string
     value: number
@@ -99,8 +147,9 @@ export default function DealDetailPage() {
 
       if (data) {
         setDeal(data)
-        setNextActType(data.next_activity_type || '')
+        setNextActType(getDisplayActionType(data.next_activity_type, Boolean(data.next_activity_at)) || '')
         setNextActDate(data.next_activity_at ? data.next_activity_at.split('T')[0] : '')
+        setNextActNote(getDisplayActionNote(data.next_activity_note, Boolean(data.next_activity_at)) || '')
         setOwnerDraft(String(data.staff_id || data.clients?.owner_staff_id || ''))
       }
 
@@ -115,8 +164,9 @@ export default function DealDetailPage() {
     const data = await fetchDealById(Number(id))
     if (data) {
       setDeal(data)
-      setNextActType(data.next_activity_type || '')
+      setNextActType(getDisplayActionType(data.next_activity_type, Boolean(data.next_activity_at)) || '')
       setNextActDate(data.next_activity_at ? data.next_activity_at.split('T')[0] : '')
+      setNextActNote(getDisplayActionNote(data.next_activity_note, Boolean(data.next_activity_at)) || '')
       setOwnerDraft(String(data.staff_id || data.clients?.owner_staff_id || ''))
     }
     setLoading(false)
@@ -132,7 +182,7 @@ export default function DealDetailPage() {
     if (!deal || deal.stage === newStage) return
     await changeStageService(deal.id, newStage)
     showToast(`Moved to ${STAGE_LABELS[newStage]}`)
-    loadDeal()
+      void loadDeal()
   }
 
   async function logActivity() {
@@ -147,25 +197,52 @@ export default function DealDetailPage() {
 
   async function saveNextAction() {
     if (!deal) return
+    const validationError = validateNextActionInput({
+      actionType: nextActType,
+      dueDate: nextActDate,
+      actionNote: nextActNote,
+    })
+    if (validationError) { showToast(validationError, 'error'); return }
     setSavingNext(true)
-    await saveNextActionService(deal.id, nextActType || null, nextActDate || null)
-    setSavingNext(false); setNextSaved(true)
+    try {
+      const res = await authedFetch(`/api/deals/${deal.id}/next-action`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          actionType: nextActType,
+          dueDate: nextActDate,
+          actionNote: nextActNote,
+        }),
+      })
+      const result = await res.json().catch(() => null)
+      if (!res.ok) throw new Error(result?.error || 'Failed to save next action')
+
+      const saved = result?.nextAction
+      setNextActType(saved?.actionType || nextActType)
+      setNextActDate(saved?.dueDate || nextActDate)
+      setNextActNote(saved?.actionNote || nextActNote.trim())
+      setNextSaved(true)
     showToast('Next action saved ✓')
     setTimeout(() => setNextSaved(false), 2500)
-    loadDeal()
+    void loadDeal()
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Failed to save next action', 'error')
+    } finally {
+      setSavingNext(false)
+    }
   }
 
-  async function markQuoteSent(quoteId:number) {
+  async function markQuoteSent(quoteIds:number[], quoteRef:string) {
     if (!deal) return
-    await markQuoteSentService(deal, quoteId)
+    await markQuoteSentService(deal, quoteIds, quoteRef)
     showToast('Quote marked as sent — follow-up sequence created ✓')
     loadDeal()
   }
 
-  async function deleteQuote(quoteId:number) {
+  async function deleteQuote(quoteIds:number[], quoteRef:string) {
     if (!deal) return
     if (!confirm('Delete this quote? This cannot be undone.')) return
-    await deleteQuoteService(deal.id, quoteId)
+    await deleteQuoteService(deal.id, quoteIds, quoteRef)
     showToast('Quote deleted')
     loadDeal()
   }
@@ -228,15 +305,15 @@ export default function DealDetailPage() {
   if (loading) return <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:'80vh' }}><div style={{ color:'var(--text-muted)', fontSize:'14px' }}>Loading deal…</div></div>
   if (!deal)   return <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:'80vh' }}><div style={{ color:'var(--text-muted)', fontSize:'14px' }}>Deal not found</div></div>
 
-  const client   = deal.clients
-  const quotes   = (deal.quotes||[]).sort((a,b)=>new Date(b.created_at).getTime()-new Date(a.created_at).getTime())
-  const acts     = (deal.activities||[]).sort((a,b)=>new Date(b.created_at).getTime()-new Date(a.created_at).getTime())
+  const client      = deal.clients
+  const quoteGroups = buildQuoteGroups(deal.quotes||[])
+  const acts        = (deal.activities||[]).sort((a,b)=>new Date(b.created_at).getTime()-new Date(a.created_at).getTime())
   const isBooked = deal.stage==='BOOKED'
   const isLost   = deal.stage==='LOST'
   const hasBook  = (deal.bookings?.length||0)>0
   const stageIdx = STAGES.indexOf(deal.stage)
-  const totalQ   = quotes.reduce((a,q)=>a+(q.price||0),0)
-  const totalP   = quotes.reduce((a,q)=>a+(q.profit||0),0)
+  const totalQ   = quoteGroups.reduce((a,g)=>a+(g.quote.price||0),0)
+  const totalP   = quoteGroups.reduce((a,g)=>a+(g.quote.profit||0),0)
   const assignedStaffId = deal.staff_id || client?.owner_staff_id || null
   const assignedStaff = staffUsers.find(staff => staff.id === assignedStaffId) || null
   const clientOwnerMismatch = (client?.owner_staff_id ?? null) !== (deal.staff_id ?? null)
@@ -245,12 +322,12 @@ export default function DealDetailPage() {
     { label:'Stage', val:STAGE_LABELS[deal.stage]||deal.stage, color:STAGE_COLORS[deal.stage] },
     { label:'Departure', val:fmtDate(deal.departure_date) },
     { label:'Source', val:deal.source||'—' },
-    { label:'Quotes', val:`${quotes.length} quote${quotes.length!==1?'s':''}` },
+    { label:'Quotes', val:`${quoteGroups.length} quote${quoteGroups.length!==1?'s':''}` },
   ]
 
   const TABS = [
     { key:'overview',  label:'Overview'                    },
-    { key:'quotes',    label:`Quotes (${quotes.length})`   },
+    { key:'quotes',    label:`Quotes (${quoteGroups.length})`   },
     { key:'activity',  label:`Activity (${acts.length})`   },
     { key:'booking',   label:'Booking'                     },
   ] as const
@@ -610,7 +687,7 @@ export default function DealDetailPage() {
               <div className="card" style={{ padding:'20px' }}>
                 <div style={{ fontFamily:'Instrument Serif, serif', fontSize:'17px', marginBottom:'14px' }}>Log Activity</div>
                 <div style={{ display:'flex', gap:'8px', marginBottom:'10px', flexWrap:'wrap' }}>
-                  {ACTION_TYPES.map(t=>(
+                  {LOG_ACTION_TYPES.map(t=>(
                     <button key={t} onClick={()=>setActType(t)} style={{ padding:'6px 14px', borderRadius:'20px', border:'1.5px solid', fontSize:'12.5px', cursor:'pointer', borderColor:actType===t?'var(--accent)':'var(--border)', background:actType===t?'var(--accent-light)':'transparent', color:actType===t?'var(--accent)':'var(--text-muted)' }}>
                       {ACT_ICONS[t]} {t.charAt(0)+t.slice(1).toLowerCase().replace('_',' ')}
                     </button>
@@ -642,7 +719,7 @@ export default function DealDetailPage() {
                   <Link href={`/quotes/new?deal=${deal.id}`}><button className="btn btn-primary">+ New Quote</button></Link>
                 </div>
               )}
-              {quotes.length===0 ? (
+              {quoteGroups.length===0 ? (
                 <div className="card empty-state">
                   <div style={{ fontSize:'28px' }}>◇</div>
                   <div className="empty-state-title">No quotes yet</div>
@@ -650,14 +727,14 @@ export default function DealDetailPage() {
                 </div>
               ) : (
                 <div style={{ display:'flex', flexDirection:'column', gap:'14px' }}>
-                  {quotes.map(q=>(
+                  {quoteGroups.map(group=>(
                     <QuoteCard
-                      key={q.id} quote={q} dealId={deal.id}
+                      key={group.key} quoteGroup={group} dealId={deal.id}
                       isBooked={isBooked} isLost={isLost}
-                      expanded={expandedQuote===q.id}
-                      onToggle={()=>setExpandedQuote(expandedQuote===q.id?null:q.id)}
-                      onMarkSent={()=>markQuoteSent(q.id)}
-                      onDelete={()=>deleteQuote(q.id)}
+                      expanded={expandedQuote===group.key}
+                      onToggle={()=>setExpandedQuote(expandedQuote===group.key?null:group.key)}
+                      onMarkSent={()=>markQuoteSent(group.quoteIds, group.quoteRef)}
+                      onDelete={()=>deleteQuote(group.quoteIds, group.quoteRef)}
                     />
                   ))}
                 </div>
@@ -738,14 +815,25 @@ export default function DealDetailPage() {
           <div className="card" style={{ padding:'18px' }}>
             <div style={{ fontFamily:'Instrument Serif, serif', fontSize:'16px', marginBottom:'14px' }}>◎ Next Action</div>
             <div style={{ marginBottom:'10px' }}>
-              <label className="label">Action Type</label>
+              <label className="label">What needs to be done? <span style={{ color:'var(--red)' }}>*</span></label>
+              <input
+                className="input"
+                type="text"
+                placeholder="e.g. Call – discuss Sugar Beach vs Ambre"
+                value={nextActNote}
+                onChange={e=>setNextActNote(e.target.value)}
+                style={{ borderColor: nextActNote.trim() ? undefined : 'var(--border)' }}
+              />
+            </div>
+            <div style={{ marginBottom:'10px' }}>
+              <label className="label">Action Type <span style={{ color:'var(--red)' }}>*</span></label>
               <select className="input" value={nextActType} onChange={e=>setNextActType(e.target.value)}>
                 <option value="">Select…</option>
-                {ACTION_TYPES.map(t=><option key={t} value={t}>{ACT_ICONS[t]} {t.charAt(0)+t.slice(1).toLowerCase().replace('_',' ')}</option>)}
+                {NEXT_ACTION_TYPES.map(t=><option key={t} value={t}>{ACT_ICONS[t] || '*'} {t.charAt(0)+t.slice(1).toLowerCase().replace('_',' ')}</option>)}
               </select>
             </div>
             <div style={{ marginBottom:'12px' }}>
-              <label className="label">Due Date</label>
+              <label className="label">Due Date <span style={{ color:'var(--red)' }}>*</span></label>
               <input className="input" type="date" value={nextActDate} onChange={e=>setNextActDate(e.target.value)}/>
             </div>
             <button onClick={saveNextAction} disabled={savingNext}
@@ -812,10 +900,11 @@ export default function DealDetailPage() {
 }
 
 // ── QUOTE CARD ────────────────────────────────────────────
-function QuoteCard({ quote, dealId, isBooked, isLost, expanded, onToggle, onMarkSent, onDelete }:{
-  quote:Quote; dealId:number; isBooked:boolean; isLost:boolean;
+function QuoteCard({ quoteGroup, dealId, isBooked, isLost, expanded, onToggle, onMarkSent, onDelete }:{
+  quoteGroup:QuoteGroup; dealId:number; isBooked:boolean; isLost:boolean;
   expanded:boolean; onToggle:()=>void; onMarkSent:()=>void; onDelete:()=>void;
 }) {
+  const quote = quoteGroup.quote
   const fmt = (n:number) => '£'+(n||0).toLocaleString('en-GB',{maximumFractionDigits:0})
   const marginColor = (quote.margin_percent||0)>=10?'var(--green)':(quote.margin_percent||0)>=7?'var(--amber)':'var(--red)'
   const outLegs = quote.flight_details?.outbound||[]
@@ -836,7 +925,8 @@ function QuoteCard({ quote, dealId, isBooked, isLost, expanded, onToggle, onMark
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start' }}>
           <div style={{ flex:1 }}>
             <div style={{ display:'flex', alignItems:'center', gap:'10px', marginBottom:'4px' }}>
-              <span style={{ fontFamily:'monospace', fontSize:'12px', fontWeight:'700', color:'var(--accent)', background:'var(--accent-light)', padding:'2px 8px', borderRadius:'4px' }}>{quote.quote_ref}</span>
+              <span style={{ fontFamily:'monospace', fontSize:'12px', fontWeight:'700', color:'var(--accent)', background:'var(--accent-light)', padding:'2px 8px', borderRadius:'4px' }}>{quoteGroup.quoteRef}</span>
+              {quoteGroup.optionCount>1 && <span style={{ fontSize:'11px', color:'var(--text-muted)', fontWeight:'600' }}>{quoteGroup.optionCount} options</span>}
               {quote.sent_to_client && <span style={{ fontSize:'11px', color:'var(--green)', fontWeight:'600' }}>✓ Sent to client</span>}
               <span style={{ fontSize:'11px', color:'var(--text-muted)', marginLeft:'auto' }}>{new Date(quote.created_at).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})}</span>
             </div>
@@ -865,6 +955,11 @@ function QuoteCard({ quote, dealId, isBooked, isLost, expanded, onToggle, onMark
       {/* Expanded details */}
       {expanded && (
         <div style={{ borderTop:'1px solid var(--border)', padding:'16px 20px', background:'var(--bg-tertiary)' }}>
+          {quoteGroup.optionCount>1 && (
+            <div style={{ marginBottom:'16px', padding:'10px 12px', background:'var(--surface)', border:'1px solid var(--border)', borderRadius:'8px', fontSize:'12px', color:'var(--text-muted)' }}>
+              This quote currently contains {quoteGroup.optionCount} client-facing options under the same quote reference.
+            </div>
+          )}
 
           {/* Flights */}
           {allLegs.length>0 && allLegs.some(l=>l.date||l.depart_time) && (

@@ -8,6 +8,7 @@ export type DealActionQuery = {
   deal_value: number
   next_activity_at: string
   next_activity_type: string | null
+  next_activity_note: string | null
   clients?: { first_name: string; last_name: string; phone?: string; email?: string }
 }
 
@@ -60,7 +61,7 @@ export type BookingTaskAlertQuery = {
 export async function getDueDeals() {
   const { data } = await supabase
     .from('deals')
-    .select('id,title,stage,deal_value,next_activity_at,next_activity_type,clients(first_name,last_name,phone,email)')
+    .select('id,title,stage,deal_value,next_activity_at,next_activity_type,next_activity_note,clients(first_name,last_name,phone,email)')
     .not('stage', 'in', '("BOOKED","LOST")')
     .not('next_activity_at', 'is', null)
     .order('next_activity_at', { ascending: true })
@@ -121,7 +122,7 @@ export async function clearDealNextAction(id: number) {
   return dbMutate({
     table: 'deals',
     action: 'update',
-    values: { next_activity_at: null, next_activity_type: null },
+    values: { next_activity_at: null, next_activity_type: null, next_activity_note: null },
     filters: [{ column: 'id', value: id }],
   })
 }

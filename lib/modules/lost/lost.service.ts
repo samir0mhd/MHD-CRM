@@ -25,5 +25,6 @@ export async function scheduleWinback(deal: { id: number }, days: number) {
   return repo.updateDeal(deal.id, {
     next_activity_at: at.toISOString(),
     next_activity_type: 'FOLLOW_UP',
+    next_activity_note: 'Win-back follow-up after lost deal',
   })
 }

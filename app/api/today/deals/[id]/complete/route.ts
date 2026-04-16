@@ -8,7 +8,7 @@ export async function POST(_request: NextRequest, { params }: { params: Promise<
     await completeDealAction({
       id: Number(id),
       stage: body.stage,
-      next_activity_type: body.next_activity_type,
+      action_type: body.action_type ?? body.next_activity_type,
     })
     return NextResponse.json({ success: true })
   } catch (error) {

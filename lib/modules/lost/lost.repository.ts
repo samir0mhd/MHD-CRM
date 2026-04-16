@@ -9,6 +9,7 @@ export type LostDeal = {
   departure_date: string | null
   next_activity_at: string | null
   next_activity_type: string | null
+  next_activity_note: string | null
   lost_reason: string | null
   source: string | null
   created_at: string

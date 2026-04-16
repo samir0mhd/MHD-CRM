@@ -11,11 +11,12 @@ export type Deal = {
   client_id: number
   stage: string
   deal_value: number
-  departure_date: string
-  source: string
-  next_activity_at: string
-  next_activity_type: string
-  lost_reason: string
+  departure_date: string | null
+  source: string | null
+  next_activity_at: string | null
+  next_activity_type: string | null
+  next_activity_note: string | null
+  lost_reason: string | null
   created_at: string
   clients?: Client
 }

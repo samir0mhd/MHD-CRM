@@ -119,6 +119,209 @@ export function newCentre(destination: string, index: number): Centre {
   }
 }
 
+type SharedQuoteDefaultsInput = {
+  origin?: string
+  outboundDate?: string
+  returnDate?: string
+}
+
+type FlightOptionInput = {
+  id?: string
+  label?: string
+  outLegs?: quoteRepository.FlightLeg[]
+  retLegs?: quoteRepository.FlightLeg[]
+  flightNet?: string
+  transNet?: string
+}
+
+type AccommodationOptionInput = {
+  id?: string
+  hotel?: string
+  roomType?: string
+  boardBasis?: string
+  nights?: string
+  checkinDate?: string
+  checkinNextDay?: boolean
+  accNet?: string
+  extras?: ExtraItem[]
+  sellPrice?: string
+  margin?: string
+  profit?: string
+  useDefaultFlight?: boolean
+  assignedFlightOptionIds?: string[]
+  pricingFlightOptionId?: string
+}
+
+type SingleQuoteBuilderState = {
+  sharedQuoteDefaults?: SharedQuoteDefaultsInput
+  flightOptions?: FlightOptionInput[]
+  defaultFlightOptionId?: string
+  accommodationOptions?: AccommodationOptionInput[]
+}
+
+type SaveQuoteResult = {
+  refs: string[]
+  quoteId?: number
+}
+
+function quoteRefPrefix(initials: string): string {
+  const now = new Date()
+  const dd = now.getDate().toString().padStart(2, '0')
+  const mm = (now.getMonth() + 1).toString().padStart(2, '0')
+  const yy = now.getFullYear().toString().slice(-2)
+  return `${dd}${mm}${yy}${initials}`
+}
+
+function getNextQuoteRef(initials: string, existingRefs: string[]): string {
+  const prefix = quoteRefPrefix(initials)
+  const maxSequence = existingRefs.reduce((max, ref) => {
+    const trimmedRef = ref.trim()
+    if (!trimmedRef.startsWith(prefix)) return max
+    const suffix = parseInt(trimmedRef.slice(prefix.length), 10)
+    return Number.isFinite(suffix) ? Math.max(max, suffix) : max
+  }, 0)
+
+  return `${prefix}${String(maxSequence + 1).padStart(2, '0')}`
+}
+
+async function generateNextQuoteRef(dealId: number, initials: string): Promise<string> {
+  const quoteRows = await quoteRepository.getQuoteReferenceRowsForDeal(dealId)
+  const refs = Array.from(new Set(
+    quoteRows
+      .map(quote => quote.quote_ref?.trim() || '')
+      .filter(Boolean)
+  ))
+
+  return getNextQuoteRef(initials, refs)
+}
+
+function buildSingleQuoteRow(
+  option: HotelOption,
+  {
+    adults,
+    children,
+    infants,
+    initials,
+    additionalServices,
+    builderState,
+  }: {
+    adults: number
+    children: number
+    infants: number
+    initials: string
+    additionalServices: string
+    builderState?: SingleQuoteBuilderState
+  }
+) {
+  const sellN = parseFloat(option.sellPrice) || 0
+  const profitN = parseFloat(option.profit) || 0
+  const marginN = sellN > 0 && profitN > 0 && profitN < sellN
+    ? (profitN / (sellN - profitN)) * 100
+    : (parseFloat(option.margin) || 0)
+
+  const flightN = parseFloat(option.flightNet) || 0
+  const accN = parseFloat(option.accNet) || 0
+  const transN = parseFloat(option.transNet) || 0
+  const extrasN = option.extras.reduce((a, e) => a + (e.net || 0), 0)
+
+  return {
+    hotel: option.hotel.trim(),
+    board_basis: option.boardBasis,
+    room_type: option.roomType || null,
+    quote_type: 'single',
+    cabin_class: option.outLegs[0]?.cabin || 'Economy',
+    departure_date: option.outLegs[0]?.date || null,
+    departure_airport: option.outLegs[0]?.from || null,
+    airline: option.outLegs[0]?.airline || null,
+    nights: parseInt(option.nights) || null,
+    adults: adults || 2,
+    children: children || 0,
+    infants: infants || 0,
+    price: sellN,
+    profit: profitN,
+    margin_percent: parseFloat(marginN.toFixed(1)) || 0,
+    consultant_initials: initials,
+    flight_details: {
+      outbound: option.outLegs,
+      return: option.retLegs,
+      ...(builderState ? { builder_state: builderState } : {}),
+    },
+    cost_breakdown: {
+      flight_net: flightN,
+      acc_net: accN,
+      trans_net: transN,
+      extras: option.extras,
+      total_net: flightN + accN + transN + extrasN
+    },
+    additional_services: additionalServices.trim() || null,
+    checkin_date: option.checkinDate || null,
+    checkin_next_day: option.checkinNextDay,
+  }
+}
+
+function buildMultiCentreRow(
+  centres: Centre[],
+  {
+    adults,
+    children,
+    infants,
+    initials,
+    additionalServices,
+    sellPrice,
+    margin,
+    profit,
+  }: {
+    adults: number
+    children: number
+    infants: number
+    initials: string
+    additionalServices: string
+    sellPrice?: number
+    margin?: number
+    profit?: number
+  }
+) {
+  const totalNights = centres.reduce((a, c) => a + (parseInt(c.nights) || 0), 0)
+  const destList = centres.map(c => c.destination).filter(Boolean).join(' â†’ ')
+  const totalNet = centres.reduce((a, c) => {
+    const accN = parseFloat(c.accNet) || 0
+    const flightN = parseFloat(c.flightNet) || 0
+    const transN = parseFloat(c.transNet) || 0
+    return a + accN + flightN + transN + c.extras.reduce((x, e) => x + (e.net || 0), 0)
+  }, 0)
+
+  return {
+    quote_type: 'multi_centre',
+    centres,
+    hotel: `Multi-Centre: ${destList}`,
+    destination: destList,
+    board_basis: centres.map(c => c.boardBasis).join(' / '),
+    departure_date: centres[0]?.inboundLegs[0]?.date || null,
+    nights: totalNights,
+    adults: adults || 2,
+    children: children || 0,
+    infants: infants || 0,
+    price: sellPrice || 0,
+    profit: profit || 0,
+    margin_percent: parseFloat((margin || 0).toFixed(1)) || 0,
+    consultant_initials: initials,
+    cost_breakdown: {
+      total_net: totalNet,
+      centres: centres.map(c => ({
+        destination: c.destination,
+        hotel: c.hotel,
+        nights: c.nights,
+        net: parseFloat(c.accNet || '0') + (parseFloat(c.flightNet || '0')) + (parseFloat(c.transNet || '0'))
+      }))
+    },
+    additional_services: additionalServices.trim() || null,
+  }
+}
+
+export async function getQuoteCountForDeal(dealId: number): Promise<number> {
+  return quoteRepository.getQuoteCountForDeal(dealId)
+}
+
 // Business logic functions
 export async function loadDeals(): Promise<DealInfo[]> {
   return await quoteRepository.getAllDeals()
@@ -129,7 +332,23 @@ export async function loadDeal(id: number): Promise<DealInfo | null> {
 }
 
 export async function loadExistingQuote(quoteId: number): Promise<any> {
-  return await quoteRepository.getQuoteById(quoteId)
+  const quote = await quoteRepository.getQuoteById(quoteId)
+  if (!quote) return null
+
+  if (quote.quote_type === 'single' && quote.quote_ref && quote.deal_id) {
+    const quoteGroup = await quoteRepository.getQuotesByRef(quote.deal_id, quote.quote_ref)
+    const builderState = quoteGroup.find(row => row.flight_details?.builder_state)?.flight_details?.builder_state
+      || quote.flight_details?.builder_state
+
+    return {
+      ...quote,
+      quote_group_ids: quoteGroup.map(row => row.id),
+      quote_group_size: quoteGroup.length || 1,
+      ...(builderState ? { single_quote_builder: builderState } : {}),
+    }
+  }
+
+  return quote
 }
 
 export async function loadCustomTemplates(): Promise<EmailTemplate[]> {
@@ -159,10 +378,11 @@ export async function saveQuote(
     sellPrice?: number
     margin?: number
     profit?: number
+    singleQuoteBuilder?: SingleQuoteBuilderState
   },
   isEdit: boolean = false,
   editQuoteId?: number
-): Promise<string[]> {
+): Promise<SaveQuoteResult> {
   const {
     quoteType,
     quoteRef,
@@ -175,151 +395,63 @@ export async function saveQuote(
     centres,
     sellPrice,
     margin,
-    profit
+    profit,
+    singleQuoteBuilder,
   } = quoteData
 
   const refs: string[] = []
 
-  if (isEdit && editQuoteId) {
-    // Edit mode
-    if (quoteType === 'single' && hotelOptions) {
-      const option = hotelOptions[0]
-      const sellN = parseFloat(option.sellPrice) || 0
-      const profitN = parseFloat(option.profit) || 0
-      const marginN = sellN > 0 && profitN > 0 && profitN < sellN
-        ? (profitN / (sellN - profitN)) * 100
-        : (parseFloat(option.margin) || 0)
-
-      const flightN = parseFloat(option.flightNet) || 0
-      const accN = parseFloat(option.accNet) || 0
-      const transN = parseFloat(option.transNet) || 0
-      const extrasN = option.extras.reduce((a, e) => a + (e.net || 0), 0)
-
-      await quoteRepository.updateQuote(editQuoteId, {
-        hotel: option.hotel.trim(),
-        board_basis: option.boardBasis,
-        room_type: option.roomType || null,
-        quote_type: 'single',
-        cabin_class: option.outLegs[0]?.cabin || 'Economy',
-        departure_date: option.outLegs[0]?.date || null,
-        departure_airport: option.outLegs[0]?.from || null,
-        airline: option.outLegs[0]?.airline || null,
-        nights: parseInt(option.nights) || null,
-        adults: adults || 2,
-        children: children || 0,
-        infants: infants || 0,
-        price: sellN,
-        profit: profitN,
-        margin_percent: parseFloat(marginN.toFixed(1)) || 0,
-        consultant_initials: initials,
-        flight_details: { outbound: option.outLegs, return: option.retLegs },
-        cost_breakdown: {
-          flight_net: flightN,
-          acc_net: accN,
-          trans_net: transN,
-          extras: option.extras,
-          total_net: flightN + accN + transN + extrasN
-        },
-        additional_services: additionalServices.trim() || null,
-        checkin_date: option.checkinDate || null,
-        checkin_next_day: option.checkinNextDay,
-      })
-    } else if (quoteType === 'multi' && centres) {
-      const totalNights = centres.reduce((a, c) => a + (parseInt(c.nights) || 0), 0)
-      const destList = centres.map(c => c.destination).filter(Boolean).join(' → ')
-
-      await quoteRepository.updateQuote(editQuoteId, {
-        quote_type: 'multi_centre',
-        centres,
-        hotel: centres[0]?.hotel || 'Multi-Centre',
-        board_basis: centres[0]?.boardBasis || '',
-        departure_date: centres[0]?.inboundLegs[0]?.date || null,
-        nights: totalNights,
-        adults: adults || 2,
-        children: children || 0,
-        infants: infants || 0,
-        price: sellPrice || 0,
-        profit: profit || 0,
-        margin_percent: parseFloat((margin || 0).toFixed(1)) || 0,
-        consultant_initials: initials,
-        additional_services: additionalServices.trim() || null,
-        cost_breakdown: {
-          total_net: centres.reduce((a, c) => {
-            const accN = parseFloat(c.accNet) || 0
-            const flightN = parseFloat(c.flightNet) || 0
-            const transN = parseFloat(c.transNet) || 0
-            return a + accN + flightN + transN + c.extras.reduce((x, e) => x + (e.net || 0), 0)
-          }, 0),
-          centres: centres.map(c => ({
-            destination: c.destination,
-            net: parseFloat(c.accNet || '0') + (parseFloat(c.flightNet || '0')) + (parseFloat(c.transNet || '0'))
-          }))
-        },
-      })
-    }
-
-    await quoteRepository.createActivity({
-      deal_id: dealId,
-      activity_type: 'QUOTE_CREATED',
-      notes: `Quote ${quoteRef} updated`
-    })
-
-    return [quoteRef]
-  }
-
-  // New quotes
   if (quoteType === 'single' && hotelOptions) {
+    const providedQuoteRef = quoteRef.trim()
+    const existingQuoteGroup = providedQuoteRef
+      ? await quoteRepository.getQuotesByRef(dealId, providedQuoteRef)
+      : []
+    const legacyEditQuote = (!providedQuoteRef && editQuoteId)
+      ? await quoteRepository.getQuoteById(editQuoteId)
+      : null
+    const persistedQuoteGroup = existingQuoteGroup.length > 0
+      ? existingQuoteGroup
+      : (legacyEditQuote ? [legacyEditQuote] : [])
+    const effectiveQuoteRef = existingQuoteGroup[0]?.quote_ref?.trim()
+      || legacyEditQuote?.quote_ref?.trim()
+      || await generateNextQuoteRef(dealId, initials)
+    const version = persistedQuoteGroup[0]?.version || 1
+    const sentToClient = persistedQuoteGroup.some(quote => !!quote.sent_to_client)
+    const createdQuotes: quoteRepository.CreatedQuoteRow[] = []
+
+    refs.push(effectiveQuoteRef)
+
     for (let i = 0; i < hotelOptions.length; i++) {
       const option = hotelOptions[i]
-      const ref = genRef(initials, await quoteRepository.getQuoteCountForDeal(dealId) + i)
-      refs.push(ref)
-
-      const sellN = parseFloat(option.sellPrice) || 0
-      const profitN = parseFloat(option.profit) || 0
-      const marginN = sellN > 0 && profitN > 0 && profitN < sellN
-        ? (profitN / (sellN - profitN)) * 100
-        : (parseFloat(option.margin) || 0)
-
-      const flightN = parseFloat(option.flightNet) || 0
-      const accN = parseFloat(option.accNet) || 0
-      const transN = parseFloat(option.transNet) || 0
-      const extrasN = option.extras.reduce((a, e) => a + (e.net || 0), 0)
-
-      await quoteRepository.createQuote({
+      const rowValues = {
         deal_id: dealId,
-        hotel: option.hotel.trim(),
-        board_basis: option.boardBasis,
-        room_type: option.roomType || null,
-        quote_type: 'single',
-        cabin_class: option.outLegs[0]?.cabin || 'Economy',
-        departure_date: option.outLegs[0]?.date || null,
-        departure_airport: option.outLegs[0]?.from || null,
-        airline: option.outLegs[0]?.airline || null,
-        nights: parseInt(option.nights) || null,
-        adults: adults || 2,
-        children: children || 0,
-        infants: infants || 0,
-        price: sellN,
-        profit: profitN,
-        margin_percent: parseFloat(marginN.toFixed(1)) || 0,
-        consultant_initials: initials,
-        quote_ref: ref,
-        sent_to_client: false,
-        flight_details: { outbound: option.outLegs, return: option.retLegs },
-        cost_breakdown: {
-          flight_net: flightN,
-          acc_net: accN,
-          trans_net: transN,
-          extras: option.extras,
-          total_net: flightN + accN + transN + extrasN
-        },
-        additional_services: additionalServices.trim() || null,
-        checkin_date: option.checkinDate || null,
-        checkin_next_day: option.checkinNextDay,
-      })
+        quote_ref: effectiveQuoteRef,
+        version,
+        sent_to_client: sentToClient,
+        ...buildSingleQuoteRow(option, {
+          adults,
+          children,
+          infants,
+          initials,
+          additionalServices,
+          builderState: singleQuoteBuilder,
+        }),
+      }
+
+      if (persistedQuoteGroup[i]?.id) {
+        await quoteRepository.updateQuote(persistedQuoteGroup[i].id, rowValues)
+      } else {
+        const createdQuote = await quoteRepository.createQuote(rowValues)
+        if (createdQuote) createdQuotes.push(createdQuote)
+      }
     }
 
-    // Update deal with first option's data
+    if (persistedQuoteGroup.length > hotelOptions.length) {
+      await quoteRepository.deleteQuotes(
+        persistedQuoteGroup.slice(hotelOptions.length).map(quote => Number(quote.id)).filter(Boolean)
+      )
+    }
+
     const first = hotelOptions[0]
     await quoteRepository.updateDeal(dealId, {
       deal_value: parseFloat(first.sellPrice) || 0,
@@ -329,51 +461,58 @@ export async function saveQuote(
     await quoteRepository.createActivity({
       deal_id: dealId,
       activity_type: 'QUOTE_CREATED',
-      notes: `${hotelOptions.length} option quote — ${hotelOptions.map(o => o.hotel).join(' / ')} · Refs: ${refs.join(', ')}`
+      notes: persistedQuoteGroup.length > 0
+        ? `Quote ${effectiveQuoteRef} updated`
+        : `${hotelOptions.length} option quote - ${hotelOptions.map(o => o.hotel).join(' / ')} - Ref: ${effectiveQuoteRef}`
     })
-  } else if (quoteType === 'multi' && centres) {
-    const ref = genRef(initials, await quoteRepository.getQuoteCountForDeal(dealId))
-    refs.push(ref)
 
-    const totalNights = centres.reduce((a, c) => a + (parseInt(c.nights) || 0), 0)
-    const destList = centres.map(c => c.destination).filter(Boolean).join(' → ')
+    return {
+      refs,
+      quoteId: Number(persistedQuoteGroup[0]?.id || createdQuotes[0]?.id || editQuoteId || 0) || undefined,
+    }
+  }
 
-    const totalNet = centres.reduce((a, c) => {
-      const accN = parseFloat(c.accNet) || 0
-      const flightN = parseFloat(c.flightNet) || 0
-      const transN = parseFloat(c.transNet) || 0
-      return a + accN + flightN + transN + c.extras.reduce((x, e) => x + (e.net || 0), 0)
-    }, 0)
+  if (quoteType === 'multi' && centres) {
+    const providedQuoteRef = quoteRef.trim()
+    const existingQuoteGroup = providedQuoteRef
+      ? await quoteRepository.getQuotesByRef(dealId, providedQuoteRef)
+      : []
+    const legacyEditQuote = (!providedQuoteRef && editQuoteId)
+      ? await quoteRepository.getQuoteById(editQuoteId)
+      : null
+    const baseQuote = existingQuoteGroup[0] || legacyEditQuote || null
+    const effectiveQuoteRef = existingQuoteGroup[0]?.quote_ref?.trim()
+      || legacyEditQuote?.quote_ref?.trim()
+      || await generateNextQuoteRef(dealId, initials)
+    let createdQuote: quoteRepository.CreatedQuoteRow | null = null
 
-    await quoteRepository.createQuote({
+    refs.push(effectiveQuoteRef)
+
+    const rowValues = {
       deal_id: dealId,
-      quote_type: 'multi_centre',
-      centres,
-      hotel: `Multi-Centre: ${destList}`,
-      destination: destList,
-      board_basis: centres.map(c => c.boardBasis).join(' / '),
-      departure_date: centres[0]?.inboundLegs[0]?.date || null,
-      nights: totalNights,
-      adults: adults || 2,
-      children: children || 0,
-      infants: infants || 0,
-      price: sellPrice || 0,
-      profit: profit || 0,
-      margin_percent: parseFloat((margin || 0).toFixed(1)) || 0,
-      consultant_initials: initials,
-      quote_ref: ref,
-      sent_to_client: false,
-      cost_breakdown: {
-        total_net: totalNet,
-        centres: centres.map(c => ({
-          destination: c.destination,
-          hotel: c.hotel,
-          nights: c.nights,
-          net: parseFloat(c.accNet || '0') + (parseFloat(c.flightNet || '0')) + (parseFloat(c.transNet || '0'))
-        }))
-      },
-      additional_services: additionalServices.trim() || null,
-    })
+      quote_ref: effectiveQuoteRef,
+      version: baseQuote?.version || 1,
+      sent_to_client: !!baseQuote?.sent_to_client,
+      ...buildMultiCentreRow(centres, {
+        adults,
+        children,
+        infants,
+        initials,
+        additionalServices,
+        sellPrice,
+        margin,
+        profit,
+      }),
+    }
+
+    if (baseQuote?.id) {
+      await quoteRepository.updateQuote(baseQuote.id, rowValues)
+      if (existingQuoteGroup.length > 1) {
+        await quoteRepository.deleteQuotes(existingQuoteGroup.slice(1).map(quote => Number(quote.id)).filter(Boolean))
+      }
+    } else {
+      createdQuote = await quoteRepository.createQuote(rowValues)
+    }
 
     await quoteRepository.updateDeal(dealId, {
       deal_value: sellPrice || 0,
@@ -383,11 +522,18 @@ export async function saveQuote(
     await quoteRepository.createActivity({
       deal_id: dealId,
       activity_type: 'QUOTE_CREATED',
-      notes: `Multi-centre quote — ${destList} · ${fmtS(sellPrice || 0)} · Ref: ${ref}`
+      notes: baseQuote
+        ? `Quote ${effectiveQuoteRef} updated`
+        : `Multi-centre quote - ${centres.map(c => c.destination).filter(Boolean).join(' -> ')} - Ref: ${effectiveQuoteRef}`
     })
+
+    return {
+      refs,
+      quoteId: Number(baseQuote?.id || createdQuote?.id || editQuoteId || 0) || undefined,
+    }
   }
 
-  return refs
+  return { refs }
 }
 
 export async function saveQuoteFromRequest(body: {
@@ -406,7 +552,8 @@ export async function saveQuoteFromRequest(body: {
   profit?: number | string
   isEdit?: boolean
   editQuoteId?: number | string
-}): Promise<string[]> {
+  singleQuoteBuilder?: SingleQuoteBuilderState
+}): Promise<SaveQuoteResult> {
   const dealId = Number(body.dealId)
   if (!dealId) {
     throw new Error('Deal ID is required')
@@ -443,6 +590,7 @@ export async function saveQuoteFromRequest(body: {
       sellPrice,
       margin,
       profit,
+      singleQuoteBuilder: body.singleQuoteBuilder,
     },
     Boolean(body.isEdit),
     body.editQuoteId ? Number(body.editQuoteId) : undefined
@@ -456,6 +604,9 @@ export function validateQuote(
   sellPrice?: number
 ): string | null {
   if (quoteType === 'single' && hotelOptions) {
+    if (hotelOptions.length === 0) {
+      return 'At least one client-facing quote option is required'
+    }
     if (hotelOptions.some(o => !o.hotel.trim())) {
       return 'All hotel options need a hotel name'
     }
@@ -505,5 +656,6 @@ export const quoteService = {
   saveQuote,
   saveQuoteFromRequest,
   validateQuote,
-  getQuoteCountForDeal: quoteRepository.getQuoteCountForDeal,
+  getQuoteCountForDeal,
 }
+

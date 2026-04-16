@@ -1,9 +1,33 @@
 import * as repo from './today.repository'
 import type { StaffUser } from '@/lib/access'
+import {
+  dayOffsetFromToday,
+  getDisplayActionNote,
+  getDisplayActionType,
+  toDateOnly,
+} from '@/lib/modules/deals/next-action'
 
-export type DealAction = repo.DealActionQuery & {
+export type ActionUrgency = 'overdue' | 'today' | 'coming_up'
+
+export type DealAction = {
+  id: number
+  title: string
+  stage: string
+  deal_value: number
+  action_type: string
+  action_note: string
+  due_date: string
   priority_score: number
+  urgency: ActionUrgency
   days_overdue: number
+  days_until: number
+  clients?: repo.DealActionQuery['clients']
+}
+
+export type ActionSection = {
+  key: ActionUrgency
+  label: string
+  items: DealAction[]
 }
 
 export type BalanceAlert = repo.BalanceAlertQuery & {
@@ -23,8 +47,7 @@ export type BookingTaskAlert = repo.BookingTaskAlertQuery & {
 }
 
 export type TodayData = {
-  actions: DealAction[]
-  upcoming: DealAction[]
+  actionSections: ActionSection[]
   balanceAlerts: BalanceAlert[]
   ticketAlerts: TicketAlert[]
   departureAlerts: DepartureAlert[]
@@ -39,16 +62,66 @@ const STAGE_WEIGHT: Record<string, number> = {
   NEW_LEAD: 5,
 }
 
+function todayDateOnly(date: Date): string {
+  const year = date.getFullYear()
+  const month = `${date.getMonth() + 1}`.padStart(2, '0')
+  const day = `${date.getDate()}`.padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
 function priorityScore(dealValue: number, daysOverdue: number, stage: string): number {
   return Math.round(Math.min(dealValue / 1000, 50) + Math.min(daysOverdue * 10, 100) + (STAGE_WEIGHT[stage] || 0))
 }
 
+function buildActionSections(dealData: repo.DealActionQuery[], today: string): ActionSection[] {
+  const sections: Record<ActionUrgency, DealAction[]> = {
+    overdue: [],
+    today: [],
+    coming_up: [],
+  }
+
+  for (const deal of dealData) {
+    const dueDate = toDateOnly(deal.next_activity_at)
+    if (!dueDate) continue
+
+    const dayOffset = dayOffsetFromToday(dueDate, today)
+    const daysOverdue = dayOffset < 0 ? Math.abs(dayOffset) : 0
+    const urgency: ActionUrgency = dayOffset < 0 ? 'overdue' : dayOffset === 0 ? 'today' : 'coming_up'
+    const actionType = getDisplayActionType(deal.next_activity_type, true)
+    const actionNote = getDisplayActionNote(deal.next_activity_note, true)
+
+    if (!actionType || !actionNote) continue
+
+    sections[urgency].push({
+      id: deal.id,
+      title: deal.title,
+      stage: deal.stage,
+      deal_value: deal.deal_value || 0,
+      action_type: actionType,
+      action_note: actionNote,
+      due_date: dueDate,
+      urgency,
+      days_overdue: daysOverdue,
+      days_until: dayOffset > 0 ? dayOffset : 0,
+      priority_score: priorityScore(deal.deal_value || 0, daysOverdue, deal.stage),
+      clients: deal.clients,
+    })
+  }
+
+  sections.overdue.sort((a, b) => a.due_date.localeCompare(b.due_date) || b.priority_score - a.priority_score)
+  sections.today.sort((a, b) => b.priority_score - a.priority_score || a.title.localeCompare(b.title))
+  sections.coming_up.sort((a, b) => a.due_date.localeCompare(b.due_date) || b.priority_score - a.priority_score)
+
+  return [
+    { key: 'overdue', label: 'Overdue', items: sections.overdue },
+    { key: 'today', label: 'Today', items: sections.today },
+    { key: 'coming_up', label: 'Coming Up', items: sections.coming_up },
+  ]
+}
+
 export async function getTodayData(): Promise<TodayData> {
   const now = new Date()
-  const todayEnd = new Date(now)
-  todayEnd.setHours(23, 59, 59, 999)
-  const weekAhead = new Date(now.getTime() + 7 * 86400000)
-  const today = now.toISOString().split('T')[0]
+  const today = todayDateOnly(now)
   const in7days = new Date(now.getTime() + 7 * 86400000).toISOString().split('T')[0]
   const in14days = new Date(now.getTime() + 14 * 86400000).toISOString().split('T')[0]
 
@@ -59,21 +132,6 @@ export async function getTodayData(): Promise<TodayData> {
     repo.getDepartureAlerts(today, in14days),
     repo.getTaskAlerts(in14days),
   ])
-
-  const overdueDue: DealAction[] = []
-  const upcomingList: DealAction[] = []
-  for (const deal of dealData) {
-    const daysOverdue = Math.floor((now.getTime() - new Date(deal.next_activity_at).getTime()) / 86400000)
-    const item: DealAction = {
-      ...deal,
-      days_overdue: daysOverdue,
-      priority_score: priorityScore(deal.deal_value || 0, daysOverdue, deal.stage),
-    }
-    if (new Date(deal.next_activity_at) <= todayEnd) overdueDue.push(item)
-    else if (new Date(deal.next_activity_at) <= weekAhead) upcomingList.push(item)
-  }
-  overdueDue.sort((a, b) => b.priority_score - a.priority_score)
-  upcomingList.sort((a, b) => new Date(a.next_activity_at).getTime() - new Date(b.next_activity_at).getTime())
 
   const balanceAlerts: BalanceAlert[] = balData.map(booking => ({
     ...booking,
@@ -107,8 +165,7 @@ export async function getTodayData(): Promise<TodayData> {
     }))
 
   return {
-    actions: overdueDue,
-    upcoming: upcomingList,
+    actionSections: buildActionSections(dealData, today),
     balanceAlerts,
     ticketAlerts,
     departureAlerts,
@@ -116,12 +173,12 @@ export async function getTodayData(): Promise<TodayData> {
   }
 }
 
-export async function completeDealAction(deal: { id: number; stage: string; next_activity_type: string | null }) {
+export async function completeDealAction(deal: { id: number; stage: string; action_type: string | null }) {
   await repo.clearDealNextAction(deal.id)
   await repo.addDealActivity(
     deal.id,
-    deal.next_activity_type || 'NOTE',
-    `Action completed — ${deal.stage}`
+    deal.action_type || 'NOTE',
+    `Action completed - ${deal.stage}`
   )
 }
 

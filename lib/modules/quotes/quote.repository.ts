@@ -82,6 +82,17 @@ export interface EmailTemplate {
   closing_cta?: string
 }
 
+export interface QuoteReferenceRow {
+  id: number
+  quote_ref?: string | null
+}
+
+export interface CreatedQuoteRow {
+  id: number
+  quote_ref?: string | null
+  version?: number | null
+}
+
 // Repository functions
 export async function searchTable(table: string, query: string): Promise<string[]> {
   if (!query.trim()) return []
@@ -123,13 +134,22 @@ export async function getDealById(id: number): Promise<DealInfo | null> {
   return data
 }
 
-export async function getQuoteCountForDeal(dealId: number): Promise<number> {
-  const { count } = await supabase
+export async function getQuoteReferenceRowsForDeal(dealId: number): Promise<QuoteReferenceRow[]> {
+  const { data } = await supabase
     .from('quotes')
-    .select('id', { count: 'exact', head: true })
+    .select('id,quote_ref')
     .eq('deal_id', dealId)
 
-  return count || 0
+  return (data as QuoteReferenceRow[]) || []
+}
+
+export async function getQuoteCountForDeal(dealId: number): Promise<number> {
+  const quoteRows = await getQuoteReferenceRowsForDeal(dealId)
+  const logicalQuotes = new Set(
+    quoteRows.map(quote => quote.quote_ref?.trim() || `legacy:${quote.id}`)
+  )
+
+  return logicalQuotes.size
 }
 
 export async function getQuoteById(quoteId: number): Promise<any> {
@@ -142,6 +162,20 @@ export async function getQuoteById(quoteId: number): Promise<any> {
   return data
 }
 
+export async function getQuotesByRef(dealId: number, quoteRef: string): Promise<any[]> {
+  if (!quoteRef.trim()) return []
+
+  const { data } = await supabase
+    .from('quotes')
+    .select('*')
+    .eq('deal_id', dealId)
+    .eq('quote_ref', quoteRef)
+    .order('created_at', { ascending: true })
+    .order('id', { ascending: true })
+
+  return data || []
+}
+
 export async function getCustomTemplates(): Promise<EmailTemplate[]> {
   const { data } = await supabase
     .from('email_templates')
@@ -152,12 +186,16 @@ export async function getCustomTemplates(): Promise<EmailTemplate[]> {
   return data || []
 }
 
-export async function createQuote(quoteData: any): Promise<void> {
-  await dbMutate({
+export async function createQuote(quoteData: any): Promise<CreatedQuoteRow | null> {
+  const { data } = await dbMutate<CreatedQuoteRow>({
     table: 'quotes',
     action: 'insert',
     values: quoteData,
+    select: 'id,quote_ref,version',
+    returning: 'single',
   })
+
+  return data
 }
 
 export async function updateQuote(quoteId: number, quoteData: any): Promise<void> {
@@ -166,6 +204,16 @@ export async function updateQuote(quoteId: number, quoteData: any): Promise<void
     action: 'update',
     values: quoteData,
     filters: [{ column: 'id', value: quoteId }],
+  })
+}
+
+export async function deleteQuotes(quoteIds: number[]): Promise<void> {
+  if (quoteIds.length === 0) return
+
+  await dbMutate({
+    table: 'quotes',
+    action: 'delete',
+    filters: [{ column: 'id', op: 'in', value: quoteIds }],
   })
 }
 

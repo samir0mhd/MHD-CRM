@@ -98,7 +98,12 @@ export default function AppHeader() {
   }
 
   const themeIcon = theme === 'dark' ? '☾' : '○'
-  const currentRole = staffUser?.job_title || staffUser?.role || 'Team member'
+  const currentRole = staffUser
+    ? staffUser.role === 'manager' ? 'Manager'
+      : staffUser.role === 'sales' ? 'Sales'
+      : staffUser.role === 'operations' ? 'Operations'
+      : '[role unknown]'
+    : null
 
   return (
     <header className="app-header">
@@ -142,8 +147,9 @@ export default function AppHeader() {
             )}
           </div>
           <div className="header-identity-copy">
-            <div className="header-identity-name">{staffUser?.name || 'Signed in'}</div>
-            <div className="header-identity-role">{currentRole}</div>
+            <div className="header-identity-name">
+              {staffUser?.name ?? '—'}{currentRole ? ` · ${currentRole}` : ''}
+            </div>
           </div>
           <button className="btn btn-secondary btn-xs" onClick={() => void handleSignOut()}>
             Sign out

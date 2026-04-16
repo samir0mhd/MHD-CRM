@@ -17,9 +17,9 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const refs = await quoteService.saveQuoteFromRequest(body)
+    const result = await quoteService.saveQuoteFromRequest(body)
 
-    return NextResponse.json({ refs })
+    return NextResponse.json(result)
   } catch (error) {
     console.error('Error saving quote:', error)
     const message = error instanceof Error ? error.message : 'Failed to save quote'

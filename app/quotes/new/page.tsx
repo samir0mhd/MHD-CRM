@@ -34,16 +34,51 @@ type HotelOption = {
   nights: string
   checkinDate?: string
   checkinNextDay: boolean
+  outLegs: FlightLeg[]
+  retLegs: FlightLeg[]
+  flightNet: string
+  accNet: string
+  transNet: string
+  extras: ExtraItem[]
+  sellPrice: string
+  margin: string
+  profit: string
+  optionLabel?: string
+  flightOptionId?: string
+  flightOptionLabel?: string
+}
+
+type FlightOption = {
+  id: string
+  label: string
+  outLegs: FlightLeg[]
+  retLegs: FlightLeg[]
+  flightNet: string
+  transNet: string
+}
+
+type SharedQuoteDefaults = {
+  origin: string
+  outboundDate: string
+  returnDate: string
+}
+
+type AccommodationOption = {
+  id: string
+  hotel: string
+  roomType?: string
+  boardBasis: string
+  nights: string
+  checkinDate?: string
+  checkinNextDay: boolean
   accNet: string
   extras: ExtraItem[]
   sellPrice: string
   margin: string
   profit: string
-  // Populated only on assembled options (for save/preview) — not held in state
-  outLegs?: FlightLeg[]
-  retLegs?: FlightLeg[]
-  flightNet?: string
-  transNet?: string
+  useDefaultFlight: boolean
+  assignedFlightOptionIds: string[]
+  pricingFlightOptionId: string
 }
 
 type Centre = {
@@ -220,11 +255,54 @@ function newHotelOption(): HotelOption {
     nights: '7',
     checkinDate: '',
     checkinNextDay: false,
+    outLegs: [newLeg('out')],
+    retLegs: [newLeg('ret')],
+    flightNet: '',
     accNet: '',
+    transNet: '',
     extras: [],
     sellPrice: '',
     margin: '',
     profit: ''
+  }
+}
+
+function newSharedQuoteDefaults(): SharedQuoteDefaults {
+  return {
+    origin: 'LHR',
+    outboundDate: '',
+    returnDate: '',
+  }
+}
+
+function newFlightOption(defaults: SharedQuoteDefaults = newSharedQuoteDefaults()): FlightOption {
+  return {
+    id: uid(),
+    label: '',
+    outLegs: [{ ...newLeg('out'), from: defaults.origin || 'LHR', date: defaults.outboundDate || '' }],
+    retLegs: [{ ...newLeg('ret'), to: defaults.origin || 'LHR', date: defaults.returnDate || '' }],
+    flightNet: '',
+    transNet: '',
+  }
+}
+
+function newAccOption(defaults: SharedQuoteDefaults = newSharedQuoteDefaults()): AccommodationOption {
+  return {
+    id: uid(),
+    hotel: '',
+    roomType: '',
+    boardBasis: 'All Inclusive',
+    nights: '7',
+    checkinDate: defaults.outboundDate || '',
+    checkinNextDay: false,
+    accNet: '',
+    extras: [],
+    sellPrice: '',
+    margin: '',
+    profit: '',
+    useDefaultFlight: true,
+    assignedFlightOptionIds: [],
+    pricingFlightOptionId: '',
   }
 }
 
@@ -282,6 +360,211 @@ function sortFlightLegs(legs: FlightLeg[]): FlightLeg[] {
   return [...legs].sort((a, b) => getLegTimestamp(a) - getLegTimestamp(b))
 }
 
+function numVal(value: string | number | undefined | null): number {
+  const parsed = typeof value === 'number' ? value : parseFloat(value || '')
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function optionLetter(index: number): string {
+  return String.fromCharCode(65 + (index % 26))
+}
+
+function getFlightOptionTitle(option: FlightOption, index: number): string {
+  const customLabel = option.label.trim()
+  if (customLabel) return customLabel
+
+  const firstOut = sortFlightLegs(option.outLegs || []).find(leg => leg.airline || leg.from || leg.to || leg.date)
+  if (firstOut) {
+    const route = [firstOut.from, firstOut.to].filter(Boolean).join(' → ')
+    const airline = firstOut.airline ? `${firstOut.airline}${route ? ' · ' : ''}` : ''
+    return `${airline}${route || `Flight ${optionLetter(index)}`}`
+  }
+
+  return `Flight ${optionLetter(index)}`
+}
+
+function getFlightOptionSummary(option: FlightOption): string {
+  const outbound = sortFlightLegs(option.outLegs || []).find(leg => leg.from || leg.to || leg.date || leg.depart_time || leg.airline)
+  const inbound = sortFlightLegs(option.retLegs || []).find(leg => leg.from || leg.to || leg.date || leg.depart_time || leg.airline)
+  const parts = [
+    outbound?.date ? fmtDate(outbound.date) : '',
+    outbound?.cabin || inbound?.cabin || '',
+    outbound?.airline || '',
+  ].filter(Boolean)
+
+  if (parts.length > 0) return parts.join(' · ')
+  if (outbound?.from || outbound?.to) return [outbound?.from, outbound?.to].filter(Boolean).join(' → ')
+  return 'Add airline, routing and timings'
+}
+
+function getFlightCostTotal(option: FlightOption | null | undefined): number {
+  if (!option) return 0
+  return numVal(option.flightNet) + numVal(option.transNet)
+}
+
+function getAccommodationExtrasTotal(option: AccommodationOption): number {
+  return option.extras.reduce((sum, extra) => sum + numVal(extra.net), 0)
+}
+
+function applySharedDefaultsToFlightOption(option: FlightOption, defaults: SharedQuoteDefaults): FlightOption {
+  return {
+    ...option,
+    outLegs: (option.outLegs || []).map((leg, index) => index === 0
+      ? {
+          ...leg,
+          from: leg.from || defaults.origin || leg.from,
+          date: leg.date || defaults.outboundDate || leg.date,
+        }
+      : leg),
+    retLegs: (option.retLegs || []).map((leg, index, arr) => index === arr.length - 1
+      ? {
+          ...leg,
+          to: leg.to || defaults.origin || leg.to,
+          date: leg.date || defaults.returnDate || leg.date,
+        }
+      : leg),
+  }
+}
+
+function applySharedDefaultsToAccommodationOption(option: AccommodationOption, defaults: SharedQuoteDefaults): AccommodationOption {
+  if (option.checkinDate || !defaults.outboundDate) return option
+  return { ...option, checkinDate: defaults.outboundDate }
+}
+
+function getOrderedSelectedFlightOptions(
+  option: AccommodationOption,
+  flightOptions: FlightOption[],
+  defaultFlightOptionId: string
+): FlightOption[] {
+  const orderedIds: string[] = []
+
+  if (option.useDefaultFlight && defaultFlightOptionId) {
+    orderedIds.push(defaultFlightOptionId)
+  }
+
+  flightOptions.forEach(flightOption => {
+    if (option.assignedFlightOptionIds.includes(flightOption.id) && !orderedIds.includes(flightOption.id)) {
+      orderedIds.push(flightOption.id)
+    }
+  })
+
+  return orderedIds
+    .map(id => flightOptions.find(flightOption => flightOption.id === id))
+    .filter((flightOption): flightOption is FlightOption => Boolean(flightOption))
+}
+
+function normalizeAccommodationOptionAssignments(
+  option: AccommodationOption,
+  flightOptions: FlightOption[],
+  defaultFlightOptionId: string
+): AccommodationOption {
+  const validIds = new Set(flightOptions.map(flightOption => flightOption.id))
+  const assignedFlightOptionIds = Array.from(new Set(
+    option.assignedFlightOptionIds.filter(id => validIds.has(id) && id !== defaultFlightOptionId)
+  ))
+  const useDefaultFlight = option.useDefaultFlight && validIds.has(defaultFlightOptionId)
+  const normalizedOption = {
+    ...option,
+    useDefaultFlight,
+    assignedFlightOptionIds,
+  }
+  const selectedFlightOptions = getOrderedSelectedFlightOptions(normalizedOption, flightOptions, defaultFlightOptionId)
+  const pricingFlightOptionId = selectedFlightOptions.some(flightOption => flightOption.id === option.pricingFlightOptionId)
+    ? option.pricingFlightOptionId
+    : (selectedFlightOptions[0]?.id || '')
+
+  return {
+    ...normalizedOption,
+    pricingFlightOptionId,
+  }
+}
+
+function resolveAccommodationPricingFlight(
+  option: AccommodationOption,
+  flightOptions: FlightOption[],
+  defaultFlightOptionId: string
+): FlightOption | null {
+  const normalizedOption = normalizeAccommodationOptionAssignments(option, flightOptions, defaultFlightOptionId)
+  return getOrderedSelectedFlightOptions(normalizedOption, flightOptions, defaultFlightOptionId)
+    .find(flightOption => flightOption.id === normalizedOption.pricingFlightOptionId) || null
+}
+
+function buildSingleQuoteHotelOptions(
+  flightOptions: FlightOption[],
+  defaultFlightOptionId: string,
+  accommodationOptions: AccommodationOption[]
+): HotelOption[] {
+  return accommodationOptions.flatMap(accommodationOption => {
+    const normalizedAccommodation = normalizeAccommodationOptionAssignments(accommodationOption, flightOptions, defaultFlightOptionId)
+    const selectedFlightOptions = getOrderedSelectedFlightOptions(normalizedAccommodation, flightOptions, defaultFlightOptionId)
+    const pricingFlightOption = resolveAccommodationPricingFlight(normalizedAccommodation, flightOptions, defaultFlightOptionId)
+    const accommodationExtrasNet = getAccommodationExtrasTotal(normalizedAccommodation)
+    const accommodationNet = numVal(normalizedAccommodation.accNet)
+    const pricingFlightNet = getFlightCostTotal(pricingFlightOption)
+
+    return selectedFlightOptions.map(flightOption => {
+      const totalNet = accommodationNet + accommodationExtrasNet + getFlightCostTotal(flightOption)
+      let sellPrice = numVal(normalizedAccommodation.sellPrice)
+
+      if (sellPrice > 0 && pricingFlightOption) {
+        sellPrice += getFlightCostTotal(flightOption) - pricingFlightNet
+      } else if (sellPrice <= 0 && numVal(normalizedAccommodation.margin) > 0) {
+        sellPrice = totalNet * (1 + (numVal(normalizedAccommodation.margin) / 100))
+      } else if (sellPrice <= 0 && numVal(normalizedAccommodation.profit) > 0) {
+        sellPrice = totalNet + numVal(normalizedAccommodation.profit)
+      }
+
+      const profit = sellPrice > 0
+        ? sellPrice - totalNet
+        : numVal(normalizedAccommodation.profit)
+      const margin = sellPrice > 0 && profit > 0 && sellPrice > profit
+        ? (profit / (sellPrice - profit)) * 100
+        : numVal(normalizedAccommodation.margin)
+      const flightIndex = flightOptions.findIndex(existingOption => existingOption.id === flightOption.id)
+      const flightLabel = getFlightOptionTitle(flightOption, flightIndex >= 0 ? flightIndex : 0)
+      const hotelName = normalizedAccommodation.hotel.trim() || 'Hotel option'
+
+      return {
+        id: `${normalizedAccommodation.id}:${flightOption.id}`,
+        hotel: normalizedAccommodation.hotel,
+        roomType: normalizedAccommodation.roomType,
+        boardBasis: normalizedAccommodation.boardBasis,
+        nights: normalizedAccommodation.nights,
+        checkinDate: normalizedAccommodation.checkinDate,
+        checkinNextDay: normalizedAccommodation.checkinNextDay,
+        outLegs: sortFlightLegs(flightOption.outLegs || []),
+        retLegs: sortFlightLegs(flightOption.retLegs || []),
+        flightNet: flightOption.flightNet,
+        accNet: normalizedAccommodation.accNet,
+        transNet: flightOption.transNet,
+        extras: normalizedAccommodation.extras,
+        sellPrice: sellPrice > 0 ? sellPrice.toFixed(2) : normalizedAccommodation.sellPrice,
+        margin: margin > 0 ? margin.toFixed(1) : normalizedAccommodation.margin,
+        profit: profit > 0 ? profit.toFixed(2) : normalizedAccommodation.profit,
+        optionLabel: `${hotelName} with ${flightLabel}`,
+        flightOptionId: flightOption.id,
+        flightOptionLabel: flightLabel,
+      }
+    })
+  })
+}
+
+function getFlightSignature(option: Pick<HotelOption, 'outLegs' | 'retLegs' | 'flightNet' | 'transNet'>): string {
+  return JSON.stringify({
+    outLegs: sortFlightLegs(option.outLegs || []),
+    retLegs: sortFlightLegs(option.retLegs || []),
+    flightNet: option.flightNet,
+    transNet: option.transNet,
+  })
+}
+
+function normalizeHotelOption(option: HotelOption): HotelOption {
+  return {
+    ...option,
+    outLegs: sortFlightLegs(option.outLegs || []),
+    retLegs: sortFlightLegs(option.retLegs || []),
+  }
+}
 
 function getCentreTimestamp(centre: Centre): number {
   const legTimes = [...(centre.inboundLegs || []), ...(centre.outboundLegs || [])]
@@ -584,8 +867,8 @@ function HotelOptionPanel({
   onChange,
   onRemove,
   onDuplicate,
-  sharedFlightNet,
-  sharedTransNet,
+  airports,
+  onCreateAirport,
 }:{
   option:HotelOption
   index:number
@@ -593,14 +876,15 @@ function HotelOptionPanel({
   onChange:(o:HotelOption)=>void
   onRemove:()=>void
   onDuplicate:()=>void
-  sharedFlightNet: string
-  sharedTransNet: string
+  airports: AirportOption[]
+  onCreateAirport: (airport: AirportOption) => Promise<AirportOption>
 }){
   const [collapsed,setCollapsed]=useState(false)
   const upd=(field:keyof HotelOption,val:any)=>onChange({...option,[field]:val})
+  const updLeg=(dir:'out'|'ret',legs:FlightLeg[])=>onChange({...option,[dir==='out'?'outLegs':'retLegs']:legs})
   const updExtra=(id:string,field:keyof ExtraItem,val:any)=>upd('extras',option.extras.map(e=>e.id===id?{...e,[field]:val}:e))
 
-  const flightN=parseFloat(sharedFlightNet)||0, accN=parseFloat(option.accNet)||0, transN=parseFloat(sharedTransNet)||0
+  const flightN=parseFloat(option.flightNet)||0, accN=parseFloat(option.accNet)||0, transN=parseFloat(option.transNet)||0
   const extrasN=option.extras.reduce((a,e)=>a+(e.net||0),0), totalNet=flightN+accN+transN+extrasN
   const sellN=parseFloat(option.sellPrice)||0, profitN=parseFloat(option.profit)||0
   const markupN = parseFloat(option.margin)|| (sellN>0&&profitN>0&&profitN<sellN ? (profitN/(sellN-profitN))*100 : 0)
@@ -664,10 +948,34 @@ function HotelOptionPanel({
         <div style={{padding:'18px'}}>
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'12px',marginBottom:'14px'}}>
             <div style={{gridColumn:'1/-1'}}><label className="label">Hotel Name *</label><DBSearch table="hotel_list" value={option.hotel} onChange={v=>upd('hotel',v)} placeholder="Search or type hotel name…"/></div>
-            <div style={{gridColumn:'1/-1'}}><label className="label">Room Type</label><input className="input" placeholder="e.g. Deluxe Ocean Suite…" value={option.roomType||''} onChange={e=>upd('roomType',e.target.value)}/></div>
+            <div style={{gridColumn:'1/-1'}}><label className="label">Room Type</label><input className="input" placeholder="e.g. Deluxe Ocean Suite…" value={option.roomType} onChange={e=>upd('roomType',e.target.value)}/></div>
             <div><label className="label">Meal Plan</label><DBSearch table="meal_plan_list" value={option.boardBasis} onChange={v=>upd('boardBasis',v)} placeholder="Search meal plan…"/></div>
-            <div><label className="label">Nights</label><input className="input" type="number" min="1" value={option.nights} onChange={e=>upd('nights',e.target.value)}/></div>
-            <div><label className="label">Check-in Date</label><input className="input" type="date" value={option.checkinDate||''} onChange={e=>upd('checkinDate',e.target.value)}/></div>
+            <div><label className="label">Nights</label><input className="input" type="number" min="1" value={option.nights} onChange={e=>{
+              const nights=e.target.value
+              upd('nights',nights)
+              // Auto-populate return flight date
+              if(option.checkinDate&&nights){
+                const retDate=new Date(option.checkinDate+'T12:00')
+                retDate.setDate(retDate.getDate()+parseInt(nights)||0)
+                const retStr=retDate.toISOString().split('T')[0]
+                const updatedRetLegs=option.retLegs.map((l,i)=>i===0&&!l.date?{...l,date:retStr}:l)
+                onChange({...option,nights,retLegs:updatedRetLegs})
+              }
+            }}/></div>
+            <div><label className="label">Check-in Date</label><input className="input" type="date" value={option.checkinDate} onChange={e=>{
+              const checkin=e.target.value
+              // Auto-populate outbound flight date if empty
+              const updatedOutLegs=option.outLegs.map((l,i)=>i===0&&!l.date?{...l,date:checkin}:l)
+              // Auto-populate return flight date if nights set
+              let updatedRetLegs=option.retLegs
+              if(checkin&&option.nights){
+                const retDate=new Date(checkin+'T12:00')
+                retDate.setDate(retDate.getDate()+(parseInt(option.nights)||0))
+                const retStr=retDate.toISOString().split('T')[0]
+                updatedRetLegs=option.retLegs.map((l,i)=>i===0&&!l.date?{...l,date:retStr}:l)
+              }
+              onChange({...option,checkinDate:checkin,outLegs:updatedOutLegs,retLegs:updatedRetLegs})
+            }}/></div>
             <div style={{display:'flex',flexDirection:'column',justifyContent:'flex-end',paddingBottom:'4px'}}>
               <label style={{display:'flex',alignItems:'center',gap:'8px',cursor:'pointer'}}>
                 <input type="checkbox" checked={option.checkinNextDay} onChange={e=>upd('checkinNextDay',e.target.checked)} style={{width:'16px',height:'16px'}}/>
@@ -676,11 +984,25 @@ function HotelOptionPanel({
             </div>
           </div>
 
-          {/* Accommodation Net */}
+          {/* Flights */}
+          <div style={{marginBottom:'14px'}}>
+            <div style={{fontWeight:'600',fontSize:'12px',color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'8px'}}>✈ Outbound Flights</div>
+            {option.outLegs.map(leg=><LegRow key={leg.id} leg={leg} legs={option.outLegs} setLegs={l=>updLeg('out',l)} canRemove={option.outLegs.length>1} airports={airports} onCreateAirport={onCreateAirport}/>)}
+            <button className="btn btn-ghost btn-sm" style={{border:'1.5px dashed var(--border)',width:'100%',justifyContent:'center'}} onClick={()=>updLeg('out',[...option.outLegs,newLeg('out')])}>+ Add outbound leg</button>
+          </div>
+          <div style={{marginBottom:'14px'}}>
+            <div style={{fontWeight:'600',fontSize:'12px',color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'8px'}}>↩ Return Flights</div>
+            {option.retLegs.map(leg=><LegRow key={leg.id} leg={leg} legs={option.retLegs} setLegs={l=>updLeg('ret',l)} canRemove={option.retLegs.length>1} airports={airports} onCreateAirport={onCreateAirport}/>)}
+            <button className="btn btn-ghost btn-sm" style={{border:'1.5px dashed var(--border)',width:'100%',justifyContent:'center'}} onClick={()=>updLeg('ret',[...option.retLegs,newLeg('ret')])}>+ Add return leg</button>
+          </div>
+
+          {/* Nets */}
           <div style={{background:'var(--bg-tertiary)',borderRadius:'10px',padding:'14px',marginBottom:'12px'}}>
-            <div style={{fontWeight:'600',fontSize:'11px',color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'10px'}}>Accommodation Net Costs</div>
-            <div style={{display:'grid',gridTemplateColumns:'1fr',gap:'10px',marginBottom:'12px'}}>
-              <div><label className="label">Accommodation Net (£)</label><input className="input" type="number" step="0.01" placeholder="0.00" value={option.accNet} onChange={e=>upd('accNet',e.target.value)}/></div>
+            <div style={{fontWeight:'600',fontSize:'11px',color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'10px'}}>Internal Net Costs</div>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'10px',marginBottom:'12px'}}>
+              {([['Flight Net (£)',option.flightNet,(v:string)=>upd('flightNet',v)],['Accommodation Net (£)',option.accNet,(v:string)=>upd('accNet',v)],['Transfers Net (£)',option.transNet,(v:string)=>upd('transNet',v)]] as [string,string,any][]).map(([l,v,s])=>(
+                <div key={l}><label className="label">{l}</label><input className="input" type="number" step="0.01" placeholder="0.00" value={v} onChange={e=>s(e.target.value)}/></div>
+              ))}
             </div>
             {option.extras.length>0&&(
               <div style={{marginBottom:'10px'}}>
@@ -738,56 +1060,491 @@ function HotelOptionPanel({
   )
 }
 
-// ── SHARED TRAVEL CARD (Single Destination) ───────────────
-function SharedTravelCard({
-  outLegs,
-  retLegs,
-  flightNet,
-  transNet,
-  setOutLegs,
-  setRetLegs,
-  setFlightNet,
-  setTransNet,
-  airports,
-  onCreateAirport,
-}:{
+// ── BASE TRAVEL CARD (shared flights for single-destination) ──
+function BaseTravelCard({
+  outLegs, retLegs, flightNet, transNet, onChangeLegs, onChangeNet, airports, onCreateAirport,
+}: {
   outLegs: FlightLeg[]
   retLegs: FlightLeg[]
   flightNet: string
   transNet: string
-  setOutLegs: (l: FlightLeg[]) => void
-  setRetLegs: (l: FlightLeg[]) => void
-  setFlightNet: (v: string) => void
-  setTransNet: (v: string) => void
+  onChangeLegs: (dir: 'out'|'ret', legs: FlightLeg[]) => void
+  onChangeNet: (field: 'flightNet'|'transNet', val: string) => void
   airports: AirportOption[]
-  onCreateAirport: (airport: AirportOption) => Promise<AirportOption>
-}){
-  return(
+  onCreateAirport: (a: AirportOption) => Promise<AirportOption>
+}) {
+  return (
     <div className="card" style={{padding:'18px 20px',marginBottom:'16px'}}>
-      <div style={{fontFamily:'Fraunces,serif',fontSize:'17px',fontWeight:'300',marginBottom:'3px'}}>Base Travel</div>
-      <div style={{fontSize:'12px',color:'var(--text-muted)',marginBottom:'14px'}}>Flights and net costs shared across all hotel options below</div>
-
+      <div style={{fontFamily:'Fraunces,serif',fontSize:'17px',fontWeight:'300',marginBottom:'4px'}}>Flights & Transfers</div>
+      <div style={{fontSize:'12px',color:'var(--text-muted)',marginBottom:'14px'}}>Shared across all hotel options — enter once.</div>
       <div style={{marginBottom:'14px'}}>
         <div style={{fontWeight:'600',fontSize:'12px',color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'8px'}}>✈ Outbound Flights</div>
-        {outLegs.map(leg=><LegRow key={leg.id} leg={leg} legs={outLegs} setLegs={setOutLegs} canRemove={outLegs.length>1} airports={airports} onCreateAirport={onCreateAirport}/>)}
-        <button className="btn btn-ghost btn-sm" style={{border:'1.5px dashed var(--border)',width:'100%',justifyContent:'center'}} onClick={()=>setOutLegs([...outLegs,newLeg('out')])}>+ Add outbound leg</button>
+        {outLegs.map(leg=><LegRow key={leg.id} leg={leg} legs={outLegs} setLegs={l=>onChangeLegs('out',l)} canRemove={outLegs.length>1} airports={airports} onCreateAirport={onCreateAirport}/>)}
+        <button className="btn btn-ghost btn-sm" style={{border:'1.5px dashed var(--border)',width:'100%',justifyContent:'center'}} onClick={()=>onChangeLegs('out',[...outLegs,newLeg('out')])}>+ Add outbound leg</button>
       </div>
-
       <div style={{marginBottom:'14px'}}>
         <div style={{fontWeight:'600',fontSize:'12px',color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'8px'}}>↩ Return Flights</div>
-        {retLegs.map(leg=><LegRow key={leg.id} leg={leg} legs={retLegs} setLegs={setRetLegs} canRemove={retLegs.length>1} airports={airports} onCreateAirport={onCreateAirport}/>)}
-        <button className="btn btn-ghost btn-sm" style={{border:'1.5px dashed var(--border)',width:'100%',justifyContent:'center'}} onClick={()=>setRetLegs([...retLegs,newLeg('ret')])}>+ Add return leg</button>
+        {retLegs.map(leg=><LegRow key={leg.id} leg={leg} legs={retLegs} setLegs={l=>onChangeLegs('ret',l)} canRemove={retLegs.length>1} airports={airports} onCreateAirport={onCreateAirport}/>)}
+        <button className="btn btn-ghost btn-sm" style={{border:'1.5px dashed var(--border)',width:'100%',justifyContent:'center'}} onClick={()=>onChangeLegs('ret',[...retLegs,newLeg('ret')])}>+ Add return leg</button>
       </div>
-
-      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px',background:'var(--bg-tertiary)',borderRadius:'10px',padding:'14px'}}>
-        <div><label className="label">Flight Net (£)</label><input className="input" type="number" step="0.01" placeholder="0.00" value={flightNet} onChange={e=>setFlightNet(e.target.value)}/></div>
-        <div><label className="label">Transfers Net (£)</label><input className="input" type="number" step="0.01" placeholder="0.00" value={transNet} onChange={e=>setTransNet(e.target.value)}/></div>
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px'}}>
+        <div><label className="label">Flight Net (£)</label><input className="input" type="number" step="0.01" placeholder="0.00" value={flightNet} onChange={e=>onChangeNet('flightNet',e.target.value)}/></div>
+        <div><label className="label">Transfer Net (£)</label><input className="input" type="number" step="0.01" placeholder="0.00" value={transNet} onChange={e=>onChangeNet('transNet',e.target.value)}/></div>
       </div>
     </div>
   )
 }
 
+// ── ACCOMMODATION OPTION PANEL (hotel + pricing only, no flights) ──
+function AccommodationOptionPanel({
+  option, index, totalOptions, baseFlightNet, baseTransNet, onChange, onRemove, onDuplicate,
+}:{
+  option: AccommodationOption
+  index: number
+  totalOptions: number
+  baseFlightNet: string
+  baseTransNet: string
+  onChange: (o: AccommodationOption) => void
+  onRemove: () => void
+  onDuplicate: () => void
+}) {
+  const [collapsed,setCollapsed]=useState(false)
+  const upd=(field:keyof AccommodationOption,val:any)=>onChange({...option,[field]:val})
+  const updExtra=(id:string,field:keyof ExtraItem,val:any)=>upd('extras',option.extras.map(e=>e.id===id?{...e,[field]:val}:e))
+
+  const flightN=parseFloat(baseFlightNet)||0, accN=parseFloat(option.accNet)||0, transN=parseFloat(baseTransNet)||0
+  const extrasN=option.extras.reduce((a,e)=>a+(e.net||0),0), totalNet=flightN+accN+transN+extrasN
+  const sellN=parseFloat(option.sellPrice)||0, profitN=parseFloat(option.profit)||0
+  const markupN=parseFloat(option.margin)||(sellN>0&&profitN>0&&profitN<sellN?(profitN/(sellN-profitN))*100:0)
+
+  function onSell(v:string){
+    const sell=parseFloat(v)||0,mg=parseFloat(option.margin)||0,pr=parseFloat(option.profit)||0
+    if(sell>0&&mg>0){const profit=totalNet>0?totalNet*mg/100:sell*mg/(100+mg);onChange({...option,sellPrice:v,profit:profit.toFixed(2)})}
+    else if(sell>0&&pr>0){const markup=sell>pr?(pr/(sell-pr))*100:0;onChange({...option,sellPrice:v,margin:markup.toFixed(1)})}
+    else onChange({...option,sellPrice:v})
+  }
+  function onMargin(v:string){
+    const sell=parseFloat(option.sellPrice)||0,mg=parseFloat(v)||0
+    if(totalNet>0&&mg>0){const s=totalNet*(1+mg/100);onChange({...option,margin:v,sellPrice:s.toFixed(2),profit:(totalNet*mg/100).toFixed(2)})}
+    else if(sell>0&&mg>0){const profit=sell*mg/(100+mg);onChange({...option,margin:v,profit:profit.toFixed(2)})}
+    else onChange({...option,margin:v})
+  }
+  function onProfit(v:string){
+    const sell=parseFloat(option.sellPrice)||0,pr=parseFloat(v)||0
+    if(sell>0&&pr>0){const markup=sell>pr?(pr/(sell-pr))*100:0;onChange({...option,profit:v,margin:markup.toFixed(1)})}
+    else if(totalNet>0&&pr>0){const s=totalNet+pr;onChange({...option,profit:v,sellPrice:s.toFixed(2),margin:((pr/totalNet)*100).toFixed(1)})}
+    else onChange({...option,profit:v})
+  }
+
+  const COLORS=['#8b5cf6','#3b82f6','#10b981','#f59e0b','#ec4899']
+  const color=COLORS[index%COLORS.length]
+
+  return(
+    <div className="card" style={{marginBottom:'14px',borderLeft:`3px solid ${color}`,overflow:'hidden'}}>
+      <div style={{padding:'14px 18px',display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer',background:'var(--bg-tertiary)'}} onClick={()=>setCollapsed(c=>!c)}>
+        <div style={{display:'flex',alignItems:'center',gap:'10px'}}>
+          <div style={{width:'26px',height:'26px',borderRadius:'50%',background:color,color:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:'12px',fontWeight:'700',flexShrink:0}}>{index+1}</div>
+          <div>
+            <div style={{fontFamily:'Fraunces,serif',fontSize:'15px',fontWeight:'300',color:'var(--text-primary)'}}>{option.hotel||`Option ${index+1} — select hotel`}</div>
+            <div style={{fontSize:'11.5px',color:'var(--text-muted)',marginTop:'1px'}}>{option.boardBasis}{option.nights?` · ${option.nights} nights`:''}{sellN>0?` · ${fmtS(sellN)}`:''}{markupN>0?` · ${markupN.toFixed(1)}%`:''}</div>
+          </div>
+        </div>
+        <div style={{display:'flex',gap:'6px',alignItems:'center'}}>
+          {totalOptions>1&&<button onClick={e=>{e.stopPropagation();onDuplicate()}} className="btn btn-ghost btn-xs">⧉ Copy</button>}
+          {totalOptions>1&&<button onClick={e=>{e.stopPropagation();onRemove()}} className="btn btn-danger btn-xs">Remove</button>}
+          <span style={{color:'var(--text-muted)',fontSize:'16px',marginLeft:'4px'}}>{collapsed?'▸':'▾'}</span>
+        </div>
+      </div>
+      {!collapsed&&(
+        <div style={{padding:'18px'}}>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'12px',marginBottom:'14px'}}>
+            <div style={{gridColumn:'1/-1'}}><label className="label">Hotel Name *</label><DBSearch table="hotel_list" value={option.hotel} onChange={v=>upd('hotel',v)} placeholder="Search or type hotel name…"/></div>
+            <div style={{gridColumn:'1/-1'}}><label className="label">Room Type</label><input className="input" placeholder="e.g. Deluxe Ocean Suite…" value={option.roomType||''} onChange={e=>upd('roomType',e.target.value)}/></div>
+            <div><label className="label">Meal Plan</label><DBSearch table="meal_plan_list" value={option.boardBasis} onChange={v=>upd('boardBasis',v)} placeholder="Search meal plan…"/></div>
+            <div><label className="label">Nights</label><input className="input" type="number" min="1" value={option.nights} onChange={e=>upd('nights',e.target.value)}/></div>
+            <div><label className="label">Check-in Date</label><input className="input" type="date" value={option.checkinDate||''} onChange={e=>upd('checkinDate',e.target.value)}/></div>
+            <div style={{display:'flex',flexDirection:'column',justifyContent:'flex-end',paddingBottom:'4px'}}>
+              <label style={{display:'flex',alignItems:'center',gap:'8px',cursor:'pointer'}}>
+                <input type="checkbox" checked={option.checkinNextDay} onChange={e=>upd('checkinNextDay',e.target.checked)} style={{width:'16px',height:'16px'}}/>
+                <span style={{fontSize:'13px',color:'var(--text-secondary)'}}>Check-in next day{option.checkinNextDay&&option.checkinDate?<span style={{color:'var(--accent)',marginLeft:'6px',fontSize:'11.5px'}}>({addDays(option.checkinDate,1)})</span>:null}</span>
+              </label>
+            </div>
+          </div>
+          <div style={{background:'var(--bg-tertiary)',borderRadius:'10px',padding:'14px',marginBottom:'12px'}}>
+            <div style={{fontWeight:'600',fontSize:'11px',color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'10px'}}>Internal Net Costs</div>
+            <div style={{marginBottom:'10px'}}>
+              <label className="label">Accommodation Net (£)</label>
+              <input className="input" type="number" step="0.01" placeholder="0.00" value={option.accNet} onChange={e=>upd('accNet',e.target.value)}/>
+            </div>
+            {(parseFloat(baseFlightNet)>0||parseFloat(baseTransNet)>0)&&(
+              <div style={{fontSize:'11.5px',color:'var(--text-muted)',marginBottom:'10px',padding:'7px 10px',background:'var(--surface)',borderRadius:'6px',border:'1px solid var(--border)'}}>
+                Shared flight net: {baseFlightNet?fmt(parseFloat(baseFlightNet)):'—'} &nbsp;·&nbsp; Transfer net: {baseTransNet?fmt(parseFloat(baseTransNet)):'—'}
+              </div>
+            )}
+            {option.extras.length>0&&(
+              <div style={{marginBottom:'10px'}}>
+                <div style={{display:'grid',gridTemplateColumns:'1fr 130px 32px',gap:'6px',marginBottom:'5px'}}>
+                  {['Extra Item','Net (£)',''].map(h=><div key={h} style={{fontSize:'10px',color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.06em'}}>{h}</div>)}
+                </div>
+                {option.extras.map(e=>(
+                  <div key={e.id} style={{display:'grid',gridTemplateColumns:'1fr 130px 32px',gap:'6px',marginBottom:'6px',alignItems:'center'}}>
+                    <input className="input" placeholder="e.g. Airport Lounge" value={e.label} onChange={x=>updExtra(e.id,'label',x.target.value)}/>
+                    <input className="input" type="number" step="0.01" placeholder="0.00" value={e.net||''} onChange={x=>updExtra(e.id,'net',parseFloat(x.target.value)||0)}/>
+                    <button onClick={()=>upd('extras',option.extras.filter(x=>x.id!==e.id))} style={{background:'var(--red-light)',color:'var(--red)',border:'none',borderRadius:'6px',width:'30px',height:'36px',cursor:'pointer',fontSize:'13px'}}>✕</button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div style={{display:'flex',flexWrap:'wrap',gap:'5px',marginBottom:totalNet>0?'10px':'0'}}>
+              {QUICK_EXTRAS.map(label=>(
+                <button key={label} onClick={()=>upd('extras',[...option.extras,{id:uid(),label,net:0}])}
+                  style={{padding:'3px 9px',borderRadius:'20px',border:'1px solid var(--border)',background:'transparent',color:'var(--text-muted)',fontSize:'11px',cursor:'pointer',fontFamily:'Outfit,sans-serif'}}
+                  onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--accent)';e.currentTarget.style.color='var(--accent)'}}
+                  onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--border)';e.currentTarget.style.color='var(--text-muted)'}}>+ {label}</button>
+              ))}
+              <button onClick={()=>upd('extras',[...option.extras,{id:uid(),label:'',net:0}])} style={{padding:'3px 9px',borderRadius:'20px',border:'1px dashed var(--border)',background:'transparent',color:'var(--text-muted)',fontSize:'11px',cursor:'pointer',fontFamily:'Outfit,sans-serif'}}>+ Custom</button>
+            </div>
+            {totalNet>0&&<div style={{display:'flex',justifyContent:'space-between',alignItems:'center',paddingTop:'10px',borderTop:'1px solid var(--border)'}}>
+              <span style={{fontSize:'12px',color:'var(--text-muted)',fontWeight:'600'}}>Total Net Cost</span>
+              <span style={{fontFamily:'Fraunces,serif',fontSize:'18px',fontWeight:'300',color:'var(--text-primary)'}}>{fmt(totalNet)}</span>
+            </div>}
+          </div>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'10px',marginBottom:'10px'}}>
+            <div><label className="label">Sell Price (£) *</label><input className="input" type="number" step="1" placeholder="4500" value={option.sellPrice} onChange={e=>onSell(e.target.value)} style={{fontSize:'15px',fontWeight:'500'}}/></div>
+            <div><label className="label">Markup %</label><div style={{position:'relative'}}><input className="input" type="number" step="0.1" placeholder="10" value={option.margin} onChange={e=>onMargin(e.target.value)} style={{paddingRight:'26px'}}/><span style={{position:'absolute',right:'10px',top:'50%',transform:'translateY(-50%)',color:'var(--text-muted)',fontSize:'13px',pointerEvents:'none'}}>%</span></div></div>
+            <div><label className="label">Profit (£)</label><input className="input" type="number" step="1" placeholder="Auto" value={option.profit} onChange={e=>onProfit(e.target.value)} style={{color:'var(--gold)',fontWeight:'500'}}/></div>
+          </div>
+          {sellN>0&&(
+            <div style={{display:'flex',gap:'14px',padding:'10px 14px',background:'var(--bg-tertiary)',borderRadius:'8px'}}>
+              {[...(totalNet>0?[{l:'Net',v:fmtS(totalNet),c:'var(--text-primary)'}]:[]),{l:'Sell',v:fmtS(sellN),c:'var(--text-primary)'},{l:'Profit',v:fmtS(profitN),c:'var(--gold)'},{l:'Markup',v:markupN.toFixed(1)+'%',c:markupN>=10?'var(--green)':markupN>=7?'var(--amber)':'var(--red)'}].map(s=>(
+                <div key={s.l} style={{textAlign:'center'}}>
+                  <div style={{fontSize:'10px',textTransform:'uppercase',letterSpacing:'0.06em',color:'var(--text-muted)',marginBottom:'2px'}}>{s.l}</div>
+                  <div style={{fontFamily:'Fraunces,serif',fontSize:'17px',fontWeight:'300',color:s.c}}>{s.v}</div>
+                </div>
+              ))}
+              <div style={{flex:1,display:'flex',alignItems:'center',paddingLeft:'6px'}}>
+                <div style={{width:'100%',height:'5px',background:'var(--border)',borderRadius:'3px',overflow:'hidden'}}>
+                  <div style={{height:'100%',width:`${Math.min(markupN,30)/30*100}%`,borderRadius:'3px',background:markupN>=10?'var(--green)':markupN>=7?'var(--amber)':'var(--red)',transition:'all 0.3s'}}/>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── CENTRE PANEL (Multi-Centre) ───────────────────────────
+function FlightOptionPanel({
+  option,
+  index,
+  totalOptions,
+  isDefault,
+  onSetDefault,
+  onChange,
+  onRemove,
+  airports,
+  onCreateAirport,
+}: {
+  option: FlightOption
+  index: number
+  totalOptions: number
+  isDefault: boolean
+  onSetDefault: () => void
+  onChange: (option: FlightOption) => void
+  onRemove: () => void
+  airports: AirportOption[]
+  onCreateAirport: (airport: AirportOption) => Promise<AirportOption>
+}) {
+  const [collapsed,setCollapsed]=useState(false)
+  const upd=(field:keyof FlightOption,val:any)=>onChange({...option,[field]:val})
+  const updLeg=(dir:'out'|'ret',legs:FlightLeg[])=>onChange({...option,[dir==='out'?'outLegs':'retLegs']:legs})
+  const flightN=numVal(option.flightNet)
+  const transN=numVal(option.transNet)
+
+  return (
+    <div className="card" style={{marginBottom:'14px',borderLeft:`3px solid ${isDefault?'#d4a84a':'#3b82f6'}`,overflow:'hidden'}}>
+      <div style={{padding:'14px 18px',display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer',background:'var(--bg-tertiary)'}} onClick={()=>setCollapsed(c=>!c)}>
+        <div style={{display:'flex',alignItems:'center',gap:'10px'}}>
+          <div style={{width:'26px',height:'26px',borderRadius:'50%',background:isDefault?'#d4a84a':'#3b82f6',color:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:'12px',fontWeight:'700',flexShrink:0}}>{optionLetter(index)}</div>
+          <div>
+            <div style={{fontFamily:'Fraunces,serif',fontSize:'15px',fontWeight:'300',color:'var(--text-primary)'}}>{getFlightOptionTitle(option, index)}</div>
+            <div style={{fontSize:'11.5px',color:'var(--text-muted)',marginTop:'1px'}}>{getFlightOptionSummary(option)}{flightN>0||transN>0?` · ${fmtS(flightN+transN)} net`:''}</div>
+          </div>
+        </div>
+        <div style={{display:'flex',gap:'6px',alignItems:'center'}}>
+          {isDefault
+            ? <span style={{fontSize:'10px',fontWeight:'700',letterSpacing:'0.08em',textTransform:'uppercase',color:'#9a7a2d',background:'#fff7df',padding:'4px 8px',borderRadius:'999px'}}>Default</span>
+            : <button onClick={e=>{e.stopPropagation();onSetDefault()}} className="btn btn-secondary btn-xs">Use As Default</button>}
+          {totalOptions>1&&<button onClick={e=>{e.stopPropagation();onRemove()}} className="btn btn-danger btn-xs">Remove</button>}
+          <span style={{color:'var(--text-muted)',fontSize:'16px',marginLeft:'4px'}}>{collapsed?'▸':'▾'}</span>
+        </div>
+      </div>
+
+      {!collapsed&&(
+        <div style={{padding:'18px'}}>
+          <div style={{marginBottom:'14px'}}>
+            <label className="label">Flight Option Label</label>
+            <input className="input" placeholder="e.g. Direct BA, Emirates via Dubai..." value={option.label} onChange={e=>upd('label',e.target.value)}/>
+            <div style={{fontSize:'11.5px',color:'var(--text-muted)',marginTop:'6px'}}>Used in hotel assignment and in the final option list when flights differ.</div>
+          </div>
+
+          <div style={{marginBottom:'14px'}}>
+            <div style={{fontWeight:'600',fontSize:'12px',color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'8px'}}>Outbound Flights</div>
+            {option.outLegs.map(leg=><LegRow key={leg.id} leg={leg} legs={option.outLegs} setLegs={legs=>updLeg('out',legs)} canRemove={option.outLegs.length>1} airports={airports} onCreateAirport={onCreateAirport}/>)}
+            <button className="btn btn-ghost btn-sm" style={{border:'1.5px dashed var(--border)',width:'100%',justifyContent:'center'}} onClick={()=>updLeg('out',[...option.outLegs,newLeg('out')])}>+ Add outbound leg</button>
+          </div>
+
+          <div style={{marginBottom:'14px'}}>
+            <div style={{fontWeight:'600',fontSize:'12px',color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'8px'}}>Return Flights</div>
+            {option.retLegs.map(leg=><LegRow key={leg.id} leg={leg} legs={option.retLegs} setLegs={legs=>updLeg('ret',legs)} canRemove={option.retLegs.length>1} airports={airports} onCreateAirport={onCreateAirport}/>)}
+            <button className="btn btn-ghost btn-sm" style={{border:'1.5px dashed var(--border)',width:'100%',justifyContent:'center'}} onClick={()=>updLeg('ret',[...option.retLegs,newLeg('ret')])}>+ Add return leg</button>
+          </div>
+
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px'}}>
+            <div><label className="label">Flight Net (£)</label><input className="input" type="number" step="0.01" placeholder="0.00" value={option.flightNet} onChange={e=>upd('flightNet',e.target.value)}/></div>
+            <div><label className="label">Transfer Net (£)</label><input className="input" type="number" step="0.01" placeholder="0.00" value={option.transNet} onChange={e=>upd('transNet',e.target.value)}/></div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function AssignedAccommodationOptionPanel({
+  option,
+  index,
+  totalOptions,
+  flightOptions,
+  defaultFlightOptionId,
+  onChange,
+  onRemove,
+  onDuplicate,
+}:{
+  option: AccommodationOption
+  index: number
+  totalOptions: number
+  flightOptions: FlightOption[]
+  defaultFlightOptionId: string
+  onChange: (o: AccommodationOption) => void
+  onRemove: () => void
+  onDuplicate: () => void
+}) {
+  const [collapsed,setCollapsed]=useState(false)
+  const normalizedOption = normalizeAccommodationOptionAssignments(option, flightOptions, defaultFlightOptionId)
+  const selectedFlightOptions = getOrderedSelectedFlightOptions(normalizedOption, flightOptions, defaultFlightOptionId)
+  const pricingFlightOption = resolveAccommodationPricingFlight(normalizedOption, flightOptions, defaultFlightOptionId)
+  const defaultFlightOption = flightOptions.find(flightOption => flightOption.id === defaultFlightOptionId) || null
+  const nonDefaultFlightOptions = flightOptions.filter(flightOption => flightOption.id !== defaultFlightOptionId)
+
+  const upd=(field:keyof AccommodationOption,val:any)=>onChange(normalizeAccommodationOptionAssignments({...normalizedOption,[field]:val}, flightOptions, defaultFlightOptionId))
+  const updExtra=(id:string,field:keyof ExtraItem,val:any)=>upd('extras',normalizedOption.extras.map(extra=>extra.id===id?{...extra,[field]:val}:extra))
+
+  const flightN=pricingFlightOption ? numVal(pricingFlightOption.flightNet) : 0
+  const accN=numVal(normalizedOption.accNet)
+  const transN=pricingFlightOption ? numVal(pricingFlightOption.transNet) : 0
+  const extrasN=normalizedOption.extras.reduce((sum,extra)=>sum+numVal(extra.net),0)
+  const totalNet=flightN+accN+transN+extrasN
+  const sellN=numVal(normalizedOption.sellPrice)
+  const profitN=numVal(normalizedOption.profit)
+  const markupN=numVal(normalizedOption.margin)||(sellN>0&&profitN>0&&profitN<sellN?(profitN/(sellN-profitN))*100:0)
+
+  function onSell(v:string){
+    const sell=numVal(v),mg=numVal(normalizedOption.margin),pr=numVal(normalizedOption.profit)
+    if(sell>0&&mg>0){const profit=totalNet>0?totalNet*mg/100:sell*mg/(100+mg);onChange({...normalizedOption,sellPrice:v,profit:profit.toFixed(2)})}
+    else if(sell>0&&pr>0){const markup=sell>pr?(pr/(sell-pr))*100:0;onChange({...normalizedOption,sellPrice:v,margin:markup.toFixed(1)})}
+    else onChange({...normalizedOption,sellPrice:v})
+  }
+  function onMargin(v:string){
+    const sell=numVal(normalizedOption.sellPrice),mg=numVal(v)
+    if(totalNet>0&&mg>0){const s=totalNet*(1+mg/100);onChange({...normalizedOption,margin:v,sellPrice:s.toFixed(2),profit:(totalNet*mg/100).toFixed(2)})}
+    else if(sell>0&&mg>0){const profit=sell*mg/(100+mg);onChange({...normalizedOption,margin:v,profit:profit.toFixed(2)})}
+    else onChange({...normalizedOption,margin:v})
+  }
+  function onProfit(v:string){
+    const sell=numVal(normalizedOption.sellPrice),pr=numVal(v)
+    if(sell>0&&pr>0){const markup=sell>pr?(pr/(sell-pr))*100:0;onChange({...normalizedOption,profit:v,margin:markup.toFixed(1)})}
+    else if(totalNet>0&&pr>0){const s=totalNet+pr;onChange({...normalizedOption,profit:v,sellPrice:s.toFixed(2),margin:((pr/totalNet)*100).toFixed(1)})}
+    else onChange({...normalizedOption,profit:v})
+  }
+
+  function toggleAssignedFlightOption(flightOptionId: string, checked: boolean) {
+    const assignedFlightOptionIds = checked
+      ? [...normalizedOption.assignedFlightOptionIds, flightOptionId]
+      : normalizedOption.assignedFlightOptionIds.filter(id => id !== flightOptionId)
+
+    onChange(normalizeAccommodationOptionAssignments({
+      ...normalizedOption,
+      assignedFlightOptionIds,
+    }, flightOptions, defaultFlightOptionId))
+  }
+
+  function changePricingFlightOption(nextFlightOptionId: string) {
+    const currentFlightCost = getFlightCostTotal(pricingFlightOption)
+    const nextFlightOption = flightOptions.find(flightOption => flightOption.id === nextFlightOptionId) || null
+    const nextFlightCost = getFlightCostTotal(nextFlightOption)
+    const adjustedSell = sellN > 0 ? sellN + (nextFlightCost - currentFlightCost) : 0
+    const nextTotalNet = accN + extrasN + nextFlightCost
+
+    onChange(normalizeAccommodationOptionAssignments({
+      ...normalizedOption,
+      pricingFlightOptionId: nextFlightOptionId,
+      sellPrice: adjustedSell > 0 ? adjustedSell.toFixed(2) : normalizedOption.sellPrice,
+      profit: adjustedSell > 0 ? (adjustedSell - nextTotalNet).toFixed(2) : normalizedOption.profit,
+      margin: adjustedSell > 0 && nextTotalNet > 0 ? (((adjustedSell - nextTotalNet) / nextTotalNet) * 100).toFixed(1) : normalizedOption.margin,
+    }, flightOptions, defaultFlightOptionId))
+  }
+
+  const COLORS=['#8b5cf6','#3b82f6','#10b981','#f59e0b','#ec4899']
+  const color=COLORS[index%COLORS.length]
+
+  return(
+    <div className="card" style={{marginBottom:'14px',borderLeft:`3px solid ${color}`,overflow:'hidden'}}>
+      <div style={{padding:'14px 18px',display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer',background:'var(--bg-tertiary)'}} onClick={()=>setCollapsed(c=>!c)}>
+        <div style={{display:'flex',alignItems:'center',gap:'10px'}}>
+          <div style={{width:'26px',height:'26px',borderRadius:'50%',background:color,color:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:'12px',fontWeight:'700',flexShrink:0}}>{index+1}</div>
+          <div>
+            <div style={{fontFamily:'Fraunces,serif',fontSize:'15px',fontWeight:'300',color:'var(--text-primary)'}}>{normalizedOption.hotel||`Option ${index+1} - select hotel`}</div>
+            <div style={{fontSize:'11.5px',color:'var(--text-muted)',marginTop:'1px'}}>{normalizedOption.boardBasis}{normalizedOption.nights?` · ${normalizedOption.nights} nights`:''}{sellN>0?` · ${fmtS(sellN)}`:''}{markupN>0?` · ${markupN.toFixed(1)}%`:''}{selectedFlightOptions.length>0?` · ${selectedFlightOptions.length} flight choice${selectedFlightOptions.length===1?'':'s'}`:''}</div>
+          </div>
+        </div>
+        <div style={{display:'flex',gap:'6px',alignItems:'center'}}>
+          {totalOptions>1&&<button onClick={e=>{e.stopPropagation();onDuplicate()}} className="btn btn-ghost btn-xs">⧉ Copy</button>}
+          {totalOptions>1&&<button onClick={e=>{e.stopPropagation();onRemove()}} className="btn btn-danger btn-xs">Remove</button>}
+          <span style={{color:'var(--text-muted)',fontSize:'16px',marginLeft:'4px'}}>{collapsed?'▸':'▾'}</span>
+        </div>
+      </div>
+      {!collapsed&&(
+        <div style={{padding:'18px'}}>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'12px',marginBottom:'14px'}}>
+            <div style={{gridColumn:'1/-1'}}><label className="label">Hotel Name *</label><DBSearch table="hotel_list" value={normalizedOption.hotel} onChange={v=>upd('hotel',v)} placeholder="Search or type hotel name..."/></div>
+            <div style={{gridColumn:'1/-1'}}><label className="label">Room Type</label><input className="input" placeholder="e.g. Deluxe Ocean Suite..." value={normalizedOption.roomType||''} onChange={e=>upd('roomType',e.target.value)}/></div>
+            <div><label className="label">Meal Plan</label><DBSearch table="meal_plan_list" value={normalizedOption.boardBasis} onChange={v=>upd('boardBasis',v)} placeholder="Search meal plan..."/></div>
+            <div><label className="label">Nights</label><input className="input" type="number" min="1" value={normalizedOption.nights} onChange={e=>upd('nights',e.target.value)}/></div>
+            <div><label className="label">Check-in Date</label><input className="input" type="date" value={normalizedOption.checkinDate||''} onChange={e=>upd('checkinDate',e.target.value)}/></div>
+            <div style={{display:'flex',flexDirection:'column',justifyContent:'flex-end',paddingBottom:'4px'}}>
+              <label style={{display:'flex',alignItems:'center',gap:'8px',cursor:'pointer'}}>
+                <input type="checkbox" checked={normalizedOption.checkinNextDay} onChange={e=>upd('checkinNextDay',e.target.checked)} style={{width:'16px',height:'16px'}}/>
+                <span style={{fontSize:'13px',color:'var(--text-secondary)'}}>Check-in next day{normalizedOption.checkinNextDay&&normalizedOption.checkinDate?<span style={{color:'var(--accent)',marginLeft:'6px',fontSize:'11.5px'}}>({addDays(normalizedOption.checkinDate,1)})</span>:null}</span>
+              </label>
+            </div>
+          </div>
+
+          <div style={{background:'var(--bg-tertiary)',borderRadius:'10px',padding:'14px',marginBottom:'12px'}}>
+            <div style={{fontWeight:'600',fontSize:'11px',color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'10px'}}>Flight Assignment</div>
+            <label style={{display:'flex',alignItems:'flex-start',gap:'10px',cursor:'pointer',padding:'10px 12px',background:'var(--surface)',border:'1px solid var(--border)',borderRadius:'8px',marginBottom:'10px'}}>
+              <input type="checkbox" checked={normalizedOption.useDefaultFlight} onChange={e=>onChange(normalizeAccommodationOptionAssignments({...normalizedOption,useDefaultFlight:e.target.checked}, flightOptions, defaultFlightOptionId))} style={{width:'16px',height:'16px',marginTop:'1px'}}/>
+              <span>
+                <span style={{display:'block',fontSize:'13px',fontWeight:'600',color:'var(--text-primary)'}}>Use default flight option</span>
+                <span style={{display:'block',fontSize:'11.5px',color:'var(--text-muted)',marginTop:'2px'}}>{defaultFlightOption ? `${getFlightOptionTitle(defaultFlightOption, flightOptions.findIndex(flightOption => flightOption.id === defaultFlightOption.id))} · ${getFlightOptionSummary(defaultFlightOption)}` : 'Create a flight option first'}</span>
+              </span>
+            </label>
+
+            <div style={{fontSize:'11px',fontWeight:'700',color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'8px'}}>Specific flight options</div>
+            {nonDefaultFlightOptions.length>0 ? nonDefaultFlightOptions.map(flightOption => {
+              const flightIndex = flightOptions.findIndex(existingOption => existingOption.id === flightOption.id)
+              return (
+                <label key={flightOption.id} style={{display:'flex',alignItems:'flex-start',gap:'10px',cursor:'pointer',padding:'10px 12px',background:'var(--surface)',border:'1px solid var(--border)',borderRadius:'8px',marginBottom:'8px'}}>
+                  <input type="checkbox" checked={normalizedOption.assignedFlightOptionIds.includes(flightOption.id)} onChange={e=>toggleAssignedFlightOption(flightOption.id, e.target.checked)} style={{width:'16px',height:'16px',marginTop:'1px'}}/>
+                  <span>
+                    <span style={{display:'block',fontSize:'13px',fontWeight:'600',color:'var(--text-primary)'}}>{getFlightOptionTitle(flightOption, flightIndex)}</span>
+                    <span style={{display:'block',fontSize:'11.5px',color:'var(--text-muted)',marginTop:'2px'}}>{getFlightOptionSummary(flightOption)}</span>
+                  </span>
+                </label>
+              )
+            }) : (
+              <div style={{fontSize:'11.5px',color:'var(--text-muted)',padding:'8px 0'}}>No extra flight options yet. Add another flight option above to attach alternatives to this hotel.</div>
+            )}
+
+            {selectedFlightOptions.length>0 ? (
+              <div style={{fontSize:'11.5px',color:'var(--text-muted)',marginTop:'4px'}}>
+                Client options from this hotel: <strong style={{color:'var(--text-primary)'}}>{selectedFlightOptions.map(flightOption => getFlightOptionTitle(flightOption, flightOptions.findIndex(existingOption => existingOption.id === flightOption.id))).join(', ')}</strong>
+              </div>
+            ) : (
+              <div style={{fontSize:'11.5px',color:'var(--red)',marginTop:'4px'}}>Select the default flight or at least one specific flight option so this hotel produces a quote option.</div>
+            )}
+
+            {selectedFlightOptions.length>1&&(
+              <div style={{marginTop:'12px'}}>
+                <label className="label">Price This Hotel Against</label>
+                <select className="input" value={normalizedOption.pricingFlightOptionId} onChange={e=>changePricingFlightOption(e.target.value)}>
+                  {selectedFlightOptions.map(flightOption => {
+                    const flightIndex = flightOptions.findIndex(existingOption => existingOption.id === flightOption.id)
+                    return <option key={flightOption.id} value={flightOption.id}>{getFlightOptionTitle(flightOption, flightIndex)}</option>
+                  })}
+                </select>
+                <div style={{fontSize:'11.5px',color:'var(--text-muted)',marginTop:'6px'}}>Other attached flights inherit this hotel price and adjust it only by the flight and transfer net difference.</div>
+              </div>
+            )}
+          </div>
+
+          <div style={{background:'var(--bg-tertiary)',borderRadius:'10px',padding:'14px',marginBottom:'12px'}}>
+            <div style={{fontWeight:'600',fontSize:'11px',color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'10px'}}>Internal Net Costs</div>
+            <div style={{marginBottom:'10px'}}>
+              <label className="label">Accommodation Net (£)</label>
+              <input className="input" type="number" step="0.01" placeholder="0.00" value={normalizedOption.accNet} onChange={e=>upd('accNet',e.target.value)}/>
+            </div>
+            {pricingFlightOption&&(
+              <div style={{fontSize:'11.5px',color:'var(--text-muted)',marginBottom:'10px',padding:'7px 10px',background:'var(--surface)',borderRadius:'6px',border:'1px solid var(--border)'}}>
+                Pricing flight: <strong style={{color:'var(--text-primary)'}}>{getFlightOptionTitle(pricingFlightOption, flightOptions.findIndex(existingOption => existingOption.id === pricingFlightOption.id))}</strong> · Flight net: {pricingFlightOption.flightNet?fmt(numVal(pricingFlightOption.flightNet)):'—'} · Transfer net: {pricingFlightOption.transNet?fmt(numVal(pricingFlightOption.transNet)):'—'}
+              </div>
+            )}
+            {normalizedOption.extras.length>0&&(
+              <div style={{marginBottom:'10px'}}>
+                <div style={{display:'grid',gridTemplateColumns:'1fr 130px 32px',gap:'6px',marginBottom:'5px'}}>
+                  {['Extra Item','Net (£)',''].map(h=><div key={h} style={{fontSize:'10px',color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.06em'}}>{h}</div>)}
+                </div>
+                {normalizedOption.extras.map(extra=>(
+                  <div key={extra.id} style={{display:'grid',gridTemplateColumns:'1fr 130px 32px',gap:'6px',marginBottom:'6px',alignItems:'center'}}>
+                    <input className="input" placeholder="e.g. Airport Lounge" value={extra.label} onChange={event=>updExtra(extra.id,'label',event.target.value)}/>
+                    <input className="input" type="number" step="0.01" placeholder="0.00" value={extra.net||''} onChange={event=>updExtra(extra.id,'net',parseFloat(event.target.value)||0)}/>
+                    <button onClick={()=>upd('extras',normalizedOption.extras.filter(existingExtra=>existingExtra.id!==extra.id))} style={{background:'var(--red-light)',color:'var(--red)',border:'none',borderRadius:'6px',width:'30px',height:'36px',cursor:'pointer',fontSize:'13px'}}>✕</button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div style={{display:'flex',flexWrap:'wrap',gap:'5px',marginBottom:totalNet>0?'10px':'0'}}>
+              {QUICK_EXTRAS.map(label=>(
+                <button key={label} onClick={()=>upd('extras',[...normalizedOption.extras,{id:uid(),label,net:0}])}
+                  style={{padding:'3px 9px',borderRadius:'20px',border:'1px solid var(--border)',background:'transparent',color:'var(--text-muted)',fontSize:'11px',cursor:'pointer',fontFamily:'Outfit,sans-serif'}}
+                  onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--accent)';e.currentTarget.style.color='var(--accent)'}}
+                  onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--border)';e.currentTarget.style.color='var(--text-muted)'}}>+ {label}</button>
+              ))}
+              <button onClick={()=>upd('extras',[...normalizedOption.extras,{id:uid(),label:'',net:0}])} style={{padding:'3px 9px',borderRadius:'20px',border:'1px dashed var(--border)',background:'transparent',color:'var(--text-muted)',fontSize:'11px',cursor:'pointer',fontFamily:'Outfit,sans-serif'}}>+ Custom</button>
+            </div>
+            {totalNet>0&&<div style={{display:'flex',justifyContent:'space-between',alignItems:'center',paddingTop:'10px',borderTop:'1px solid var(--border)'}}>
+              <span style={{fontSize:'12px',color:'var(--text-muted)',fontWeight:'600'}}>Pricing Net Cost</span>
+              <span style={{fontFamily:'Fraunces,serif',fontSize:'18px',fontWeight:'300',color:'var(--text-primary)'}}>{fmt(totalNet)}</span>
+            </div>}
+          </div>
+
+          <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'10px',marginBottom:'10px'}}>
+            <div><label className="label">Sell Price (£) *</label><input className="input" type="number" step="1" placeholder="4500" value={normalizedOption.sellPrice} onChange={e=>onSell(e.target.value)} style={{fontSize:'15px',fontWeight:'500'}}/></div>
+            <div><label className="label">Commission %</label><div style={{position:'relative'}}><input className="input" type="number" step="0.1" placeholder="10" value={normalizedOption.margin} onChange={e=>onMargin(e.target.value)} style={{paddingRight:'26px'}}/><span style={{position:'absolute',right:'10px',top:'50%',transform:'translateY(-50%)',color:'var(--text-muted)',fontSize:'13px',pointerEvents:'none'}}>%</span></div></div>
+            <div><label className="label">Profit (£)</label><input className="input" type="number" step="1" placeholder="Auto" value={normalizedOption.profit} onChange={e=>onProfit(e.target.value)} style={{color:'var(--gold)',fontWeight:'500'}}/></div>
+          </div>
+          {sellN>0&&(
+            <div style={{display:'flex',gap:'14px',padding:'10px 14px',background:'var(--bg-tertiary)',borderRadius:'8px'}}>
+              {[...(totalNet>0?[{l:'Net',v:fmtS(totalNet),c:'var(--text-primary)'}]:[]),{l:'Sell',v:fmtS(sellN),c:'var(--text-primary)'},{l:'Profit',v:fmtS(profitN),c:'var(--gold)'},{l:'Commission',v:markupN.toFixed(1)+'%',c:markupN>=10?'var(--green)':markupN>=7?'var(--amber)':'var(--red)'}].map(stat=>(
+                <div key={stat.l} style={{textAlign:'center'}}>
+                  <div style={{fontSize:'10px',textTransform:'uppercase',letterSpacing:'0.06em',color:'var(--text-muted)',marginBottom:'2px'}}>{stat.l}</div>
+                  <div style={{fontFamily:'Fraunces,serif',fontSize:'17px',fontWeight:'300',color:stat.c}}>{stat.v}</div>
+                </div>
+              ))}
+              <div style={{flex:1,display:'flex',alignItems:'center',paddingLeft:'6px'}}>
+                <div style={{width:'100%',height:'5px',background:'var(--border)',borderRadius:'3px',overflow:'hidden'}}>
+                  <div style={{height:'100%',width:`${Math.min(markupN,30)/30*100}%`,borderRadius:'3px',background:markupN>=10?'var(--green)':markupN>=7?'var(--amber)':'var(--red)',transition:'all 0.3s'}}/>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function CentrePanel({
   centre,
   index,
@@ -962,17 +1719,17 @@ export default function NewQuotePage(){
   const [initials,setInitials] = useState('SA')
   const [additionalServices,setAdditionalServices] = useState('')
   const [quoteCount,setQuoteCount] = useState(0)
-  const [editingRef,setEditingRef] = useState('')
+  const [activeQuoteRef,setActiveQuoteRef] = useState('')
+  const [activeQuoteId,setActiveQuoteId] = useState<number|null>(editQuoteId)
   const [airportOptions,setAirportOptions] = useState<AirportOption[]>(sortAirportOptions(DEFAULT_AIRPORTS))
   const [customTemplates,setCustomTemplates] = useState<{id:number;name:string;description:string;opening_hook:string;why_choose_us:string;urgency_notice:string;closing_cta:string}[]>([])
   const [selectedCustomTemplate,setSelectedCustomTemplate] = useState<number|null>(null)
 
-  // Single mode — shared travel state
-  const [sharedOutLegs,setSharedOutLegs] = useState<FlightLeg[]>([newLeg('out')])
-  const [sharedRetLegs,setSharedRetLegs] = useState<FlightLeg[]>([newLeg('ret')])
-  const [sharedFlightNet,setSharedFlightNet] = useState('')
-  const [sharedTransNet,setSharedTransNet] = useState('')
-  const [hotelOptions,setHotelOptions] = useState<HotelOption[]>([newHotelOption()])
+  // Single mode — shared defaults + reusable flight options + hotel options
+  const [sharedQuoteDefaults,setSharedQuoteDefaults] = useState<SharedQuoteDefaults>(newSharedQuoteDefaults())
+  const [flightOptions,setFlightOptions] = useState<FlightOption[]>([newFlightOption(newSharedQuoteDefaults())])
+  const [defaultFlightOptionId,setDefaultFlightOptionId] = useState('')
+  const [accommodationOptions,setAccommodationOptions] = useState<AccommodationOption[]>([newAccOption(newSharedQuoteDefaults())])
 
   // Multi-centre mode
   const [centres,setCentres]   = useState<Centre[]>([newCentre('Dubai'), newCentre('Mauritius')])
@@ -987,6 +1744,24 @@ export default function NewQuotePage(){
     loadCustomTemplates()
     loadAirports()
   },[dealId,editQuoteId])
+
+  useEffect(() => {
+    if (!flightOptions.length) return
+    if (!defaultFlightOptionId || !flightOptions.some(option => option.id === defaultFlightOptionId)) {
+      setDefaultFlightOptionId(flightOptions[0].id)
+    }
+  }, [flightOptions, defaultFlightOptionId])
+
+  useEffect(() => {
+    setFlightOptions(prev => prev.map(option => applySharedDefaultsToFlightOption(option, sharedQuoteDefaults)))
+    setAccommodationOptions(prev => prev.map(option => applySharedDefaultsToAccommodationOption(option, sharedQuoteDefaults)))
+  }, [sharedQuoteDefaults])
+
+  const singleQuoteOptions = buildSingleQuoteHotelOptions(
+    flightOptions,
+    defaultFlightOptionId,
+    accommodationOptions
+  ).map(normalizeHotelOption)
 
   async function loadAirports() {
     try {
@@ -1031,7 +1806,10 @@ export default function NewQuotePage(){
         const data = await response.json()
         setDeal(data)
         if(!isEditMode){
-          setHotelOptions(prev=>prev.map(o=>({...o,checkinDate:data.departure_date||''})))
+          setSharedQuoteDefaults(prev=>({
+            ...prev,
+            outboundDate: data.departure_date || prev.outboundDate,
+          }))
           setCentres(prev=>prev.map((c,i)=>i===prev.length-1?{...c,checkinDate:data.departure_date||''}:c))
         }
       }
@@ -1061,7 +1839,8 @@ export default function NewQuotePage(){
       const response = await fetch(`/api/quotes/${qid}`)
       if (response.ok) {
         const data = await response.json()
-        setEditingRef(data.quote_ref||'')
+        setActiveQuoteId(Number(data.id || qid))
+        setActiveQuoteRef(data.quote_ref||'')
         if (data.deal_id) {
           setDealIdVal(String(data.deal_id))
           if (!dealId) {
@@ -1075,13 +1854,87 @@ export default function NewQuotePage(){
           setMcSell(String(data.price||'')); setMcMargin(String(data.margin_percent||'')); setMcProfit(String(data.profit||''))
         } else {
           setQuoteMode('single')
+          const builderState = data.single_quote_builder
+          if (builderState) {
+            const nextSharedDefaults: SharedQuoteDefaults = {
+              origin: builderState.sharedQuoteDefaults?.origin || 'LHR',
+              outboundDate: builderState.sharedQuoteDefaults?.outboundDate || '',
+              returnDate: builderState.sharedQuoteDefaults?.returnDate || '',
+            }
+            const nextFlightOptions = (builderState.flightOptions?.length > 0 ? builderState.flightOptions : [newFlightOption(nextSharedDefaults)])
+              .map((option: FlightOption) => applySharedDefaultsToFlightOption({
+                id: option.id || uid(),
+                label: option.label || '',
+                outLegs: sortFlightLegs(option.outLegs?.length > 0 ? option.outLegs : [newLeg('out')]),
+                retLegs: sortFlightLegs(option.retLegs?.length > 0 ? option.retLegs : [newLeg('ret')]),
+                flightNet: String(option.flightNet || ''),
+                transNet: String(option.transNet || ''),
+              }, nextSharedDefaults))
+            const nextDefaultFlightOptionId = nextFlightOptions.some(option => option.id === builderState.defaultFlightOptionId)
+              ? builderState.defaultFlightOptionId
+              : nextFlightOptions[0]?.id || ''
+            const nextAccommodationOptions = (builderState.accommodationOptions?.length > 0 ? builderState.accommodationOptions : [newAccOption(nextSharedDefaults)])
+              .map((option: AccommodationOption) => normalizeAccommodationOptionAssignments({
+                ...newAccOption(nextSharedDefaults),
+                ...option,
+                id: option.id || uid(),
+                hotel: option.hotel || '',
+                roomType: option.roomType || '',
+                boardBasis: option.boardBasis || 'All Inclusive',
+                nights: String(option.nights || '7'),
+                checkinDate: option.checkinDate || nextSharedDefaults.outboundDate || '',
+                checkinNextDay: !!option.checkinNextDay,
+                accNet: String(option.accNet || ''),
+                extras: Array.isArray(option.extras) ? option.extras : [],
+                sellPrice: String(option.sellPrice || ''),
+                margin: String(option.margin || ''),
+                profit: String(option.profit || ''),
+                useDefaultFlight: option.useDefaultFlight !== false,
+                assignedFlightOptionIds: Array.isArray(option.assignedFlightOptionIds) ? option.assignedFlightOptionIds : [],
+                pricingFlightOptionId: option.pricingFlightOptionId || '',
+              }, nextFlightOptions, nextDefaultFlightOptionId))
+
+            setSharedQuoteDefaults(nextSharedDefaults)
+            setFlightOptions(nextFlightOptions)
+            setDefaultFlightOptionId(nextDefaultFlightOptionId)
+            setAccommodationOptions(nextAccommodationOptions)
+            return
+          }
           const costs=data.cost_breakdown||{}, fd=data.flight_details||{}
-          // Populate shared travel state from stored quote
-          setSharedOutLegs(fd.outbound?.length>0 ? fd.outbound : [newLeg('out')])
-          setSharedRetLegs(fd.return?.length>0 ? fd.return : [newLeg('ret')])
-          setSharedFlightNet(String(costs.flight_net||''))
-          setSharedTransNet(String(costs.trans_net||''))
-          setHotelOptions([{ id:uid(), hotel:data.hotel||'', roomType:data.room_type||'', boardBasis:data.board_basis||'All Inclusive', nights:String(data.nights||7), checkinDate:data.checkin_date||data.departure_date||'', checkinNextDay:data.checkin_next_day||false, accNet:String(costs.acc_net||''), extras:costs.extras||[], sellPrice:String(data.price||''), margin:String(data.margin_percent||''), profit:String(data.profit||'') }])
+          const flightOptionId = uid()
+          const outboundLegs = fd.outbound?.length>0 ? sortFlightLegs(fd.outbound) : [newLeg('out')]
+          const returnLegs = fd.return?.length>0 ? sortFlightLegs(fd.return) : [newLeg('ret')]
+          setSharedQuoteDefaults({
+            origin: outboundLegs[0]?.from || returnLegs[returnLegs.length-1]?.to || 'LHR',
+            outboundDate: outboundLegs[0]?.date || data.departure_date || '',
+            returnDate: returnLegs[0]?.date || '',
+          })
+          setFlightOptions([{
+            id: flightOptionId,
+            label: '',
+            outLegs: outboundLegs,
+            retLegs: returnLegs,
+            flightNet: String(costs.flight_net||''),
+            transNet: String(costs.trans_net||''),
+          }])
+          setDefaultFlightOptionId(flightOptionId)
+          setAccommodationOptions([{
+            id: uid(),
+            hotel: data.hotel||'',
+            roomType: data.room_type||'',
+            boardBasis: data.board_basis||'All Inclusive',
+            nights: String(data.nights||7),
+            checkinDate: data.checkin_date||data.departure_date||'',
+            checkinNextDay: data.checkin_next_day||false,
+            accNet: String(costs.acc_net||''),
+            extras: costs.extras||[],
+            sellPrice: String(data.price||''),
+            margin: String(data.margin_percent||''),
+            profit: String(data.profit||''),
+            useDefaultFlight: true,
+            assignedFlightOptionIds: [],
+            pricingFlightOptionId: flightOptionId,
+          }])
         }
       }
     } catch (error) {
@@ -1091,7 +1944,42 @@ export default function NewQuotePage(){
 
   function markDirty(){
     setSaved(false)
-    setSavedRefs([])
+    setSavedRefs(activeQuoteRef ? [activeQuoteRef] : [])
+  }
+
+  function updateSharedQuoteDefaults(field: keyof SharedQuoteDefaults, value: string) {
+    markDirty()
+    setSharedQuoteDefaults(prev => ({ ...prev, [field]: value }))
+  }
+
+  function addFlightOption() {
+    markDirty()
+    setFlightOptions(prev => [...prev, newFlightOption(sharedQuoteDefaults)])
+  }
+
+  function updateFlightOption(updatedOption: FlightOption) {
+    markDirty()
+    setFlightOptions(prev => prev.map(option => option.id === updatedOption.id ? updatedOption : option))
+  }
+
+  function removeFlightOption(flightOptionId: string) {
+    markDirty()
+    setFlightOptions(prev => {
+      const nextOptions = prev.filter(option => option.id !== flightOptionId)
+      const nextDefaultFlightOptionId = defaultFlightOptionId === flightOptionId
+        ? (nextOptions[0]?.id || '')
+        : defaultFlightOptionId
+
+      setDefaultFlightOptionId(nextDefaultFlightOptionId)
+      setAccommodationOptions(existingOptions => existingOptions.map(option => normalizeAccommodationOptionAssignments({
+        ...option,
+        assignedFlightOptionIds: option.assignedFlightOptionIds.filter(id => id !== flightOptionId),
+        useDefaultFlight: option.useDefaultFlight ? nextDefaultFlightOptionId !== '' : false,
+        pricingFlightOptionId: option.pricingFlightOptionId === flightOptionId ? nextDefaultFlightOptionId : option.pricingFlightOptionId,
+      }, nextOptions, nextDefaultFlightOptionId)))
+
+      return nextOptions
+    })
   }
 
   // Multi-centre pricing
@@ -1138,13 +2026,15 @@ export default function NewQuotePage(){
     setMcProfit(v)
   }
 
-  const quoteRef = isEditMode ? editingRef : (savedRefs.length > 0 ? savedRefs[0] : genRef(initials, quoteCount))
+  const quoteRef = activeQuoteRef || genRef(initials, quoteCount)
 
   async function handleSave(){
     const tid = Number(dealIdVal)
     if(!tid){ setError('Select a deal'); return }
+    if(quoteMode==='single' && singleQuoteOptions.length===0){ setError('Add at least one complete hotel + flight option before saving'); return }
 
     setSaving(true); setError('')
+    const wasPersistedQuote = !!activeQuoteRef
 
     try {
       const response = await fetch('/api/quotes', {
@@ -1159,28 +2049,32 @@ export default function NewQuotePage(){
           infants: parseInt(infants),
           initials,
           additionalServices,
-          hotelOptions: hotelOptions.map(o => ({
-            ...o,
-            outLegs: sortFlightLegs(sharedOutLegs),
-            retLegs: sortFlightLegs(sharedRetLegs),
-            flightNet: sharedFlightNet,
-            transNet: sharedTransNet,
-          })),
+          hotelOptions: singleQuoteOptions,
           centres: sortCentresChronologically(centres),
           sellPrice: parseFloat(mcSellPrice),
           margin: parseFloat(mcMargin),
           profit: parseFloat(mcProfit),
-          isEdit: isEditMode,
-          editQuoteId
+          isEdit: false,
+          editQuoteId: activeQuoteId || editQuoteId,
+          singleQuoteBuilder: quoteMode==='single' ? {
+            sharedQuoteDefaults,
+            flightOptions,
+            defaultFlightOptionId,
+            accommodationOptions,
+          } : undefined,
         })
       })
 
       if (response.ok) {
-        const { refs } = await response.json()
+        const { refs, quoteId } = await response.json()
         setSavedRefs(refs)
+        if (refs?.[0]) setActiveQuoteRef(refs[0])
+        if (quoteId) setActiveQuoteId(Number(quoteId))
         setSaving(false)
         setSaved(true)
-        setQuoteCount(c => c + refs.length)
+        if (!wasPersistedQuote && refs?.length) {
+          setQuoteCount(c => c + 1)
+        }
       } else {
         const errorData = await response.json()
         setError(errorData.error || 'Failed to save quote')
@@ -1212,7 +2106,7 @@ export default function NewQuotePage(){
           </div>
         </div>
         <div style={{display:'flex',gap:'8px'}}>
-          {hotel(hotelOptions)&&<button className="btn btn-secondary" onClick={()=>setShowPreview(true)}>👁 Preview Quote</button>}
+          {((quoteMode==='single' && singleQuoteOptions.length>0) || (quoteMode==='multi' && centres.some(c=>c.hotel.trim())))&&<button className="btn btn-secondary" onClick={()=>setShowPreview(true)}>👁 Preview Quote</button>}
           {saved
             ?<Link href={`/deals/${dealIdVal}`}><button className="btn btn-primary">← Back to Deal</button></Link>
             :<button className="btn btn-cta btn-lg" onClick={handleSave} disabled={saving}>{saving?'Saving…':isEditMode?'Update Quote':'Save Quote'}</button>}
@@ -1243,12 +2137,12 @@ export default function NewQuotePage(){
                     <div style={{fontWeight:'500',color:'var(--accent-mid)',fontSize:'14px'}}>{deal.title}</div>
                     {deal.clients&&<div style={{fontSize:'12px',color:'var(--text-muted)',marginTop:'1px'}}>{(deal.clients as any).first_name} {(deal.clients as any).last_name} · {(deal.clients as any).email}</div>}
                   </div>
-                  <button onClick={()=>{ markDirty(); setDeal(null); setDealIdVal('') }} className="btn btn-secondary btn-sm">Change</button>
+                  <button onClick={()=>{ markDirty(); setActiveQuoteRef(''); setActiveQuoteId(null); setDeal(null); setDealIdVal('') }} className="btn btn-secondary btn-sm">Change</button>
                 </div>
               ):(
                 <div>
                   <label className="label">Select Deal *</label>
-                  <select className="input" value={dealIdVal} onChange={e=>{ markDirty(); setDealIdVal(e.target.value);loadDeal(Number(e.target.value)) }}>
+                  <select className="input" value={dealIdVal} onChange={e=>{ markDirty(); setActiveQuoteRef(''); setActiveQuoteId(null); setDealIdVal(e.target.value);loadDeal(Number(e.target.value)) }}>
                     <option value="">Choose…</option>
                     {deals.map(d=><option key={d.id} value={d.id}>{d.title}{d.clients?` — ${(d.clients as any).first_name} ${(d.clients as any).last_name}`:''}</option>)}
                   </select>
@@ -1292,34 +2186,69 @@ export default function NewQuotePage(){
             {/* ── SINGLE DESTINATION ── */}
             {quoteMode==='single'&&(
               <div>
-                <SharedTravelCard
-                  outLegs={sharedOutLegs} retLegs={sharedRetLegs}
-                  flightNet={sharedFlightNet} transNet={sharedTransNet}
-                  setOutLegs={l=>{ markDirty(); setSharedOutLegs(l) }}
-                  setRetLegs={l=>{ markDirty(); setSharedRetLegs(l) }}
-                  setFlightNet={v=>{ markDirty(); setSharedFlightNet(v) }}
-                  setTransNet={v=>{ markDirty(); setSharedTransNet(v) }}
-                  airports={airportOptions}
-                  onCreateAirport={createAirport}/>
+                <div className="card" style={{padding:'18px 20px',marginBottom:'16px'}}>
+                  <div style={{fontFamily:'Fraunces,serif',fontSize:'17px',fontWeight:'300',marginBottom:'4px'}}>Shared Quote Defaults</div>
+                  <div style={{fontSize:'12px',color:'var(--text-muted)',marginBottom:'14px'}}>Passengers stay at quote level, and these defaults pre-fill new flight and hotel options without forcing full itinerary duplication.</div>
+                  <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'10px'}}>
+                    <div><label className="label">Origin</label><input className="input" placeholder="LHR" value={sharedQuoteDefaults.origin} onChange={e=>updateSharedQuoteDefaults('origin',e.target.value.toUpperCase())}/></div>
+                    <div><label className="label">Outbound Date</label><input className="input" type="date" value={sharedQuoteDefaults.outboundDate} onChange={e=>updateSharedQuoteDefaults('outboundDate',e.target.value)}/></div>
+                    <div><label className="label">Return Date</label><input className="input" type="date" value={sharedQuoteDefaults.returnDate} onChange={e=>updateSharedQuoteDefaults('returnDate',e.target.value)}/></div>
+                  </div>
+                </div>
 
                 <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'12px'}}>
-                  <div style={{fontFamily:'Fraunces,serif',fontSize:'17px',fontWeight:'300'}}>Hotel Options</div>
-                  {!isEditMode&&<button className="btn btn-secondary btn-sm" onClick={()=>{ markDirty(); setHotelOptions(p=>[...p,newHotelOption()]) }}>+ Add Option</button>}
+                  <div>
+                    <div style={{fontFamily:'Fraunces,serif',fontSize:'17px',fontWeight:'300'}}>Flight Options</div>
+                    <div style={{fontSize:'12px',color:'var(--text-muted)',marginTop:'2px'}}>Add reusable flight-only options once, then attach them to one or more hotels below.</div>
+                  </div>
+                  <button className="btn btn-secondary btn-sm" onClick={addFlightOption}>+ Add Flight Option</button>
                 </div>
-                {hotelOptions.map((o,i)=>(
-                  <HotelOptionPanel key={o.id} option={o} index={i} totalOptions={hotelOptions.length}
-                    onChange={updated=>{ markDirty(); setHotelOptions(p=>p.map(x=>x.id===updated.id?updated:x)) }}
-                    onRemove={()=>{ markDirty(); setHotelOptions(p=>p.filter(x=>x.id!==o.id)) }}
-                    onDuplicate={()=>{ const src=hotelOptions.find(x=>x.id===o.id); if(src){ markDirty(); setHotelOptions(p=>[...p,{...src,id:uid(),hotel:''}]) } }}
-                    sharedFlightNet={sharedFlightNet}
-                    sharedTransNet={sharedTransNet}/>
+                {flightOptions.map((option,index)=>(
+                  <FlightOptionPanel
+                    key={option.id}
+                    option={option}
+                    index={index}
+                    totalOptions={flightOptions.length}
+                    isDefault={option.id===defaultFlightOptionId}
+                    onSetDefault={()=>{ markDirty(); setDefaultFlightOptionId(option.id); setAccommodationOptions(prev=>prev.map(acc=>normalizeAccommodationOptionAssignments(acc, flightOptions, option.id))) }}
+                    onChange={updated=>updateFlightOption(updated)}
+                    onRemove={()=>removeFlightOption(option.id)}
+                    airports={airportOptions}
+                    onCreateAirport={createAirport}
+                  />
                 ))}
-                {!isEditMode&&hotelOptions.length<6&&(
-                  <button onClick={()=>{ markDirty(); setHotelOptions(p=>[...p,newHotelOption()]) }}
+                {flightOptions.length<6&&(
+                  <button onClick={addFlightOption}
+                    style={{width:'100%',padding:'13px',border:'2px dashed var(--border)',borderRadius:'12px',background:'transparent',color:'var(--text-muted)',fontSize:'13px',cursor:'pointer',fontFamily:'Outfit,sans-serif',marginBottom:'18px'}}
+                    onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--accent)';e.currentTarget.style.color='var(--accent)'}}
+                    onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--border)';e.currentTarget.style.color='var(--text-muted)'}}>
+                    + Add Another Flight Option
+                  </button>
+                )}
+
+                {/* Accommodation options */}
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'12px'}}>
+                  <div>
+                    <div style={{fontFamily:'Fraunces,serif',fontSize:'17px',fontWeight:'300'}}>Accommodation Options</div>
+                    <div style={{fontSize:'12px',color:'var(--text-muted)',marginTop:'2px'}}>Hotels stay separate from flights, and each hotel can use the default flight and/or attach specific alternatives.</div>
+                  </div>
+                  <button className="btn btn-secondary btn-sm" onClick={()=>{ markDirty(); setAccommodationOptions(p=>[...p,newAccOption(sharedQuoteDefaults)]) }}>+ Add Accommodation Option</button>
+                </div>
+                {accommodationOptions.map((o,i)=>(
+                  <AssignedAccommodationOptionPanel key={o.id} option={o} index={i} totalOptions={accommodationOptions.length}
+                    flightOptions={flightOptions}
+                    defaultFlightOptionId={defaultFlightOptionId}
+                    onChange={updated=>{ markDirty(); setAccommodationOptions(p=>p.map(x=>x.id===updated.id?updated:x)) }}
+                    onRemove={()=>{ markDirty(); setAccommodationOptions(p=>p.filter(x=>x.id!==o.id)) }}
+                    onDuplicate={()=>{ const src=accommodationOptions.find(x=>x.id===o.id); if(src){ markDirty(); setAccommodationOptions(p=>[...p,{...src,id:uid(),hotel:''}]) } }}
+                  />
+                ))}
+                {accommodationOptions.length<6&&(
+                  <button onClick={()=>{ markDirty(); setAccommodationOptions(p=>[...p,newAccOption(sharedQuoteDefaults)]) }}
                     style={{width:'100%',padding:'13px',border:'2px dashed var(--border)',borderRadius:'12px',background:'transparent',color:'var(--text-muted)',fontSize:'13px',cursor:'pointer',fontFamily:'Outfit,sans-serif'}}
                     onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--accent)';e.currentTarget.style.color='var(--accent)'}}
                     onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--border)';e.currentTarget.style.color='var(--text-muted)'}}>
-                    + Add Another Hotel Option
+                    + Add Another Accommodation Option
                   </button>
                 )}
               </div>
@@ -1391,7 +2320,7 @@ export default function NewQuotePage(){
           <div style={{position:'sticky',top:'80px',alignSelf:'flex-start',display:'flex',flexDirection:'column',gap:'12px'}}>
 
             {/* Live summary */}
-            {quoteMode==='single'&&hotelOptions.map((o,i)=>{
+            {quoteMode==='single'&&accommodationOptions.map((o,i)=>{
               const sellN=parseFloat(o.sellPrice)||0,profitN=parseFloat(o.profit)||0
               const marginN = sellN>0&&profitN>0&&profitN<sellN ? (profitN/(sellN-profitN))*100 : (parseFloat(o.margin)||0)
               const COLORS=['#8b5cf6','#3b82f6','#10b981','#f59e0b','#ec4899']
@@ -1400,7 +2329,7 @@ export default function NewQuotePage(){
                 <div key={o.id} style={{background:'#0d1b2a',borderRadius:'12px',padding:'16px',color:'white',borderLeft:`3px solid ${col}`}}>
                   <div style={{fontSize:'9px',textTransform:'uppercase',letterSpacing:'0.12em',color:col,marginBottom:'3px'}}>Option {i+1}</div>
                   <div style={{fontFamily:'Fraunces,serif',fontSize:'15px',fontWeight:'300',marginBottom:'2px'}}>{o.hotel||'—'}</div>
-                  <div style={{fontSize:'11px',opacity:0.5,marginBottom:'10px'}}>{o.boardBasis} · {o.nights} nights</div>
+                  <div style={{fontSize:'11px',opacity:0.5,marginBottom:'10px'}}>{o.boardBasis} · {o.nights} nights{o.useDefaultFlight||o.assignedFlightOptionIds.length>0?` · ${(o.useDefaultFlight?1:0)+o.assignedFlightOptionIds.length} flight choice${((o.useDefaultFlight?1:0)+o.assignedFlightOptionIds.length)===1?'':'s'}`:''}</div>
                   <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
                     <span style={{fontSize:'10px',opacity:0.6}}>Total</span>
                     <span style={{fontFamily:'Fraunces,serif',fontSize:'19px',fontWeight:'300',color:'#d4a84a'}}>{sellN>0?fmtS(sellN):'—'}</span>
@@ -1466,7 +2395,7 @@ export default function NewQuotePage(){
             </div>
 
             <div style={{background:'var(--gold-light)',borderRadius:'10px',padding:'12px 14px',border:'1px solid var(--border)'}}>
-              <div style={{fontSize:'10.5px',fontWeight:'700',color:'var(--gold)',marginBottom:'6px',textTransform:'uppercase',letterSpacing:'0.06em'}}>Markup Guide</div>
+              <div style={{fontSize:'10.5px',fontWeight:'700',color:'var(--gold)',marginBottom:'6px',textTransform:'uppercase',letterSpacing:'0.06em'}}>Commission Guide</div>
               <div style={{fontSize:'12px',color:'var(--text-secondary)',lineHeight:'1.8'}}>
                 <div>🟢 10%+ great margin</div><div>🟡 7–10% acceptable</div><div>🔴 Under 7% review</div>
               </div>
@@ -1482,10 +2411,10 @@ export default function NewQuotePage(){
       {showPreview&&(
         <QuoteDeliveryModal
           deal={deal} quoteMode={quoteMode}
-          hotelOptions={hotelOptions.map(o=>({...o,outLegs:sortFlightLegs(sharedOutLegs),retLegs:sortFlightLegs(sharedRetLegs),flightNet:sharedFlightNet,transNet:sharedTransNet}))} centres={centres}
+          hotelOptions={singleQuoteOptions} centres={centres}
           adults={adults} children={children} infants={infants}
           additionalServices={additionalServices}
-          sellPrice={quoteMode==='single'?parseFloat(hotelOptions[0]?.sellPrice||'0'):mcSellN}
+          sellPrice={quoteMode==='single'?parseFloat(singleQuoteOptions[0]?.sellPrice||'0'):mcSellN}
           quoteRef={quoteRef} template={emailTemplate}
           selectedCustomTemplate={selectedCustomTemplate}
           customTemplates={customTemplates}
@@ -1496,7 +2425,7 @@ export default function NewQuotePage(){
 }
 
 // helper to check hotel var
-function hotel(hotelOptions: HotelOption[]) { return hotelOptions[0]?.hotel || '' }
+function hotel(options: {hotel:string}[]) { return options[0]?.hotel || '' }
 
 // ── QUOTE DELIVERY ────────────────────────────────────────
 
@@ -1598,6 +2527,9 @@ function generateQuoteHtml(p: {
   const ordC      = isMulti ? sortCentresChronologically(p.centres) : []
   const tpl       = p.templateId
   const multiOpts = !isMulti && p.hotelOptions.length > 1
+  const hasSharedFlightsAcrossOptions = !isMulti && p.hotelOptions.length > 1
+    ? new Set(p.hotelOptions.map(option => getFlightSignature(option))).size === 1
+    : false
 
   // Pax
   const pax: string[] = [`${p.adults} Adult${parseInt(p.adults)!==1?'s':''}`]
@@ -1810,16 +2742,21 @@ function generateQuoteHtml(p: {
       </td></tr>`
     }
   } else {
-    // Multiple options — per-option blocks
+    // Multiple options — flights shown once (shared), then per-option hotel blocks
+    if (hasSharedFlightsAcrossOptions && p.hotelOptions.length > 0) {
+      body += qFlightsSection(sortFlightLegs([...(p.hotelOptions[0].outLegs||[]),...(p.hotelOptions[0].retLegs||[])]))
+    }
     p.hotelOptions.forEach((opt, idx) => {
       const sellN = parseFloat(opt.sellPrice)||0
       const ci    = opt.checkinDate ? fmtDate(opt.checkinNextDay ? addDays(opt.checkinDate,1) : opt.checkinDate) : '&mdash;'
       body += `<tr><td style="padding:0 36px 8px;">
         <table width="100%" cellpadding="0" cellspacing="0"><tr><td style="border-top:2px solid ${QD};padding-top:28px;"></td></tr></table>
       </td></tr>`
-      body += qOptionPriceRow(sellN, `Option ${idx+1}`, parseInt(opt.nights || '0') || 0)
+      body += qOptionPriceRow(sellN, opt.optionLabel || `Option ${idx+1}`, parseInt(opt.nights || '0') || 0)
       body += `<tr><td style="padding:0 36px 16px;">${optBullets(opt)}</td></tr>`
-      body += qFlightsSection(sortFlightLegs([...(opt.outLegs||[]),...(opt.retLegs||[])]))
+      if (!hasSharedFlightsAcrossOptions) {
+        body += qFlightsSection(sortFlightLegs([...(opt.outLegs||[]),...(opt.retLegs||[])]))
+      }
       body += `<tr><td style="padding:0 36px 24px;">${qSectionHead('Accommodation')}
         <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;border:1px solid ${QD};">
           <tbody>

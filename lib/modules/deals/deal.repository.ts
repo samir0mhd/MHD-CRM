@@ -12,6 +12,7 @@ export type Deal = {
   source: string | null
   next_activity_at: string | null
   next_activity_type: string | null
+  next_activity_note: string | null
   lost_reason: string | null
   created_at: string
   client_id?: number | null
@@ -271,19 +272,31 @@ export async function insertFollowUpSequences(sequences: { deal_id: number; sequ
 }
 
 export async function updateQuoteSent(quoteId: number) {
+  return updateQuotesSent([quoteId])
+}
+
+export async function updateQuotesSent(quoteIds: number[]) {
+  if (quoteIds.length === 0) return
+
   return dbMutate({
     table: 'quotes',
     action: 'update',
     values: { sent_to_client: true },
-    filters: [{ column: 'id', value: quoteId }],
+    filters: [{ column: 'id', op: 'in', value: quoteIds }],
   })
 }
 
 export async function deleteQuote(quoteId: number) {
+  return deleteQuotes([quoteId])
+}
+
+export async function deleteQuotes(quoteIds: number[]) {
+  if (quoteIds.length === 0) return
+
   return dbMutate({
     table: 'quotes',
     action: 'delete',
-    filters: [{ column: 'id', value: quoteId }],
+    filters: [{ column: 'id', op: 'in', value: quoteIds }],
   })
 }
 
