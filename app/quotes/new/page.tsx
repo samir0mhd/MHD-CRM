@@ -34,15 +34,16 @@ type HotelOption = {
   nights: string
   checkinDate?: string
   checkinNextDay: boolean
-  outLegs: FlightLeg[]
-  retLegs: FlightLeg[]
-  flightNet: string
   accNet: string
-  transNet: string
   extras: ExtraItem[]
   sellPrice: string
   margin: string
   profit: string
+  // Populated only on assembled options (for save/preview) — not held in state
+  outLegs?: FlightLeg[]
+  retLegs?: FlightLeg[]
+  flightNet?: string
+  transNet?: string
 }
 
 type Centre = {
@@ -219,11 +220,7 @@ function newHotelOption(): HotelOption {
     nights: '7',
     checkinDate: '',
     checkinNextDay: false,
-    outLegs: [newLeg('out')],
-    retLegs: [newLeg('ret')],
-    flightNet: '',
     accNet: '',
-    transNet: '',
     extras: [],
     sellPrice: '',
     margin: '',
@@ -285,13 +282,6 @@ function sortFlightLegs(legs: FlightLeg[]): FlightLeg[] {
   return [...legs].sort((a, b) => getLegTimestamp(a) - getLegTimestamp(b))
 }
 
-function normalizeHotelOption(option: HotelOption): HotelOption {
-  return {
-    ...option,
-    outLegs: sortFlightLegs(option.outLegs || []),
-    retLegs: sortFlightLegs(option.retLegs || []),
-  }
-}
 
 function getCentreTimestamp(centre: Centre): number {
   const legTimes = [...(centre.inboundLegs || []), ...(centre.outboundLegs || [])]
@@ -594,8 +584,8 @@ function HotelOptionPanel({
   onChange,
   onRemove,
   onDuplicate,
-  airports,
-  onCreateAirport,
+  sharedFlightNet,
+  sharedTransNet,
 }:{
   option:HotelOption
   index:number
@@ -603,15 +593,14 @@ function HotelOptionPanel({
   onChange:(o:HotelOption)=>void
   onRemove:()=>void
   onDuplicate:()=>void
-  airports: AirportOption[]
-  onCreateAirport: (airport: AirportOption) => Promise<AirportOption>
+  sharedFlightNet: string
+  sharedTransNet: string
 }){
   const [collapsed,setCollapsed]=useState(false)
   const upd=(field:keyof HotelOption,val:any)=>onChange({...option,[field]:val})
-  const updLeg=(dir:'out'|'ret',legs:FlightLeg[])=>onChange({...option,[dir==='out'?'outLegs':'retLegs']:legs})
   const updExtra=(id:string,field:keyof ExtraItem,val:any)=>upd('extras',option.extras.map(e=>e.id===id?{...e,[field]:val}:e))
 
-  const flightN=parseFloat(option.flightNet)||0, accN=parseFloat(option.accNet)||0, transN=parseFloat(option.transNet)||0
+  const flightN=parseFloat(sharedFlightNet)||0, accN=parseFloat(option.accNet)||0, transN=parseFloat(sharedTransNet)||0
   const extrasN=option.extras.reduce((a,e)=>a+(e.net||0),0), totalNet=flightN+accN+transN+extrasN
   const sellN=parseFloat(option.sellPrice)||0, profitN=parseFloat(option.profit)||0
   const markupN = parseFloat(option.margin)|| (sellN>0&&profitN>0&&profitN<sellN ? (profitN/(sellN-profitN))*100 : 0)
@@ -675,34 +664,10 @@ function HotelOptionPanel({
         <div style={{padding:'18px'}}>
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'12px',marginBottom:'14px'}}>
             <div style={{gridColumn:'1/-1'}}><label className="label">Hotel Name *</label><DBSearch table="hotel_list" value={option.hotel} onChange={v=>upd('hotel',v)} placeholder="Search or type hotel name…"/></div>
-            <div style={{gridColumn:'1/-1'}}><label className="label">Room Type</label><input className="input" placeholder="e.g. Deluxe Ocean Suite…" value={option.roomType} onChange={e=>upd('roomType',e.target.value)}/></div>
+            <div style={{gridColumn:'1/-1'}}><label className="label">Room Type</label><input className="input" placeholder="e.g. Deluxe Ocean Suite…" value={option.roomType||''} onChange={e=>upd('roomType',e.target.value)}/></div>
             <div><label className="label">Meal Plan</label><DBSearch table="meal_plan_list" value={option.boardBasis} onChange={v=>upd('boardBasis',v)} placeholder="Search meal plan…"/></div>
-            <div><label className="label">Nights</label><input className="input" type="number" min="1" value={option.nights} onChange={e=>{
-              const nights=e.target.value
-              upd('nights',nights)
-              // Auto-populate return flight date
-              if(option.checkinDate&&nights){
-                const retDate=new Date(option.checkinDate+'T12:00')
-                retDate.setDate(retDate.getDate()+parseInt(nights)||0)
-                const retStr=retDate.toISOString().split('T')[0]
-                const updatedRetLegs=option.retLegs.map((l,i)=>i===0&&!l.date?{...l,date:retStr}:l)
-                onChange({...option,nights,retLegs:updatedRetLegs})
-              }
-            }}/></div>
-            <div><label className="label">Check-in Date</label><input className="input" type="date" value={option.checkinDate} onChange={e=>{
-              const checkin=e.target.value
-              // Auto-populate outbound flight date if empty
-              const updatedOutLegs=option.outLegs.map((l,i)=>i===0&&!l.date?{...l,date:checkin}:l)
-              // Auto-populate return flight date if nights set
-              let updatedRetLegs=option.retLegs
-              if(checkin&&option.nights){
-                const retDate=new Date(checkin+'T12:00')
-                retDate.setDate(retDate.getDate()+(parseInt(option.nights)||0))
-                const retStr=retDate.toISOString().split('T')[0]
-                updatedRetLegs=option.retLegs.map((l,i)=>i===0&&!l.date?{...l,date:retStr}:l)
-              }
-              onChange({...option,checkinDate:checkin,outLegs:updatedOutLegs,retLegs:updatedRetLegs})
-            }}/></div>
+            <div><label className="label">Nights</label><input className="input" type="number" min="1" value={option.nights} onChange={e=>upd('nights',e.target.value)}/></div>
+            <div><label className="label">Check-in Date</label><input className="input" type="date" value={option.checkinDate||''} onChange={e=>upd('checkinDate',e.target.value)}/></div>
             <div style={{display:'flex',flexDirection:'column',justifyContent:'flex-end',paddingBottom:'4px'}}>
               <label style={{display:'flex',alignItems:'center',gap:'8px',cursor:'pointer'}}>
                 <input type="checkbox" checked={option.checkinNextDay} onChange={e=>upd('checkinNextDay',e.target.checked)} style={{width:'16px',height:'16px'}}/>
@@ -711,25 +676,11 @@ function HotelOptionPanel({
             </div>
           </div>
 
-          {/* Flights */}
-          <div style={{marginBottom:'14px'}}>
-            <div style={{fontWeight:'600',fontSize:'12px',color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'8px'}}>✈ Outbound Flights</div>
-            {option.outLegs.map(leg=><LegRow key={leg.id} leg={leg} legs={option.outLegs} setLegs={l=>updLeg('out',l)} canRemove={option.outLegs.length>1} airports={airports} onCreateAirport={onCreateAirport}/>)}
-            <button className="btn btn-ghost btn-sm" style={{border:'1.5px dashed var(--border)',width:'100%',justifyContent:'center'}} onClick={()=>updLeg('out',[...option.outLegs,newLeg('out')])}>+ Add outbound leg</button>
-          </div>
-          <div style={{marginBottom:'14px'}}>
-            <div style={{fontWeight:'600',fontSize:'12px',color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'8px'}}>↩ Return Flights</div>
-            {option.retLegs.map(leg=><LegRow key={leg.id} leg={leg} legs={option.retLegs} setLegs={l=>updLeg('ret',l)} canRemove={option.retLegs.length>1} airports={airports} onCreateAirport={onCreateAirport}/>)}
-            <button className="btn btn-ghost btn-sm" style={{border:'1.5px dashed var(--border)',width:'100%',justifyContent:'center'}} onClick={()=>updLeg('ret',[...option.retLegs,newLeg('ret')])}>+ Add return leg</button>
-          </div>
-
-          {/* Nets */}
+          {/* Accommodation Net */}
           <div style={{background:'var(--bg-tertiary)',borderRadius:'10px',padding:'14px',marginBottom:'12px'}}>
-            <div style={{fontWeight:'600',fontSize:'11px',color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'10px'}}>Internal Net Costs</div>
-            <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'10px',marginBottom:'12px'}}>
-              {([['Flight Net (£)',option.flightNet,(v:string)=>upd('flightNet',v)],['Accommodation Net (£)',option.accNet,(v:string)=>upd('accNet',v)],['Transfers Net (£)',option.transNet,(v:string)=>upd('transNet',v)]] as [string,string,any][]).map(([l,v,s])=>(
-                <div key={l}><label className="label">{l}</label><input className="input" type="number" step="0.01" placeholder="0.00" value={v} onChange={e=>s(e.target.value)}/></div>
-              ))}
+            <div style={{fontWeight:'600',fontSize:'11px',color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'10px'}}>Accommodation Net Costs</div>
+            <div style={{display:'grid',gridTemplateColumns:'1fr',gap:'10px',marginBottom:'12px'}}>
+              <div><label className="label">Accommodation Net (£)</label><input className="input" type="number" step="0.01" placeholder="0.00" value={option.accNet} onChange={e=>upd('accNet',e.target.value)}/></div>
             </div>
             {option.extras.length>0&&(
               <div style={{marginBottom:'10px'}}>
@@ -783,6 +734,55 @@ function HotelOptionPanel({
           )}
         </div>
       )}
+    </div>
+  )
+}
+
+// ── SHARED TRAVEL CARD (Single Destination) ───────────────
+function SharedTravelCard({
+  outLegs,
+  retLegs,
+  flightNet,
+  transNet,
+  setOutLegs,
+  setRetLegs,
+  setFlightNet,
+  setTransNet,
+  airports,
+  onCreateAirport,
+}:{
+  outLegs: FlightLeg[]
+  retLegs: FlightLeg[]
+  flightNet: string
+  transNet: string
+  setOutLegs: (l: FlightLeg[]) => void
+  setRetLegs: (l: FlightLeg[]) => void
+  setFlightNet: (v: string) => void
+  setTransNet: (v: string) => void
+  airports: AirportOption[]
+  onCreateAirport: (airport: AirportOption) => Promise<AirportOption>
+}){
+  return(
+    <div className="card" style={{padding:'18px 20px',marginBottom:'16px'}}>
+      <div style={{fontFamily:'Fraunces,serif',fontSize:'17px',fontWeight:'300',marginBottom:'3px'}}>Base Travel</div>
+      <div style={{fontSize:'12px',color:'var(--text-muted)',marginBottom:'14px'}}>Flights and net costs shared across all hotel options below</div>
+
+      <div style={{marginBottom:'14px'}}>
+        <div style={{fontWeight:'600',fontSize:'12px',color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'8px'}}>✈ Outbound Flights</div>
+        {outLegs.map(leg=><LegRow key={leg.id} leg={leg} legs={outLegs} setLegs={setOutLegs} canRemove={outLegs.length>1} airports={airports} onCreateAirport={onCreateAirport}/>)}
+        <button className="btn btn-ghost btn-sm" style={{border:'1.5px dashed var(--border)',width:'100%',justifyContent:'center'}} onClick={()=>setOutLegs([...outLegs,newLeg('out')])}>+ Add outbound leg</button>
+      </div>
+
+      <div style={{marginBottom:'14px'}}>
+        <div style={{fontWeight:'600',fontSize:'12px',color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'8px'}}>↩ Return Flights</div>
+        {retLegs.map(leg=><LegRow key={leg.id} leg={leg} legs={retLegs} setLegs={setRetLegs} canRemove={retLegs.length>1} airports={airports} onCreateAirport={onCreateAirport}/>)}
+        <button className="btn btn-ghost btn-sm" style={{border:'1.5px dashed var(--border)',width:'100%',justifyContent:'center'}} onClick={()=>setRetLegs([...retLegs,newLeg('ret')])}>+ Add return leg</button>
+      </div>
+
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px',background:'var(--bg-tertiary)',borderRadius:'10px',padding:'14px'}}>
+        <div><label className="label">Flight Net (£)</label><input className="input" type="number" step="0.01" placeholder="0.00" value={flightNet} onChange={e=>setFlightNet(e.target.value)}/></div>
+        <div><label className="label">Transfers Net (£)</label><input className="input" type="number" step="0.01" placeholder="0.00" value={transNet} onChange={e=>setTransNet(e.target.value)}/></div>
+      </div>
     </div>
   )
 }
@@ -967,7 +967,11 @@ export default function NewQuotePage(){
   const [customTemplates,setCustomTemplates] = useState<{id:number;name:string;description:string;opening_hook:string;why_choose_us:string;urgency_notice:string;closing_cta:string}[]>([])
   const [selectedCustomTemplate,setSelectedCustomTemplate] = useState<number|null>(null)
 
-  // Single mode
+  // Single mode — shared travel state
+  const [sharedOutLegs,setSharedOutLegs] = useState<FlightLeg[]>([newLeg('out')])
+  const [sharedRetLegs,setSharedRetLegs] = useState<FlightLeg[]>([newLeg('ret')])
+  const [sharedFlightNet,setSharedFlightNet] = useState('')
+  const [sharedTransNet,setSharedTransNet] = useState('')
   const [hotelOptions,setHotelOptions] = useState<HotelOption[]>([newHotelOption()])
 
   // Multi-centre mode
@@ -1072,7 +1076,12 @@ export default function NewQuotePage(){
         } else {
           setQuoteMode('single')
           const costs=data.cost_breakdown||{}, fd=data.flight_details||{}
-          setHotelOptions([normalizeHotelOption({ id:uid(), hotel:data.hotel||'', roomType:data.room_type||'', boardBasis:data.board_basis||'All Inclusive', nights:String(data.nights||7), checkinDate:data.checkin_date||data.departure_date||'', checkinNextDay:data.checkin_next_day||false, outLegs:fd.outbound?.length>0?fd.outbound:[newLeg('out')], retLegs:fd.return?.length>0?fd.return:[newLeg('ret')], flightNet:String(costs.flight_net||''), accNet:String(costs.acc_net||''), transNet:String(costs.trans_net||''), extras:costs.extras||[], sellPrice:String(data.price||''), margin:String(data.margin_percent||''), profit:String(data.profit||'') })])
+          // Populate shared travel state from stored quote
+          setSharedOutLegs(fd.outbound?.length>0 ? fd.outbound : [newLeg('out')])
+          setSharedRetLegs(fd.return?.length>0 ? fd.return : [newLeg('ret')])
+          setSharedFlightNet(String(costs.flight_net||''))
+          setSharedTransNet(String(costs.trans_net||''))
+          setHotelOptions([{ id:uid(), hotel:data.hotel||'', roomType:data.room_type||'', boardBasis:data.board_basis||'All Inclusive', nights:String(data.nights||7), checkinDate:data.checkin_date||data.departure_date||'', checkinNextDay:data.checkin_next_day||false, accNet:String(costs.acc_net||''), extras:costs.extras||[], sellPrice:String(data.price||''), margin:String(data.margin_percent||''), profit:String(data.profit||'') }])
         }
       }
     } catch (error) {
@@ -1150,7 +1159,13 @@ export default function NewQuotePage(){
           infants: parseInt(infants),
           initials,
           additionalServices,
-          hotelOptions: hotelOptions.map(normalizeHotelOption),
+          hotelOptions: hotelOptions.map(o => ({
+            ...o,
+            outLegs: sortFlightLegs(sharedOutLegs),
+            retLegs: sortFlightLegs(sharedRetLegs),
+            flightNet: sharedFlightNet,
+            transNet: sharedTransNet,
+          })),
           centres: sortCentresChronologically(centres),
           sellPrice: parseFloat(mcSellPrice),
           margin: parseFloat(mcMargin),
@@ -1277,20 +1292,30 @@ export default function NewQuotePage(){
             {/* ── SINGLE DESTINATION ── */}
             {quoteMode==='single'&&(
               <div>
+                <SharedTravelCard
+                  outLegs={sharedOutLegs} retLegs={sharedRetLegs}
+                  flightNet={sharedFlightNet} transNet={sharedTransNet}
+                  setOutLegs={l=>{ markDirty(); setSharedOutLegs(l) }}
+                  setRetLegs={l=>{ markDirty(); setSharedRetLegs(l) }}
+                  setFlightNet={v=>{ markDirty(); setSharedFlightNet(v) }}
+                  setTransNet={v=>{ markDirty(); setSharedTransNet(v) }}
+                  airports={airportOptions}
+                  onCreateAirport={createAirport}/>
+
                 <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'12px'}}>
                   <div style={{fontFamily:'Fraunces,serif',fontSize:'17px',fontWeight:'300'}}>Hotel Options</div>
-                  {!isEditMode&&<button className="btn btn-secondary btn-sm" onClick={()=>{ markDirty(); setHotelOptions(p=>[...p,normalizeHotelOption(newHotelOption())]) }}>+ Add Option</button>}
+                  {!isEditMode&&<button className="btn btn-secondary btn-sm" onClick={()=>{ markDirty(); setHotelOptions(p=>[...p,newHotelOption()]) }}>+ Add Option</button>}
                 </div>
                 {hotelOptions.map((o,i)=>(
                   <HotelOptionPanel key={o.id} option={o} index={i} totalOptions={hotelOptions.length}
-                    onChange={updated=>{ markDirty(); setHotelOptions(p=>p.map(x=>x.id===updated.id?normalizeHotelOption(updated):x)) }}
+                    onChange={updated=>{ markDirty(); setHotelOptions(p=>p.map(x=>x.id===updated.id?updated:x)) }}
                     onRemove={()=>{ markDirty(); setHotelOptions(p=>p.filter(x=>x.id!==o.id)) }}
-                    onDuplicate={()=>{ const src=hotelOptions.find(x=>x.id===o.id); if(src){ markDirty(); setHotelOptions(p=>[...p,normalizeHotelOption({...src,id:uid(),hotel:''})]) } }}
-                    airports={airportOptions}
-                    onCreateAirport={createAirport}/>
+                    onDuplicate={()=>{ const src=hotelOptions.find(x=>x.id===o.id); if(src){ markDirty(); setHotelOptions(p=>[...p,{...src,id:uid(),hotel:''}]) } }}
+                    sharedFlightNet={sharedFlightNet}
+                    sharedTransNet={sharedTransNet}/>
                 ))}
                 {!isEditMode&&hotelOptions.length<6&&(
-                  <button onClick={()=>{ markDirty(); setHotelOptions(p=>[...p,normalizeHotelOption(newHotelOption())]) }}
+                  <button onClick={()=>{ markDirty(); setHotelOptions(p=>[...p,newHotelOption()]) }}
                     style={{width:'100%',padding:'13px',border:'2px dashed var(--border)',borderRadius:'12px',background:'transparent',color:'var(--text-muted)',fontSize:'13px',cursor:'pointer',fontFamily:'Outfit,sans-serif'}}
                     onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--accent)';e.currentTarget.style.color='var(--accent)'}}
                     onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--border)';e.currentTarget.style.color='var(--text-muted)'}}>
@@ -1457,7 +1482,7 @@ export default function NewQuotePage(){
       {showPreview&&(
         <QuoteDeliveryModal
           deal={deal} quoteMode={quoteMode}
-          hotelOptions={hotelOptions} centres={centres}
+          hotelOptions={hotelOptions.map(o=>({...o,outLegs:sortFlightLegs(sharedOutLegs),retLegs:sortFlightLegs(sharedRetLegs),flightNet:sharedFlightNet,transNet:sharedTransNet}))} centres={centres}
           adults={adults} children={children} infants={infants}
           additionalServices={additionalServices}
           sellPrice={quoteMode==='single'?parseFloat(hotelOptions[0]?.sellPrice||'0'):mcSellN}
