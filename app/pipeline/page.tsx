@@ -336,14 +336,12 @@ export default function PipelinePage() {
                     const hasUpcomingTask = !sig.isOverdue && !!deal.next_activity_at
                     const isRotting       = idleDays >= 3 && !hasUpcomingTask
 
-                    // ── Left border urgency ─────────────────────────────
+                    // ── Left border — urgency only, nothing else ────────
                     const borderColor = (isRotting || sig.isOverdue)
                       ? '#ef4444'
                       : idleDays >= 2
                       ? '#f59e0b'
-                      : hasUpcomingTask
-                      ? '#4ade80'
-                      : 'var(--border)'
+                      : 'transparent'
 
                     // ── Idle badge ──────────────────────────────────────
                     let idleBadge: React.ReactNode = null
@@ -401,13 +399,10 @@ export default function PipelinePage() {
                       )
                     }
 
-                    // ── Tags (max 2, meaningful only) ──────────────────
-                    const tags: { label: string; color: string; bg: string }[] = []
-                    if (sig.valueTier === 'whale')         tags.push({ label: 'HIGH VALUE',   color: '#92400e', bg: '#fef3c7' })
-                    else if (sig.valueTier === 'high')     tags.push({ label: 'STRONG',       color: '#166534', bg: '#dcfce7' })
-                    if (deal.source === 'Repeat Client')   tags.push({ label: 'REPEAT CLIENT',color: '#6d28d9', bg: '#ede9fe' })
-                    else if (deal.source === 'Referral')   tags.push({ label: 'REFERRAL',     color: '#0369a1', bg: '#e0f2fe' })
-                    const displayTags = tags.slice(0, 2)
+                    // ── Tags — source only, all muted same style ────────
+                    const displayTags: string[] = []
+                    if (deal.source === 'Repeat Client') displayTags.push('Repeat Client')
+                    else if (deal.source === 'Referral') displayTags.push('Referral')
 
                     // ── Departure line ─────────────────────────────────
                     const tripDate = deal.departure_date
@@ -453,13 +448,13 @@ export default function PipelinePage() {
                             {deal.deal_value > 0 ? fmt(deal.deal_value) : '—'}
                           </span>
                           {sig.valueTier === 'whale' && (
-                            <span style={{ fontSize: '8.5px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.07em', color: '#92400e', background: '#fef3c7', padding: '2px 6px', borderRadius: '4px', border: '1px solid #f59e0b55', fontFamily: 'Outfit, sans-serif' }}>
-                              HIGH VALUE
+                            <span style={{ fontSize: '8.5px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#a16207', background: '#fefce8', padding: '2px 7px', borderRadius: '8px', fontFamily: 'Outfit, sans-serif' }}>
+                              High Value
                             </span>
                           )}
                           {sig.valueTier === 'high' && (
-                            <span style={{ fontSize: '8.5px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#166534', background: '#dcfce7', padding: '2px 6px', borderRadius: '4px', fontFamily: 'Outfit, sans-serif' }}>
-                              STRONG
+                            <span style={{ fontSize: '8.5px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)', background: 'var(--bg-tertiary)', padding: '2px 7px', borderRadius: '8px', fontFamily: 'Outfit, sans-serif' }}>
+                              Good Value
                             </span>
                           )}
                         </div>
@@ -479,8 +474,8 @@ export default function PipelinePage() {
                         {displayTags.length > 0 && (
                           <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexWrap: 'wrap', marginBottom: '8px' }}>
                             {displayTags.map(tag => (
-                              <span key={tag.label} style={{ fontSize: '8.5px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.07em', color: tag.color, background: tag.bg, padding: '2px 6px', borderRadius: '4px', fontFamily: 'Outfit, sans-serif', border: '1px solid transparent' }}>
-                                {tag.label}
+                              <span key={tag} style={{ fontSize: '8.5px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)', background: 'var(--bg-tertiary)', padding: '2px 7px', borderRadius: '8px', border: '1px solid var(--border)', fontFamily: 'Outfit, sans-serif' }}>
+                                {tag}
                               </span>
                             ))}
                           </div>
