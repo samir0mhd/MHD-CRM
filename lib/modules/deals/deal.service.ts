@@ -241,7 +241,21 @@ export async function markBooked(
     balanceDueDate = new Date(dep.getTime() - 84 * 86400000).toISOString().split('T')[0]
   }
 
-  const topQuote = (deal.quotes || []).sort((a, b) => (b.profit || 0) - (a.profit || 0))[0]
+  // Find the canonical quote ref for this deal (lexicographically earliest = first created).
+  // All revisions and options for a deal share one ref family — pick the canonical one.
+  const allQuotes = deal.quotes || []
+  const canonicalQuoteRef = allQuotes
+    .map(q => q.quote_ref?.trim() || '')
+    .filter(Boolean)
+    .sort()[0] ?? null
+
+  // Best quote = highest-profit row within the canonical ref group.
+  const topQuote = allQuotes
+    .filter(q => canonicalQuoteRef ? q.quote_ref?.trim() === canonicalQuoteRef : true)
+    .sort((a, b) => (b.profit || 0) - (a.profit || 0))[0]
+    ?? allQuotes.sort((a, b) => (b.profit || 0) - (a.profit || 0))[0]
+  const canonicalQuoteId = topQuote?.id ?? null
+
   const consultantId = deal.staff_id || deal.clients?.owner_staff_id || currentStaff?.id || null
   const milestone = await resolveCelebrationMilestone(consultantId, Number(topQuote?.profit || 0))
 
@@ -253,6 +267,8 @@ export async function markBooked(
     balance_due_date: balanceDueDate,
     deposit_received: false,
     staff_id: consultantId,
+    originating_quote_ref: canonicalQuoteRef,
+    originating_quote_id: canonicalQuoteId,
   })
   if (bookingError || !booking) throw new Error(bookingError?.message || 'Failed to create booking')
 

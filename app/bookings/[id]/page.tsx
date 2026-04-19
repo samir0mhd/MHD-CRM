@@ -34,6 +34,8 @@ type Booking = {
   cancellation_actioned_by: string | null
   cancellation_checklist: Record<string, boolean> | null
   cancellation_notes: string | null
+  originating_quote_ref: string | null
+  originating_quote_id: number | null
   deals?: { id: number; title: string; deal_value: number; staff_id?: number | null; clients?: Client; activities?: Activity[] }
 }
 type Activity = {
@@ -493,6 +495,12 @@ export default function BookingDetailPage() {
               {booking.destination ? ` · ${booking.destination}` : ''}
               {assignedStaff ? ` · Consultant: ${assignedStaff.name}` : ' · Consultant: Unassigned'}
             </div>
+            {booking.originating_quote_ref && (
+              <div style={{ marginTop:'5px', display:'flex', alignItems:'center', gap:'6px' }}>
+                <span style={{ fontSize:'11px', color:'var(--text-muted)' }}>Converted from quote</span>
+                <span style={{ fontFamily:'monospace', fontSize:'11px', fontWeight:'700', color:'var(--accent)', background:'var(--accent-light)', padding:'1px 7px', borderRadius:'4px' }}>{booking.originating_quote_ref}</span>
+              </div>
+            )}
           </div>
         </div>
         <div style={{ display:'flex', gap:'8px' }}>

@@ -116,6 +116,8 @@ export type Booking = {
   staff_id: number | null
   status?: string
   departure_date?: string | null
+  originating_quote_ref?: string | null
+  originating_quote_id?: number | null
 }
 
 export type BookingTask = {
@@ -168,7 +170,7 @@ export async function getActivePipelineDeals(): Promise<Deal[]> {
 export async function getDealById(id: number | string): Promise<Deal | null> {
   const { data } = await supabase
     .from('deals')
-    .select('*, clients(*), quotes(*), activities(*), bookings(id, booking_reference, staff_id)')
+    .select('*, clients(*), quotes(*), activities(*), bookings(id, booking_reference, staff_id, originating_quote_ref, originating_quote_id)')
     .eq('id', id)
     .single()
 
@@ -313,6 +315,8 @@ export async function insertBooking(booking: {
   balance_due_date: string | null
   deposit_received: boolean
   staff_id: number | null
+  originating_quote_ref?: string | null
+  originating_quote_id?: number | null
 }) {
   return dbMutate<{ id: number }>({
     table: 'bookings',

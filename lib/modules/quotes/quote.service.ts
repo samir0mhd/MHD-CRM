@@ -185,14 +185,25 @@ function getNextQuoteRef(initials: string, existingRefs: string[]): string {
 }
 
 async function generateNextQuoteRef(dealId: number, initials: string): Promise<string> {
-  const quoteRows = await quoteRepository.getQuoteReferenceRowsForDeal(dealId)
-  const refs = Array.from(new Set(
-    quoteRows
-      .map(quote => quote.quote_ref?.trim() || '')
-      .filter(Boolean)
+  // Rule 1: if this deal already has any quote ref, always reuse the canonical one.
+  // A deal has exactly one quote reference family — never generate a second ref for it.
+  const dealRows = await quoteRepository.getQuoteReferenceRowsForDeal(dealId)
+  const dealRefs = Array.from(new Set(
+    dealRows.map(r => r.quote_ref?.trim() || '').filter(Boolean)
   ))
+  if (dealRefs.length > 0) {
+    // Return the lexicographically smallest (earliest sequential) ref as canonical.
+    return dealRefs.sort()[0]
+  }
 
-  return getNextQuoteRef(initials, refs)
+  // Rule 2: deal has no ref yet — find the next available sequence across ALL deals today.
+  // This prevents two different deals from being assigned the same ref.
+  const prefix = quoteRefPrefix(initials)
+  const allRows = await quoteRepository.getRefsByPrefix(prefix)
+  const allRefs = Array.from(new Set(
+    allRows.map(r => r.quote_ref?.trim() || '').filter(Boolean)
+  ))
+  return getNextQuoteRef(initials, allRefs)
 }
 
 function buildSingleQuoteRow(

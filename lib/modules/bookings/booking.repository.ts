@@ -29,6 +29,8 @@ export type Booking = {
   cancellation_actioned_by: string | null
   cancellation_checklist: Record<string, boolean> | null
   cancellation_notes: string | null
+  originating_quote_ref: string | null
+  originating_quote_id: number | null
   deals?: { id: number; title: string; deal_value: number; staff_id?: number | null; clients?: Client; activities?: Activity[] }
 }
 

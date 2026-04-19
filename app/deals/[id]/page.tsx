@@ -731,6 +731,7 @@ export default function DealDetailPage() {
                     <QuoteCard
                       key={group.key} quoteGroup={group} dealId={deal.id}
                       isBooked={isBooked} isLost={isLost}
+                      originatingQuoteRef={deal.bookings?.[0]?.originating_quote_ref ?? null}
                       expanded={expandedQuote===group.key}
                       onToggle={()=>setExpandedQuote(expandedQuote===group.key?null:group.key)}
                       onMarkSent={()=>markQuoteSent(group.quoteIds, group.quoteRef)}
@@ -900,11 +901,13 @@ export default function DealDetailPage() {
 }
 
 // ── QUOTE CARD ────────────────────────────────────────────
-function QuoteCard({ quoteGroup, dealId, isBooked, isLost, expanded, onToggle, onMarkSent, onDelete }:{
+function QuoteCard({ quoteGroup, dealId, isBooked, isLost, originatingQuoteRef, expanded, onToggle, onMarkSent, onDelete }:{
   quoteGroup:QuoteGroup; dealId:number; isBooked:boolean; isLost:boolean;
+  originatingQuoteRef: string | null;
   expanded:boolean; onToggle:()=>void; onMarkSent:()=>void; onDelete:()=>void;
 }) {
   const quote = quoteGroup.quote
+  const isConverted = isBooked && originatingQuoteRef !== null && originatingQuoteRef === quoteGroup.quoteRef
   const fmt = (n:number) => '£'+(n||0).toLocaleString('en-GB',{maximumFractionDigits:0})
   const marginColor = (quote.margin_percent||0)>=10?'var(--green)':(quote.margin_percent||0)>=7?'var(--amber)':'var(--red)'
   const outLegs = quote.flight_details?.outbound||[]
@@ -928,6 +931,14 @@ function QuoteCard({ quoteGroup, dealId, isBooked, isLost, expanded, onToggle, o
               <span style={{ fontFamily:'monospace', fontSize:'12px', fontWeight:'700', color:'var(--accent)', background:'var(--accent-light)', padding:'2px 8px', borderRadius:'4px' }}>{quoteGroup.quoteRef}</span>
               {quoteGroup.optionCount>1 && <span style={{ fontSize:'11px', color:'var(--text-muted)', fontWeight:'600' }}>{quoteGroup.optionCount} options</span>}
               {quote.sent_to_client && <span style={{ fontSize:'11px', color:'var(--green)', fontWeight:'600' }}>✓ Sent to client</span>}
+              {isConverted
+                ? <span style={{ fontSize:'11px', fontWeight:'700', color:'#166534', background:'#dcfce7', padding:'2px 8px', borderRadius:'20px', border:'1px solid #86efac' }}>Converted ✓</span>
+                : isBooked
+                  ? <span style={{ fontSize:'11px', fontWeight:'600', color:'var(--text-muted)', background:'var(--bg-tertiary)', padding:'2px 8px', borderRadius:'20px', border:'1px solid var(--border)' }}>Not converted</span>
+                  : quote.sent_to_client
+                    ? <span style={{ fontSize:'11px', fontWeight:'600', color:'#92400e', background:'#fef3c7', padding:'2px 8px', borderRadius:'20px', border:'1px solid #fcd34d' }}>Awaiting decision</span>
+                    : null
+              }
               <span style={{ fontSize:'11px', color:'var(--text-muted)', marginLeft:'auto' }}>{new Date(quote.created_at).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})}</span>
             </div>
             <div style={{ fontFamily:'Instrument Serif, serif', fontSize:'18px', color:'var(--text-primary)', marginBottom:'4px' }}>

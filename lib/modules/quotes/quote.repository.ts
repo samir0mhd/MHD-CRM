@@ -143,6 +143,18 @@ export async function getQuoteReferenceRowsForDeal(dealId: number): Promise<Quot
   return (data as QuoteReferenceRow[]) || []
 }
 
+// Returns all quote rows across ALL deals whose ref starts with a given prefix (e.g. "190426SA").
+// Used for cross-deal sequence numbering so different deals never share the same ref.
+export async function getRefsByPrefix(prefix: string): Promise<QuoteReferenceRow[]> {
+  const { data } = await supabase
+    .from('quotes')
+    .select('id,quote_ref')
+    .like('quote_ref', `${prefix}%`)
+    .not('quote_ref', 'is', null)
+
+  return (data as QuoteReferenceRow[]) || []
+}
+
 export async function getQuoteCountForDeal(dealId: number): Promise<number> {
   const quoteRows = await getQuoteReferenceRowsForDeal(dealId)
   const logicalQuotes = new Set(
