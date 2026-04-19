@@ -52,6 +52,7 @@ export type Quote = {
   adults?: number
   children?: number
   infants?: number
+  child_ages?: number[] | null
   additional_services?: string | null
   flight_details?: {
     outbound?: FlightLeg[]

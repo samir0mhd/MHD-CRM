@@ -1716,6 +1716,7 @@ export default function NewQuotePage(){
   const [adults,setAdults]     = useState('2')
   const [children,setChildren] = useState('0')
   const [infants,setInfants]   = useState('0')
+  const [childAges,setChildAges] = useState<string[]>([])
   const [initials,setInitials] = useState('SA')
   const [additionalServices,setAdditionalServices] = useState('')
   const [quoteCount,setQuoteCount] = useState(0)
@@ -1848,6 +1849,7 @@ export default function NewQuotePage(){
           }
         }
         setAdults(String(data.adults||2)); setChildren(String(data.children||0)); setInfants(String(data.infants||0))
+        setChildAges(Array.isArray(data.child_ages)&&data.child_ages.length>0 ? data.child_ages.map(String) : Array(data.children||0).fill(''))
         setInitials(data.consultant_initials||'SA'); setAdditionalServices(data.additional_services||'')
         if(data.quote_type==='multi_centre'&&data.centres){
           setQuoteMode('multi'); setCentres(sortCentresChronologically(data.centres))
@@ -2032,6 +2034,11 @@ export default function NewQuotePage(){
     const tid = Number(dealIdVal)
     if(!tid){ setError('Select a deal'); return }
     if(quoteMode==='single' && singleQuoteOptions.length===0){ setError('Add at least one complete hotel + flight option before saving'); return }
+    const childCount = parseInt(children)||0
+    if(childCount>0){
+      if(childAges.length!==childCount||childAges.some(a=>!a.trim())){ setError(`Enter age for all ${childCount} child${childCount>1?'ren':''}`); return }
+      if(childAges.some(a=>isNaN(parseInt(a))||parseInt(a)<0||parseInt(a)>17)){ setError('Child ages must be between 0 and 17'); return }
+    }
 
     setSaving(true); setError('')
     const wasPersistedQuote = !!activeQuoteRef
@@ -2047,6 +2054,7 @@ export default function NewQuotePage(){
           adults: parseInt(adults),
           children: parseInt(children),
           infants: parseInt(infants),
+          childAges: childAges.map(a=>parseInt(a)).filter(n=>!isNaN(n)),
           initials,
           additionalServices,
           hotelOptions: singleQuoteOptions,
@@ -2178,9 +2186,31 @@ export default function NewQuotePage(){
               <div style={{fontFamily:'Fraunces,serif',fontSize:'17px',fontWeight:'300',marginBottom:'12px'}}>Passengers</div>
               <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'10px'}}>
                 <div><label className="label">Adults</label><input className="input" type="number" min="1" value={adults} onChange={e=>{ markDirty(); setAdults(e.target.value) }}/></div>
-                <div><label className="label">Children</label><input className="input" type="number" min="0" value={children} onChange={e=>{ markDirty(); setChildren(e.target.value) }}/></div>
+                <div><label className="label">Children</label><input className="input" type="number" min="0" value={children} onChange={e=>{ markDirty(); const n=Math.max(0,parseInt(e.target.value)||0); setChildren(String(n)); setChildAges(prev=>{ const next=[...prev]; next.length=n; for(let i=prev.length;i<n;i++) next[i]=''; return next.slice(0,n) }) }}/></div>
                 <div><label className="label">Infants</label><input className="input" type="number" min="0" value={infants} onChange={e=>{ markDirty(); setInfants(e.target.value) }}/></div>
               </div>
+              {(parseInt(children)||0)>0&&(
+                <div style={{marginTop:'12px',paddingTop:'12px',borderTop:'1px solid var(--border)'}}>
+                  <div style={{fontSize:'11px',fontWeight:'600',color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:'8px'}}>Child Ages (required)</div>
+                  <div style={{display:'flex',flexWrap:'wrap',gap:'10px'}}>
+                    {Array.from({length:parseInt(children)||0}).map((_,i)=>(
+                      <div key={i} style={{display:'flex',flexDirection:'column',gap:'4px'}}>
+                        <label style={{fontSize:'11px',color:'var(--text-muted)'}}>Child {i+1}</label>
+                        <input
+                          className="input"
+                          type="number"
+                          min="0"
+                          max="17"
+                          placeholder="age"
+                          style={{width:'72px'}}
+                          value={childAges[i]??''}
+                          onChange={e=>{ markDirty(); setChildAges(prev=>{ const next=[...prev]; next[i]=e.target.value; return next }) }}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* ── SINGLE DESTINATION ── */}
@@ -2412,7 +2442,7 @@ export default function NewQuotePage(){
         <QuoteDeliveryModal
           deal={deal} quoteMode={quoteMode}
           hotelOptions={singleQuoteOptions} centres={centres}
-          adults={adults} children={children} infants={infants}
+          adults={adults} children={children} infants={infants} childAges={childAges}
           additionalServices={additionalServices}
           sellPrice={quoteMode==='single'?parseFloat(singleQuoteOptions[0]?.sellPrice||'0'):mcSellN}
           quoteRef={quoteRef} template={emailTemplate}
@@ -2512,7 +2542,7 @@ function generateQuoteHtml(p: {
   quoteMode: 'single'|'multi'
   hotelOptions: HotelOption[]
   centres: Centre[]
-  adults: string; children: string; infants: string
+  adults: string; children: string; infants: string; childAges: string[]
   additionalServices: string
   sellPrice: number
   quoteRef: string
@@ -2533,7 +2563,11 @@ function generateQuoteHtml(p: {
 
   // Pax
   const pax: string[] = [`${p.adults} Adult${parseInt(p.adults)!==1?'s':''}`]
-  if (parseInt(p.children)>0) pax.push(`${p.children} Child${parseInt(p.children)!==1?'ren':''}`)
+  if (parseInt(p.children)>0) {
+    const validAges = (p.childAges||[]).map(a=>parseInt(a)).filter(n=>!isNaN(n)&&n>=0)
+    const agesStr = validAges.length===parseInt(p.children) ? ` (ages ${validAges.join(', ')})` : ''
+    pax.push(`${p.children} Child${parseInt(p.children)!==1?'ren':''}${agesStr}`)
+  }
   if (parseInt(p.infants)>0)  pax.push(`${p.infants} Infant${parseInt(p.infants)!==1?'s':''}`)
   const paxLine = pax.join(' &middot; ')
 
@@ -2997,7 +3031,7 @@ ${autoPrint}
 }
 
 // ── QUOTE DELIVERY MODAL ──────────────────────────────────
-function QuoteDeliveryModal({deal,quoteMode,hotelOptions,centres,adults,children,infants,additionalServices,sellPrice,quoteRef,template,selectedCustomTemplate,customTemplates,onClose}:any){
+function QuoteDeliveryModal({deal,quoteMode,hotelOptions,centres,adults,children,infants,childAges,additionalServices,sellPrice,quoteRef,template,selectedCustomTemplate,customTemplates,onClose}:any){
   const [activeTemplate,setActiveTemplate]=useState<1|2|3|4>(template)
   const [activeCustom,setActiveCustom]=useState<number|null>(selectedCustomTemplate)
   const [downloading,setDownloading]=useState<'pdf'|'email'|null>(null)
@@ -3006,7 +3040,7 @@ function QuoteDeliveryModal({deal,quoteMode,hotelOptions,centres,adults,children
   const activeCustomData=activeCustom?customTemplates?.find((t:any)=>t.id===activeCustom):null
 
   const htmlParams={
-    deal,quoteMode,hotelOptions,centres,adults,children,infants,
+    deal,quoteMode,hotelOptions,centres,adults,children,infants,childAges:childAges||[],
     additionalServices,sellPrice,quoteRef,
     templateId:(activeCustomData?1:activeTemplate) as number,
     customTemplate:activeCustomData,

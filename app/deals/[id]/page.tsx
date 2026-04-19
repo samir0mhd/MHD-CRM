@@ -938,7 +938,7 @@ function QuoteCard({ quoteGroup, dealId, isBooked, isLost, expanded, onToggle, o
               {quote.nights && <span>· {quote.nights} nights</span>}
               {quote.room_type && <span>· {quote.room_type}</span>}
               {checkinDisplay!=='—' && <span>· Check-in {checkinDisplay}</span>}
-              {quote.adults && <span>· {quote.adults} adult{quote.adults>1?'s':''}{quote.children>0?`, ${quote.children} child`:''}{quote.infants>0?`, ${quote.infants} infant`:''}</span>}
+              {quote.adults && <span>· {quote.adults} adult{quote.adults>1?'s':''}{(quote.children??0)>0?`, ${quote.children} child${quote.children!==1?'ren':''}${Array.isArray(quote.child_ages)&&quote.child_ages.length===(quote.children??0)?` (ages ${quote.child_ages.join(', ')})`:''}`:''}{ (quote.infants??0)>0?`, ${quote.infants} infant${quote.infants!==1?'s':''}`:''}</span>}
             </div>
           </div>
           <div style={{ textAlign:'right', marginLeft:'16px' }}>

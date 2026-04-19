@@ -85,15 +85,15 @@ export default function ClientsPage() {
     return () => window.cancelAnimationFrame(frame)
   }, [clients])
 
-  async function loadClients() {
-    setLoading(true)
+  async function loadClients(silent = false) {
+    if (!silent) setLoading(true)
     try {
       const fetched = await getAllClients()
       setClients(fetched)
     } catch (err) {
       console.error('[loadClients] failed:', err)
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }
 
@@ -439,7 +439,7 @@ export default function ClientsPage() {
           staffUsers={staffUsers}
           currentStaff={currentStaff}
           onClose={() => { setShowModal(false); setEditClient(null) }}
-          onSaved={() => { setShowModal(false); setEditClient(null); loadClients(); showToast(editClient ? 'Client updated ✓' : 'Client created ✓') }}
+          onSaved={() => { setShowModal(false); setEditClient(null); void loadClients(true); showToast(editClient ? 'Client updated ✓' : 'Client created ✓') }}
         />
       )}
 

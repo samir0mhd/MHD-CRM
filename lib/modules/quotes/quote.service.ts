@@ -201,6 +201,7 @@ function buildSingleQuoteRow(
     adults,
     children,
     infants,
+    childAges,
     initials,
     additionalServices,
     builderState,
@@ -208,6 +209,7 @@ function buildSingleQuoteRow(
     adults: number
     children: number
     infants: number
+    childAges: number[]
     initials: string
     additionalServices: string
     builderState?: SingleQuoteBuilderState
@@ -237,6 +239,7 @@ function buildSingleQuoteRow(
     adults: adults || 2,
     children: children || 0,
     infants: infants || 0,
+    child_ages: childAges.length > 0 ? childAges : null,
     price: sellN,
     profit: profitN,
     margin_percent: parseFloat(marginN.toFixed(1)) || 0,
@@ -265,6 +268,7 @@ function buildMultiCentreRow(
     adults,
     children,
     infants,
+    childAges,
     initials,
     additionalServices,
     sellPrice,
@@ -274,6 +278,7 @@ function buildMultiCentreRow(
     adults: number
     children: number
     infants: number
+    childAges: number[]
     initials: string
     additionalServices: string
     sellPrice?: number
@@ -301,6 +306,7 @@ function buildMultiCentreRow(
     adults: adults || 2,
     children: children || 0,
     infants: infants || 0,
+    child_ages: childAges.length > 0 ? childAges : null,
     price: sellPrice || 0,
     profit: profit || 0,
     margin_percent: parseFloat((margin || 0).toFixed(1)) || 0,
@@ -371,6 +377,7 @@ export async function saveQuote(
     adults: number
     children: number
     infants: number
+    childAges: number[]
     initials: string
     additionalServices: string
     hotelOptions?: HotelOption[]
@@ -389,6 +396,7 @@ export async function saveQuote(
     adults,
     children,
     infants,
+    childAges,
     initials,
     additionalServices,
     hotelOptions,
@@ -432,6 +440,7 @@ export async function saveQuote(
           adults,
           children,
           infants,
+          childAges,
           initials,
           additionalServices,
           builderState: singleQuoteBuilder,
@@ -497,6 +506,7 @@ export async function saveQuote(
         adults,
         children,
         infants,
+        childAges,
         initials,
         additionalServices,
         sellPrice,
@@ -543,6 +553,7 @@ export async function saveQuoteFromRequest(body: {
   adults?: number | string
   children?: number | string
   infants?: number | string
+  childAges?: number[]
   initials?: string
   additionalServices?: string
   hotelOptions?: HotelOption[]
@@ -583,6 +594,7 @@ export async function saveQuoteFromRequest(body: {
       adults: Number(body.adults) || 2,
       children: Number(body.children) || 0,
       infants: Number(body.infants) || 0,
+      childAges: Array.isArray(body.childAges) ? body.childAges.map(Number).filter(n => !isNaN(n)) : [],
       initials: body.initials || 'SA',
       additionalServices: body.additionalServices || '',
       hotelOptions: body.hotelOptions,
