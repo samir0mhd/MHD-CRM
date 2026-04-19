@@ -9,13 +9,13 @@ export type Target = {
   bookings_target?: number
   quotes_target?: number
   leads_target?: number
-  rotten_days?: number
-  profit_target_bronze?: number
-  profit_target_silver?: number
-  profit_target_gold?: number
-  bonus_bronze?: number
-  bonus_silver?: number
-  bonus_gold?: number
+  rotten_days?: number | null
+  profit_target_bronze?: number | null
+  profit_target_silver?: number | null
+  profit_target_gold?: number | null
+  bonus_bronze?: number | null
+  bonus_silver?: number | null
+  bonus_gold?: number | null
   [key: string]: unknown
 }
 

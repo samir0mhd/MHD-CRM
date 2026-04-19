@@ -288,7 +288,7 @@ export default function DealDetailPage() {
 
     setSavingOwner(true)
     try {
-      const result = await saveOwnershipService(deal, currentStaff, nextStaffId, deal.clients, bookingTargets)
+      const result = await saveOwnershipService(deal, currentStaff, nextStaffId, bookingTargets, deal.clients)
       if (result.updated) {
         showToast('Ownership updated ✓')
       } else {
@@ -997,9 +997,9 @@ function QuoteCard({ quoteGroup, dealId, isBooked, isLost, expanded, onToggle, o
                   </div>
                 ))}
               </div>
-              {costs.extras?.length>0 && (
+              {(costs.extras?.length ?? 0) > 0 && (
                 <div style={{ marginTop:'8px', fontSize:'12px', color:'var(--text-muted)' }}>
-                  Extras: {costs.extras.map(e=>`${e.label} (£${e.net})`).join(' · ')}
+                  Extras: {costs.extras?.map(e=>`${e.label} (£${e.net})`).join(' · ')}
                 </div>
               )}
             </div>

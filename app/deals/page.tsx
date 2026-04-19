@@ -16,7 +16,7 @@ type Deal = {
   lost_reason: string | null
   created_at: string
   clients?: { first_name: string; last_name: string; phone: string; email: string }
-  quotes?: { id: number; price: number; profit: number; sent_to_client: boolean }[]
+  quotes?: { id: number; price?: number; profit?: number; sent_to_client?: boolean }[]
   bookings?: { id: number; booking_reference: string }[]
 }
 

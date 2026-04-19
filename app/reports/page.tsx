@@ -392,7 +392,7 @@ export default function ReportsPage() {
       setTargets(data.targets)
       setStaffUsers(data.staffUsers)
       setAssignmentHealth(data.assignmentHealth)
-      if (data.staffUsers.length > 0 && !data.staffUsers.find(s => s.id === selectedStaffId)) {
+      if (data.staffUsers.length > 0 && !data.staffUsers.find((s: StaffUser) => s.id === selectedStaffId)) {
         const preferredStaff = data.staffUsers.find((staff: StaffUser) => staff.name === 'Samir Abattouy') || data.staffUsers[0]
         setSelectedStaffId(preferredStaff.id)
       }
@@ -1300,11 +1300,11 @@ export default function ReportsPage() {
             <div style={{ marginTop:'16px', padding:'14px', background:'var(--bg-tertiary)', borderRadius:'10px' }}>
               <div style={{ fontSize:'12px', fontWeight:'700', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.07em', marginBottom:'12px' }}>Profit Bonus Tiers</div>
               <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:'12px' }}>
-                {[
+                {([
                   { key:'profit_target_bronze', bonus_key:'bonus_bronze', label:'🥉 Bronze', color:'#cd7f32' },
                   { key:'profit_target_silver', bonus_key:'bonus_silver', label:'🥈 Silver', color:'#9e9e9e' },
                   { key:'profit_target_gold',   bonus_key:'bonus_gold',   label:'🥇 Gold',   color:'#f59e0b' },
-                ].map((tier: { key: ProfitTargetKey; bonus_key: BonusTargetKey; label: string; color: string })=>(
+                ] as { key: ProfitTargetKey; bonus_key: BonusTargetKey; label: string; color: string }[]).map(tier=>(
                   <div key={tier.key}>
                     <label className="label" style={{ color:tier.color }}>{tier.label}</label>
                     <input className="input" type="number" placeholder="Profit target" value={Number(targets[tier.key] || 0)} onChange={e=>setTargets(prev => prev ? ({ ...prev, [tier.key]: Number(e.target.value) }) : prev)} style={{ marginBottom:'6px' }}/>

@@ -66,7 +66,7 @@ export async function getDueDeals() {
     .not('next_activity_at', 'is', null)
     .order('next_activity_at', { ascending: true })
 
-  return (data as DealActionQuery[]) || []
+  return (data as unknown as DealActionQuery[]) || []
 }
 
 export async function getBalanceAlerts(in7days: string) {
@@ -79,7 +79,7 @@ export async function getBalanceAlerts(in7days: string) {
     .is('balance_cleared_at', null)
     .order('balance_due_date', { ascending: true })
 
-  return (data as BalanceAlertQuery[]) || []
+  return (data as unknown as BalanceAlertQuery[]) || []
 }
 
 export async function getTicketAlerts(in14days: string) {
@@ -91,7 +91,7 @@ export async function getTicketAlerts(in14days: string) {
     .not('net_cost', 'is', null)
     .order('ticketing_deadline', { ascending: true })
 
-  return (data as TicketAlertQuery[]) || []
+  return (data as unknown as TicketAlertQuery[]) || []
 }
 
 export async function getDepartureAlerts(today: string, in14days: string) {
@@ -103,7 +103,7 @@ export async function getDepartureAlerts(today: string, in14days: string) {
     .lte('departure_date', in14days)
     .order('departure_date', { ascending: true })
 
-  return (data as DepartureAlertQuery[]) || []
+  return (data as unknown as DepartureAlertQuery[]) || []
 }
 
 export async function getTaskAlerts(in14days: string) {
@@ -115,7 +115,7 @@ export async function getTaskAlerts(in14days: string) {
     .lte('due_date', in14days)
     .order('due_date', { ascending: true })
 
-  return (data as BookingTaskAlertQuery[]) || []
+  return (data as unknown as BookingTaskAlertQuery[]) || []
 }
 
 export async function clearDealNextAction(id: number) {
@@ -164,7 +164,7 @@ export async function getTaskWithBookingInfo(taskId: number): Promise<{ task_nam
     .eq('id', taskId)
     .maybeSingle()
   if (!data) return null
-  const booking = data.bookings as { booking_reference: string; deal_id: number } | null
+  const booking = data.bookings as unknown as { booking_reference: string; deal_id: number } | null
   if (!booking?.deal_id) return null
   return {
     task_name: data.task_name,

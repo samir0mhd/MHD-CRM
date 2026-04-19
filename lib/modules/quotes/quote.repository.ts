@@ -121,7 +121,7 @@ export async function getAllDeals(): Promise<DealInfo[]> {
     .not('stage', 'in', '("BOOKED","LOST")')
     .order('created_at', { ascending: false })
 
-  return data || []
+  return (data || []) as unknown as DealInfo[]
 }
 
 export async function getDealById(id: number): Promise<DealInfo | null> {
@@ -131,7 +131,7 @@ export async function getDealById(id: number): Promise<DealInfo | null> {
     .eq('id', id)
     .single()
 
-  return data
+  return data as unknown as DealInfo | null
 }
 
 export async function getQuoteReferenceRowsForDeal(dealId: number): Promise<QuoteReferenceRow[]> {

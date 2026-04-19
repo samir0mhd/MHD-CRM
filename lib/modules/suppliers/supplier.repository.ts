@@ -104,7 +104,7 @@ function pickSupplierWriteValues(values: Partial<Supplier>) {
   const payload: Partial<Supplier> = {}
   for (const field of SUPPLIER_WRITE_FIELDS) {
     if (Object.prototype.hasOwnProperty.call(values, field)) {
-      payload[field] = values[field]
+      payload[field] = values[field] as never
     }
   }
   return payload

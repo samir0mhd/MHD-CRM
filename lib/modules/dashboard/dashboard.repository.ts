@@ -240,7 +240,7 @@ export async function getRecognisedProfitForPeriod(
     .in('id', bookingIds)
 
   const result: CommercialEvent[] = []
-  ;(bookings || []).forEach((b: {
+  ;((bookings || []) as unknown as {
     id: number
     booking_reference: string
     status: string
@@ -248,7 +248,7 @@ export async function getRecognisedProfitForPeriod(
     final_profit: number | null
     balance_cleared_at: string | null
     deals?: { clients?: { last_name?: string | null } | null } | null
-  }) => {
+  }[]).forEach((b) => {
     const share = byBooking.get(b.id)
     if (!share || share.staffShare <= 0) return
     result.push({

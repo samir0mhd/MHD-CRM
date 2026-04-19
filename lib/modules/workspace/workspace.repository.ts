@@ -217,7 +217,7 @@ export async function getSharedBookingsForStaff(staffId: number): Promise<Shared
     .eq('staff_id', staffId)
     .order('booking_id', { ascending: false })
 
-  return ((data || []) as SharedBookingRow[]).filter(row => (row.bookings?.booking_commissions?.length || 0) > 1)
+  return ((data || []) as unknown as SharedBookingRow[]).filter(row => (row.bookings?.booking_commissions?.length || 0) > 1)
 }
 
 export async function getPendingShareItems(

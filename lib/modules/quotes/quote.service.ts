@@ -1,5 +1,5 @@
 import * as quoteRepository from './quote.repository'
-import { audit } from '@/lib/audit'
+import type { HotelOption, Centre, ExtraItem, DealInfo, EmailTemplate } from './quote.repository'
 
 // Re-export types for convenience
 export type {
@@ -224,7 +224,7 @@ function buildSingleQuoteRow(
   const flightN = parseFloat(option.flightNet) || 0
   const accN = parseFloat(option.accNet) || 0
   const transN = parseFloat(option.transNet) || 0
-  const extrasN = option.extras.reduce((a, e) => a + (e.net || 0), 0)
+  const extrasN = option.extras.reduce((a: number, e: ExtraItem) => a + (e.net || 0), 0)
 
   return {
     hotel: option.hotel.trim(),

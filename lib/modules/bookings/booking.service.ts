@@ -104,7 +104,7 @@ export async function reconcileTasks(booking: repo.Booking, flights: repo.Flight
 
   const missingTemplates = TASK_TEMPLATE.filter(task => !nextTasks.some(existing => existing.task_key === task.key))
   if (missingTemplates.length > 0) {
-    const inserted = await repo.insertTasks(missingTemplates.map(task => ({
+    const { data: insertedData } = await repo.insertTasks(missingTemplates.map(task => ({
       booking_id: booking.id,
       task_name: task.name,
       task_key: task.key,
@@ -115,7 +115,7 @@ export async function reconcileTasks(booking: repo.Booking, flights: repo.Flight
       notes: null,
       due_date: null,
     })))
-    nextTasks = [...nextTasks, ...(inserted || [])]
+    nextTasks = [...nextTasks, ...(Array.isArray(insertedData) ? insertedData as repo.BookingTask[] : [])]
   }
 
   const derivedDone = calculateTaskDerivedDone(nextTasks, flights, accommodations, transfers, payments, booking)
@@ -766,14 +766,16 @@ export async function addPaymentToBooking(booking: repo.Booking, paymentData: Re
     }])
 
     const refreshed = await repo.getBookingWithAllData(booking.id)
-    await reconcileTasks(
-      refreshed.booking,
-      refreshed.flights,
-      refreshed.accommodations,
-      refreshed.transfers,
-      refreshed.payments,
-      refreshed.tasks
-    )
+    if (refreshed.booking) {
+      await reconcileTasks(
+        refreshed.booking,
+        refreshed.flights,
+        refreshed.accommodations,
+        refreshed.transfers,
+        refreshed.payments,
+        refreshed.tasks
+      )
+    }
 
     return { success: true, message: 'Payment recorded ✓' }
   } catch (error) {
@@ -818,14 +820,16 @@ export async function deletePaymentFromBooking(booking: repo.Booking, paymentId:
     }])
 
     const refreshed = await repo.getBookingWithAllData(booking.id)
-    await reconcileTasks(
-      refreshed.booking,
-      refreshed.flights,
-      refreshed.accommodations,
-      refreshed.transfers,
-      refreshed.payments,
-      refreshed.tasks
-    )
+    if (refreshed.booking) {
+      await reconcileTasks(
+        refreshed.booking,
+        refreshed.flights,
+        refreshed.accommodations,
+        refreshed.transfers,
+        refreshed.payments,
+        refreshed.tasks
+      )
+    }
 
     return { success: true, message: 'Payment removed' }
   } catch (error) {
@@ -886,14 +890,16 @@ export async function pushCostingToOverview(booking: repo.Booking, updates: {
 
     // Re-run task reconciliation so balance_received reflects the new total_sell.
     const refreshed = await repo.getBookingWithAllData(booking.id)
-    await reconcileTasks(
-      refreshed.booking,
-      refreshed.flights,
-      refreshed.accommodations,
-      refreshed.transfers,
-      refreshed.payments,
-      refreshed.tasks,
-    )
+    if (refreshed.booking) {
+      await reconcileTasks(
+        refreshed.booking,
+        refreshed.flights,
+        refreshed.accommodations,
+        refreshed.transfers,
+        refreshed.payments,
+        refreshed.tasks,
+      )
+    }
 
     return { success: true, message: 'Total sell, net and gross profit pushed to Overview ✓' }
   } catch (error) {

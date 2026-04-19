@@ -109,6 +109,20 @@ export type LostReason = {
   count: number
 }
 
+export type LeadSummary = {
+  id: number
+  created_at: string
+}
+
+export type LostDeal = {
+  lost_reason: string | null
+}
+
+export type DealSummary = {
+  stage: string
+  deal_value: number | null
+}
+
 export type StageBreakdown = {
   stage: string
   count: number
@@ -244,7 +258,7 @@ export async function getMonthlyData(year: number): Promise<MonthlyData[]> {
   }
 
   // Process bookings
-  ;(bookings || []).forEach((b: Booking) => {
+  ;((bookings || []) as unknown as Booking[]).forEach((b) => {
     const m = new Date(b.created_at).getMonth() + 1
     const sentQuotes = (b.deals?.quotes || []).filter((q: Quote) => q.sent_to_client).sort((a: Quote, z: Quote) => new Date(z.created_at).getTime() - new Date(a.created_at).getTime())
     const bestQuote = sentQuotes[0] || (b.deals?.quotes || [])[0]
@@ -573,7 +587,7 @@ export async function getQuoteData(fromIso: string, toIso: string, staffUsers: S
     .gte('created_at', fromIso)
     .lte('created_at', toIso)
 
-  const quoteRowsRaw = ((quotesData || []) as {
+  const quoteRowsRaw = ((quotesData || []) as unknown as {
     id: number
     deal_id: number
     quote_ref: string
