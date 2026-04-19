@@ -87,9 +87,14 @@ export default function ClientsPage() {
 
   async function loadClients() {
     setLoading(true)
-    const clients = await getAllClients()
-    setClients(clients)
-    setLoading(false)
+    try {
+      const fetched = await getAllClients()
+      setClients(fetched)
+    } catch (err) {
+      console.error('[loadClients] failed:', err)
+    } finally {
+      setLoading(false)
+    }
   }
 
   async function loadAccess() {
@@ -711,6 +716,7 @@ function ClientModal({ client, staffUsers, currentStaff, onClose, onSaved }: {
         return
       }
 
+      setSaving(false)
       onSaved()
     } catch (error) {
       setError('Failed to save client')
