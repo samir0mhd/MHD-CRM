@@ -339,9 +339,15 @@ export async function markBooked(
   }
 }
 
-export async function markLost(dealId: number, lostReason: string) {
-  await repo.updateDeal(dealId, { stage: 'LOST', lost_reason: lostReason.trim() })
-  await repo.insertActivity({ deal_id: dealId, activity_type: 'STAGE_CHANGE', notes: `Deal lost — ${lostReason.trim()}` })
+export async function markLost(dealId: number, structuredReason: string, reasonDetail?: string) {
+  await repo.updateDeal(dealId, {
+    stage: 'LOST',
+    lost_structured_reason: structuredReason,
+    lost_reason: reasonDetail?.trim() || null,
+    lost_at: new Date().toISOString(),
+  })
+  const detail = reasonDetail?.trim() ? ` — ${reasonDetail.trim()}` : ''
+  await repo.insertActivity({ deal_id: dealId, activity_type: 'STAGE_CHANGE', notes: `Deal lost (${structuredReason})${detail}` })
 }
 
 export async function saveOwnership(

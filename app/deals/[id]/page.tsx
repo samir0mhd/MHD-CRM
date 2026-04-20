@@ -24,6 +24,7 @@ import {
   NEXT_ACTION_TYPES,
   validateNextActionInput,
 } from '@/lib/modules/deals/next-action'
+import { LOST_REASONS, getLostReasonLabel } from '@/lib/modules/lost/constants'
 
 const STAGES = ['NEW_LEAD','QUOTE_SENT','ENGAGED','FOLLOW_UP','DECISION_PENDING','BOOKED']
 
@@ -111,8 +112,9 @@ export default function DealDetailPage() {
   const [tab, setTab]                 = useState<'overview'|'quotes'|'activity'|'booking'>('overview')
   const [toast, setToast]             = useState<{msg:string;type:'success'|'error'}|null>(null)
   const [marking, setMarking]         = useState(false)
-  const [showLostModal, setShowLost]  = useState(false)
-  const [lostReason, setLostReason]   = useState('')
+  const [showLostModal, setShowLost]        = useState(false)
+  const [lostStructuredReason, setLostStructuredReason] = useState('')
+  const [lostDetail, setLostDetail]         = useState('')
   const [actType, setActType]         = useState('CALL')
   const [actNotes, setActNotes]       = useState('')
   const [loggingAct, setLoggingAct]   = useState(false)
@@ -276,9 +278,13 @@ export default function DealDetailPage() {
   }
 
   async function markLost() {
-    if (!deal || !lostReason.trim()) return
-    await markLostService(deal.id, lostReason)
-    setShowLost(false); showToast('Deal marked as lost'); loadDeal()
+    if (!deal || !lostStructuredReason) return
+    await markLostService(deal.id, lostStructuredReason, lostDetail)
+    setShowLost(false)
+    setLostStructuredReason('')
+    setLostDetail('')
+    showToast('Deal marked as lost')
+    loadDeal()
   }
 
   async function saveOwnership() {
@@ -636,7 +642,17 @@ export default function DealDetailPage() {
           {isLost && (
             <div style={{ background:'var(--red-light)', border:'1px solid var(--red)', borderRadius:'10px', padding:'14px 18px', marginBottom:'20px' }}>
               <div style={{ fontWeight:'600', color:'var(--red)', fontSize:'14px', marginBottom:'4px' }}>Deal Lost</div>
-              {deal.lost_reason && <div style={{ fontSize:'13px', color:'var(--red)' }}>{deal.lost_reason}</div>}
+              <div style={{ fontSize:'13px', color:'var(--red)' }}>
+                {getLostReasonLabel(deal.lost_structured_reason)}
+              </div>
+              {deal.lost_reason && (
+                <div style={{ fontSize:'12px', color:'var(--red)', opacity:0.8, marginTop:'4px' }}>{deal.lost_reason}</div>
+              )}
+              {deal.lost_at && (
+                <div style={{ fontSize:'11px', color:'var(--text-muted)', marginTop:'4px' }}>
+                  {new Date(deal.lost_at).toLocaleDateString('en-GB', { day:'numeric', month:'short', year:'numeric' })}
+                </div>
+              )}
             </div>
           )}
 
@@ -884,12 +900,19 @@ export default function DealDetailPage() {
         <div className="modal-backdrop" onClick={e=>{if(e.target===e.currentTarget)setShowLost(false)}}>
           <div className="modal" style={{ maxWidth:'440px' }}>
             <div className="modal-title">Mark Deal as Lost</div>
-            <div style={{ fontSize:'13.5px', color:'var(--text-muted)', marginBottom:'14px' }}>What was the reason? This helps track patterns over time.</div>
-            <label className="label">Lost Reason</label>
-            <textarea className="input" style={{ minHeight:'80px', resize:'vertical', marginBottom:'16px' }} placeholder="e.g. Went with competitor, budget too low, no response…" value={lostReason} onChange={e=>setLostReason(e.target.value)}/>
+            <div style={{ fontSize:'13.5px', color:'var(--text-muted)', marginBottom:'14px' }}>Select a reason — this drives reporting and win-back strategy.</div>
+            <label className="label">Reason <span style={{ color:'var(--red)' }}>*</span></label>
+            <select className="input" style={{ marginBottom:'14px' }} value={lostStructuredReason} onChange={e=>setLostStructuredReason(e.target.value)}>
+              <option value="">— select reason —</option>
+              {LOST_REASONS.map(r => (
+                <option key={r.key} value={r.key}>{r.label}</option>
+              ))}
+            </select>
+            <label className="label">Detail <span style={{ fontSize:'11px', color:'var(--text-muted)', fontWeight:400 }}>(optional)</span></label>
+            <textarea className="input" style={{ minHeight:'70px', resize:'vertical', marginBottom:'16px' }} placeholder="Any extra context…" value={lostDetail} onChange={e=>setLostDetail(e.target.value)}/>
             <div style={{ display:'flex', gap:'10px', justifyContent:'flex-end' }}>
-              <button className="btn btn-secondary" onClick={()=>setShowLost(false)}>Cancel</button>
-              <button className="btn btn-danger" onClick={markLost} disabled={!lostReason.trim()}>Mark as Lost</button>
+              <button className="btn btn-secondary" onClick={()=>{ setShowLost(false); setLostStructuredReason(''); setLostDetail('') }}>Cancel</button>
+              <button className="btn btn-danger" onClick={markLost} disabled={!lostStructuredReason}>Mark as Lost</button>
             </div>
           </div>
         </div>

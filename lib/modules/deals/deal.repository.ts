@@ -14,6 +14,8 @@ export type Deal = {
   next_activity_type: string | null
   next_activity_note: string | null
   lost_reason: string | null
+  lost_structured_reason?: string | null
+  lost_at?: string | null
   created_at: string
   client_id?: number | null
   staff_id?: number | null

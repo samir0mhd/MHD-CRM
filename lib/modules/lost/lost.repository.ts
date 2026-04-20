@@ -11,17 +11,20 @@ export type LostDeal = {
   next_activity_type: string | null
   next_activity_note: string | null
   lost_reason: string | null
+  lost_structured_reason: string | null
+  lost_at: string | null
   source: string | null
   created_at: string
   clients?: { first_name: string; last_name: string }
+  quotes?: { id: number; quote_ref: string | null; price: number | null }[]
 }
 
 export async function getLostDeals(): Promise<LostDeal[]> {
   const { data } = await supabase
     .from('deals')
-    .select('*, clients(first_name, last_name)')
+    .select('*, clients(first_name, last_name), quotes(id, quote_ref, price)')
     .eq('stage', 'LOST')
-    .order('created_at', { ascending: false })
+    .order('lost_at', { ascending: false, nullsFirst: false })
 
   return (data as LostDeal[]) || []
 }

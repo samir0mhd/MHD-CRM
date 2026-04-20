@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useRef } from 'react'
 import Link from 'next/link'
+import { LOST_REASONS, getLostReasonLabel } from '@/lib/modules/lost/constants'
 
 type LostDeal = {
   id: number
@@ -11,10 +12,14 @@ type LostDeal = {
   departure_date: string | null
   next_activity_at: string | null
   next_activity_type: string | null
+  next_activity_note: string | null
   lost_reason: string | null
+  lost_structured_reason: string | null
+  lost_at: string | null
   source: string | null
   created_at: string
   clients?: { first_name: string; last_name: string }
+  quotes?: { id: number; quote_ref: string | null; price: number | null }[]
 }
 
 function fmt(n: number) {
@@ -69,7 +74,11 @@ export default function LostDealsPage() {
     const response = await fetch(`/api/lost/${deal.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'schedule_winback', days }),
+      body: JSON.stringify({
+        action: 'schedule_winback',
+        days,
+        structured_reason: deal.lost_structured_reason,
+      }),
     })
     if (response.ok) showToast(`Win-back scheduled in ${days} days`)
     loadDeals()
@@ -81,21 +90,27 @@ export default function LostDealsPage() {
       || d.title?.toLowerCase().includes(q)
       || d.clients?.first_name?.toLowerCase().includes(q)
       || d.clients?.last_name?.toLowerCase().includes(q)
+      || getLostReasonLabel(d.lost_structured_reason).toLowerCase().includes(q)
       || d.lost_reason?.toLowerCase().includes(q)
   })
 
   // ── Stats ──────────────────────────────────────────────────
   const totalLostValue = deals.reduce((a, d) => a + (d.deal_value || 0), 0)
+
+  // Group by structured reason key using the fixed LOST_REASONS order
   const reasonCounts: Record<string, number> = {}
   deals.forEach(d => {
-    if (d.lost_reason) reasonCounts[d.lost_reason] = (reasonCounts[d.lost_reason] || 0) + 1
+    const key = d.lost_structured_reason || 'other'
+    reasonCounts[key] = (reasonCounts[key] || 0) + 1
   })
-  const topReasons = Object.entries(reasonCounts)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 5)
-  const maxReasonCount = topReasons[0]?.[1] || 1
+  const structuredBreakdown = LOST_REASONS
+    .map(r => ({ key: r.key, label: r.label, count: reasonCounts[r.key] || 0 }))
+    .filter(r => r.count > 0)
+    .sort((a, b) => b.count - a.count)
+  const maxReasonCount = structuredBreakdown[0]?.count || 1
 
   const winbackScheduled = deals.filter(d => d.next_activity_at && new Date(d.next_activity_at) > new Date()).length
+  const topReason = structuredBreakdown[0]
 
   if (loading) {
     return (
@@ -123,10 +138,10 @@ export default function LostDealsPage() {
         {/* ── Stats row ── */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '14px', marginBottom: '28px' }}>
           {[
-            { label: 'Total Lost',       val: String(deals.length),       sub: 'deals',            color: 'var(--red)'   },
-            { label: 'Revenue Missed',   val: fmt(totalLostValue),         sub: 'pipeline value',   color: 'var(--amber)' },
-            { label: 'Win-backs Queued', val: String(winbackScheduled),   sub: 'scheduled',        color: 'var(--accent)' },
-            { label: 'Top Reason',       val: topReasons[0]?.[0] ?? '—', sub: `${topReasons[0]?.[1] ?? 0} deals`, color: 'var(--text-primary)' },
+            { label: 'Total Lost',       val: String(deals.length),            sub: 'deals',            color: 'var(--red)'   },
+            { label: 'Revenue Missed',   val: fmt(totalLostValue),              sub: 'pipeline value',   color: 'var(--amber)' },
+            { label: 'Win-backs Queued', val: String(winbackScheduled),        sub: 'scheduled',        color: 'var(--accent)' },
+            { label: 'Top Reason',       val: topReason ? topReason.label : '—', sub: topReason ? `${topReason.count} deals` : '', color: 'var(--text-primary)' },
           ].map(s => (
             <div key={s.label} className="card" style={{ padding: '16px 20px' }}>
               <div style={{ fontSize: '10px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', marginBottom: '6px', fontFamily: 'Outfit, sans-serif' }}>{s.label}</div>
@@ -142,12 +157,12 @@ export default function LostDealsPage() {
           <div>
             {/* Header */}
             <div style={{
-              display: 'grid', gridTemplateColumns: '1fr 120px 110px 160px 130px',
+              display: 'grid', gridTemplateColumns: '1fr 110px 110px 150px 130px',
               gap: '12px', padding: '0 16px 8px',
               borderBottom: '2px solid var(--border)',
               marginBottom: '4px',
             }}>
-              {['Deal', 'Value', 'Lost', 'Reason', 'Actions'].map(h => (
+              {['Deal', 'Value', 'Date Lost', 'Reason', 'Actions'].map(h => (
                 <div key={h} style={{ fontSize: '10px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', fontFamily: 'Outfit, sans-serif' }}>{h}</div>
               ))}
             </div>
@@ -163,10 +178,13 @@ export default function LostDealsPage() {
               const daysUntilWinback = hasWinback
                 ? Math.ceil((new Date(deal.next_activity_at!).getTime() - renderTime) / 86400000)
                 : null
+              const latestQuote = deal.quotes && deal.quotes.length > 0
+                ? deal.quotes[deal.quotes.length - 1]
+                : null
 
               return (
                 <div key={deal.id} style={{
-                  display: 'grid', gridTemplateColumns: '1fr 120px 110px 160px 130px',
+                  display: 'grid', gridTemplateColumns: '1fr 110px 110px 150px 130px',
                   gap: '12px', padding: '12px 16px',
                   borderBottom: '1px solid var(--border)',
                   background: 'var(--surface)',
@@ -178,19 +196,26 @@ export default function LostDealsPage() {
                   transition: 'opacity 0.15s',
                 }}>
 
-                  {/* Deal + client */}
+                  {/* Deal + client + quote ref */}
                   <div style={{ minWidth: 0 }}>
                     <Link href={`/deals/${deal.id}`} style={{ textDecoration: 'none' }}>
                       <div style={{ fontFamily: 'Fraunces, serif', fontSize: '13.5px', fontWeight: '300', color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', letterSpacing: '-0.01em' }}>
                         {deal.title}
                       </div>
                     </Link>
-                    {deal.clients && (
-                      <div style={{ fontSize: '11.5px', color: 'var(--text-muted)', fontFamily: 'Outfit, sans-serif', marginTop: '1px' }}>
-                        {deal.clients.first_name} {deal.clients.last_name}
-                        {deal.source && <span style={{ marginLeft: '6px', opacity: 0.7 }}>· {deal.source}</span>}
-                      </div>
-                    )}
+                    <div style={{ display: 'flex', gap: '6px', alignItems: 'center', marginTop: '2px', flexWrap: 'wrap' }}>
+                      {deal.clients && (
+                        <span style={{ fontSize: '11.5px', color: 'var(--text-muted)', fontFamily: 'Outfit, sans-serif' }}>
+                          {deal.clients.first_name} {deal.clients.last_name}
+                          {deal.source && <span style={{ marginLeft: '6px', opacity: 0.7 }}>· {deal.source}</span>}
+                        </span>
+                      )}
+                      {latestQuote?.quote_ref && (
+                        <span style={{ fontSize: '10px', fontWeight: '600', fontFamily: 'Outfit, sans-serif', background: 'var(--bg-tertiary)', color: 'var(--text-muted)', borderRadius: '4px', padding: '1px 5px', letterSpacing: '0.03em' }}>
+                          {latestQuote.quote_ref}
+                        </span>
+                      )}
+                    </div>
                   </div>
 
                   {/* Value */}
@@ -200,12 +225,25 @@ export default function LostDealsPage() {
 
                   {/* Date lost */}
                   <div style={{ fontSize: '11.5px', color: 'var(--text-muted)', fontFamily: 'Outfit, sans-serif' }}>
-                    {new Date(deal.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+                    {deal.lost_at
+                      ? new Date(deal.lost_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+                      : new Date(deal.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+                    }
                   </div>
 
                   {/* Lost reason */}
-                  <div style={{ fontSize: '11.5px', color: 'var(--red)', fontFamily: 'Outfit, sans-serif', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {deal.lost_reason || <span style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>No reason given</span>}
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: '11.5px', color: 'var(--red)', fontFamily: 'Outfit, sans-serif', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {deal.lost_structured_reason
+                        ? getLostReasonLabel(deal.lost_structured_reason)
+                        : <span style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>No reason given</span>
+                      }
+                    </div>
+                    {deal.lost_reason && (
+                      <div style={{ fontSize: '10.5px', color: 'var(--text-muted)', fontFamily: 'Outfit, sans-serif', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: '1px' }}>
+                        {deal.lost_reason}
+                      </div>
+                    )}
                   </div>
 
                   {/* Actions */}
@@ -236,14 +274,14 @@ export default function LostDealsPage() {
               Why Deals Were Lost
             </div>
 
-            {topReasons.length === 0 ? (
+            {structuredBreakdown.length === 0 ? (
               <div style={{ fontSize: '13px', color: 'var(--text-muted)' }}>No data yet.</div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                {topReasons.map(([reason, count]) => (
-                  <div key={reason}>
+                {structuredBreakdown.map(({ key, label, count }) => (
+                  <div key={key}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
-                      <span style={{ fontSize: '12.5px', color: 'var(--text-primary)', fontFamily: 'Outfit, sans-serif', flex: 1, paddingRight: '8px' }}>{reason}</span>
+                      <span style={{ fontSize: '12.5px', color: 'var(--text-primary)', fontFamily: 'Outfit, sans-serif', flex: 1, paddingRight: '8px' }}>{label}</span>
                       <span style={{ fontSize: '12px', fontWeight: '700', color: 'var(--text-muted)', fontFamily: 'Outfit, sans-serif' }}>{count}</span>
                     </div>
                     <div style={{ height: '6px', background: 'var(--bg-tertiary)', borderRadius: '3px', overflow: 'hidden' }}>

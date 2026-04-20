@@ -17,7 +17,7 @@ export async function PATCH(
     }
 
     if (body.action === 'schedule_winback') {
-      const { error } = await lostService.scheduleWinback(deal, Number(body.days) || 0)
+      const { error } = await lostService.scheduleWinback(deal, Number(body.days) || 0, body.structured_reason ?? null)
       if (error) return NextResponse.json({ error: error.message }, { status: 400 })
       return NextResponse.json({ success: true })
     }
