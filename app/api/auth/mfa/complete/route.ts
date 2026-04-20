@@ -6,6 +6,10 @@ const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 
 export async function POST(request: Request) {
+  if (!supabaseAdmin) {
+    return NextResponse.json({ error: 'Server auth setup is incomplete' }, { status: 500 })
+  }
+
   const authHeader = request.headers.get('authorization')
   const token = authHeader?.replace('Bearer ', '')
   if (!token) return NextResponse.json({ error: 'Missing token' }, { status: 401 })

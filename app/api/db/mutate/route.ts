@@ -17,12 +17,15 @@ type MutationRequest = {
   returning?: 'none' | 'many' | 'single' | 'maybeSingle'
 }
 
-type MutationQuery = ReturnType<ReturnType<typeof createRouteSupabaseClient>['from']>
+type MutationQuery = any
 
 function applyFilters(query: MutationQuery, filters: MutationFilter[] = []) {
   return filters.reduce<MutationQuery>((activeQuery, filter) => {
     if (filter.op === 'in') {
-      return activeQuery.in(filter.column, Array.isArray(filter.value) ? filter.value : [])
+      return activeQuery.in(
+        filter.column,
+        Array.isArray(filter.value) ? filter.value : [],
+      )
     }
 
     return activeQuery.eq(filter.column, filter.value)

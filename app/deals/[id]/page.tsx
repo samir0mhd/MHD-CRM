@@ -915,6 +915,8 @@ function QuoteCard({ quoteGroup, dealId, isBooked, isLost, originatingQuoteRef, 
   const allLegs = [...outLegs,...retLegs]
   const costs   = quote.cost_breakdown||{}
 
+  const isLegacyQuote = quote.quote_type !== 'multi_centre' && !(quote.flight_details as { builder_state?: unknown } | null)?.builder_state
+
   const checkinDisplay = quote.checkin_date
     ? quote.checkin_next_day
       ? (() => { const d=new Date(quote.checkin_date+'T12:00'); d.setDate(d.getDate()+1); return d.toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}) })()
@@ -1027,9 +1029,15 @@ function QuoteCard({ quoteGroup, dealId, isBooked, isLost, originatingQuoteRef, 
           {/* Action buttons */}
           <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
             {!isBooked && !isLost && (
-              <Link href={`/quotes/new?deal=${dealId}&quote=${quote.id}`}>
-                <button className="btn btn-secondary btn-sm">✏ Edit Quote</button>
-              </Link>
+              isLegacyQuote ? (
+                <span style={{ fontSize:'12px', color:'var(--text-muted)', alignSelf:'center', fontStyle:'italic' }}>
+                  Legacy quote — cannot be reopened in builder
+                </span>
+              ) : (
+                <Link href={`/quotes/new?deal=${dealId}&quote=${quote.id}`}>
+                  <button className="btn btn-secondary btn-sm">✏ Edit Quote</button>
+                </Link>
+              )
             )}
             {!quote.sent_to_client && !isBooked && !isLost && (
               <button className="btn btn-primary btn-sm" onClick={onMarkSent}>✓ Mark as Sent</button>

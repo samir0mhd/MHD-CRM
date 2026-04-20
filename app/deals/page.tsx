@@ -16,7 +16,7 @@ type Deal = {
   lost_reason: string | null
   created_at: string
   clients?: { first_name: string; last_name: string; phone: string; email: string }
-  quotes?: { id: number; price?: number; profit?: number; sent_to_client?: boolean }[]
+  quotes?: { id: number; price?: number; profit?: number; sent_to_client?: boolean; quote_ref?: string }[]
   bookings?: { id: number; booking_reference: string }[]
 }
 
@@ -388,6 +388,14 @@ export default function AllDealsPage() {
                           {quotes.length > 0 ? `${quotes.length} quote${quotes.length > 1 ? 's' : ''}` : '—'}
                         </div>
                         {sentQuotes > 0 && <div style={{ fontSize: '11px', color: 'var(--accent-mid)' }}>{sentQuotes} sent</div>}
+                        {quotes.length > 0 && (() => {
+                          const refs = [...new Set(quotes.map(q => q.quote_ref).filter(Boolean))]
+                          return refs.length > 0 ? (
+                            <div style={{ fontSize: '10px', fontFamily: 'monospace', color: 'var(--text-muted)', marginTop: '2px' }}>
+                              {refs[0]}{refs.length > 1 ? ` +${refs.length - 1}` : ''}
+                            </div>
+                          ) : null
+                        })()}
                       </td>
 
                       {/* Source */}

@@ -54,9 +54,11 @@ export type Quote = {
   infants?: number
   child_ages?: number[] | null
   additional_services?: string | null
+  quote_type?: string | null
   flight_details?: {
     outbound?: FlightLeg[]
     return?: FlightLeg[]
+    builder_state?: unknown
   } | null
   cost_breakdown?: CostBreakdown | null
   created_at: string
@@ -151,7 +153,7 @@ export type PipelineClientResult = {
 export async function getAllDeals(): Promise<Deal[]> {
   const { data } = await supabase
     .from('deals')
-    .select('*, clients(first_name, last_name, phone, email), quotes(id, price, profit, sent_to_client), bookings(id, booking_reference)')
+    .select('*, clients(first_name, last_name, phone, email), quotes(id, price, profit, sent_to_client, quote_ref), bookings(id, booking_reference)')
     .order('created_at', { ascending: false })
 
   return data || []
@@ -160,7 +162,7 @@ export async function getAllDeals(): Promise<Deal[]> {
 export async function getActivePipelineDeals(): Promise<Deal[]> {
   const { data } = await supabase
     .from('deals')
-    .select('*, clients(first_name, last_name), activities(created_at)')
+    .select('*, clients(first_name, last_name), activities(created_at), quotes(id, quote_ref, sent_to_client)')
     .not('stage', 'in', '("BOOKED","LOST")')
     .order('created_at', { ascending: false })
 
