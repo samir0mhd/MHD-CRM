@@ -16,6 +16,8 @@ type Booking = {
   return_date: string | null
   balance_due_date: string | null
   deposit_received: boolean
+  total_sell: number | null
+  gross_profit: number | null
   final_profit: number | null
   booking_notes: string | null
   total_passengers: number
@@ -159,7 +161,7 @@ export default function BookingsPage() {
     return matchSearch && matchStatus && matchStaff && matchOwnership
   })
 
-  const totalValue    = bookings.reduce((a, b) => a + (b.deals?.deal_value || 0), 0)
+  const totalValue    = bookings.reduce((a, b) => a + (b.total_sell ?? b.deals?.deal_value ?? 0), 0)
   const departingSoon = bookings.filter(b => { const d = daysUntil(b.departure_date); return d !== null && d >= 0 && d <= 30 }).length
   const unassignedCount = bookings.filter(b => !b.staff_id).length
   const cleanupCount = bookings.filter(bookingNeedsOwnershipCleanup).length
@@ -374,7 +376,7 @@ export default function BookingsPage() {
                       {/* Value */}
                       <td style={{ padding: '12px 14px', whiteSpace: 'nowrap' }}>
                         <div style={{ fontSize: '13.5px', fontWeight: '500', color: 'var(--green)' }}>
-                          {fmt(booking.deals?.deal_value || 0)}
+                          {fmt(booking.total_sell ?? booking.deals?.deal_value ?? 0)}
                         </div>
                       </td>
 

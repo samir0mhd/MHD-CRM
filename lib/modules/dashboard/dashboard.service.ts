@@ -74,8 +74,15 @@ export async function getDashboardData(staffId?: number): Promise<DashboardRespo
   let confirmedProfit = 0
   const recentBookings: (repo.BookingWithQuotes & { profit: number })[] = []
   bookings.forEach(booking => {
-    const profit = bestQuoteProfit(booking.deals?.quotes)
-    confirmedRevenue += Number(booking.deals?.deal_value || 0)
+    // Use actual booking financials when costing has been pushed; fall back to quote estimate
+    const actualSell   = booking.total_sell !== null && booking.total_sell !== undefined ? Number(booking.total_sell) : null
+    const actualProfit = booking.final_profit !== null && booking.final_profit !== undefined
+      ? Number(booking.final_profit)
+      : booking.gross_profit !== null && booking.gross_profit !== undefined
+        ? Number(booking.gross_profit)
+        : null
+    const profit = actualProfit ?? bestQuoteProfit(booking.deals?.quotes)
+    confirmedRevenue += actualSell ?? Number(booking.deals?.deal_value || 0)
     confirmedProfit += profit
     recentBookings.push({ ...booking, profit })
   })
@@ -83,8 +90,14 @@ export async function getDashboardData(staffId?: number): Promise<DashboardRespo
   let yearRevenue = 0
   let yearProfit = 0
   yearBookings.forEach(booking => {
-    yearRevenue += Number(booking.deals?.deal_value || 0)
-    yearProfit += bestQuoteProfit(booking.deals?.quotes)
+    const actualSell   = booking.total_sell !== null && booking.total_sell !== undefined ? Number(booking.total_sell) : null
+    const actualProfit = booking.final_profit !== null && booking.final_profit !== undefined
+      ? Number(booking.final_profit)
+      : booking.gross_profit !== null && booking.gross_profit !== undefined
+        ? Number(booking.gross_profit)
+        : null
+    yearRevenue += actualSell ?? Number(booking.deals?.deal_value || 0)
+    yearProfit  += actualProfit ?? bestQuoteProfit(booking.deals?.quotes)
   })
 
   const rottenDays = target?.rotten_days || 3

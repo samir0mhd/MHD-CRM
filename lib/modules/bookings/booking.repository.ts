@@ -76,6 +76,7 @@ export type Transfer = {
   arrival_date: string | null; arrival_time: string | null; arrival_flight: string | null
   departure_date: string | null; departure_time: string | null; departure_flight: string | null
   inter_hotel_dates: string | null; net_cost: number | null; notes: string | null
+  confirmation_reference: string | null
 }
 
 export type Extra = {

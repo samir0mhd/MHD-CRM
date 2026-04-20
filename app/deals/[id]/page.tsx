@@ -320,6 +320,9 @@ export default function DealDetailPage() {
   const stageIdx = STAGES.indexOf(deal.stage)
   const totalQ   = quoteGroups.reduce((a,g)=>a+(g.quote.price||0),0)
   const totalP   = quoteGroups.reduce((a,g)=>a+(g.quote.profit||0),0)
+  const booking0 = deal.bookings?.[0]
+  const actualSell   = booking0?.total_sell ?? null
+  const actualProfit = booking0?.final_profit ?? booking0?.gross_profit ?? null
   const assignedStaffId = deal.staff_id || client?.owner_staff_id || null
   const assignedStaff = staffUsers.find(staff => staff.id === assignedStaffId) || null
   const clientOwnerMismatch = (client?.owner_staff_id ?? null) !== (deal.staff_id ?? null)
@@ -670,13 +673,29 @@ export default function DealDetailPage() {
             <div style={{ display:'flex', flexDirection:'column', gap:'16px' }}>
               <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:'12px' }}>
                 {[
-                  { label:'Deal Value',   val:fmt(deal.deal_value||0), color:'var(--accent-mid)' },
-                  { label:'Total Quoted', val:fmt(totalQ),              color:'var(--green)'      },
-                  { label:'Est. Profit',  val:fmt(totalP),              color:'var(--gold)'       },
+                  {
+                    label: isBooked && actualSell !== null ? 'Booking Total' : 'Deal Value',
+                    val:   isBooked && actualSell !== null ? fmt(actualSell) : fmt(deal.deal_value||0),
+                    color: 'var(--accent-mid)',
+                    sub:   isBooked && actualSell !== null ? 'actual' : null,
+                  },
+                  {
+                    label: 'Total Quoted',
+                    val:   fmt(totalQ),
+                    color: 'var(--green)',
+                    sub:   null,
+                  },
+                  {
+                    label: isBooked && actualProfit !== null ? 'Actual Profit' : 'Est. Profit',
+                    val:   isBooked && actualProfit !== null ? fmt(actualProfit) : fmt(totalP),
+                    color: 'var(--gold)',
+                    sub:   isBooked && actualProfit !== null ? 'from costing' : null,
+                  },
                 ].map(s=>(
                   <div key={s.label} className="stat-card">
                     <div className="stat-label">{s.label}</div>
                     <div style={{ fontFamily:'Instrument Serif, serif', fontSize:'28px', color:s.color, lineHeight:1, marginTop:'4px' }}>{s.val}</div>
+                    {s.sub && <div style={{ fontSize:'10px', color:'var(--text-muted)', marginTop:'3px', fontFamily:'Outfit, sans-serif', textTransform:'uppercase', letterSpacing:'0.06em' }}>{s.sub}</div>}
                   </div>
                 ))}
               </div>

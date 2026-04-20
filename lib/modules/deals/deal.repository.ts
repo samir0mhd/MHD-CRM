@@ -122,6 +122,9 @@ export type Booking = {
   departure_date?: string | null
   originating_quote_ref?: string | null
   originating_quote_id?: number | null
+  total_sell?: number | null
+  gross_profit?: number | null
+  final_profit?: number | null
 }
 
 export type BookingTask = {
@@ -174,7 +177,7 @@ export async function getActivePipelineDeals(): Promise<Deal[]> {
 export async function getDealById(id: number | string): Promise<Deal | null> {
   const { data } = await supabase
     .from('deals')
-    .select('*, clients(*), quotes(*), activities(*), bookings(id, booking_reference, staff_id, originating_quote_ref, originating_quote_id)')
+    .select('*, clients(*), quotes(*), activities(*), bookings(id, booking_reference, staff_id, originating_quote_ref, originating_quote_id, total_sell, gross_profit, final_profit)')
     .eq('id', id)
     .single()
 

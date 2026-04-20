@@ -25,6 +25,9 @@ export type BookingWithQuotes = {
   booking_reference?: string | null
   departure_date?: string | null
   created_at?: string
+  total_sell?: number | null
+  gross_profit?: number | null
+  final_profit?: number | null
   deals?: {
     id?: number
     title?: string | null
@@ -94,7 +97,7 @@ export async function getTarget(month: number, year: number): Promise<Target | n
 export async function getConfirmedBookingsInRange(from: string, to: string): Promise<BookingWithQuotes[]> {
   const { data } = await supabase
     .from('bookings')
-    .select('id, deal_id, booking_reference, departure_date, created_at, deals(id, title, deal_value, clients(first_name, last_name), quotes(profit, sent_to_client, created_at))')
+    .select('id, deal_id, booking_reference, departure_date, created_at, total_sell, gross_profit, final_profit, deals(id, title, deal_value, clients(first_name, last_name), quotes(profit, sent_to_client, created_at))')
     .eq('status', 'CONFIRMED')
     .gte('created_at', from)
     .lte('created_at', to)
@@ -105,7 +108,7 @@ export async function getConfirmedBookingsInRange(from: string, to: string): Pro
 export async function getConfirmedBookingsSince(from: string): Promise<BookingWithQuotes[]> {
   const { data } = await supabase
     .from('bookings')
-    .select('id, deal_id, deals(deal_value, quotes(profit, sent_to_client, created_at))')
+    .select('id, deal_id, total_sell, gross_profit, final_profit, deals(deal_value, quotes(profit, sent_to_client, created_at))')
     .eq('status', 'CONFIRMED')
     .gte('created_at', from)
 

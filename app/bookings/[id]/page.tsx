@@ -75,6 +75,7 @@ type Transfer = {
   arrival_date: string | null; arrival_time: string | null; arrival_flight: string | null
   departure_date: string | null; departure_time: string | null; departure_flight: string | null
   inter_hotel_dates: string | null; net_cost: number | null; notes: string | null
+  confirmation_reference: string | null
 }
 type Extra = {
   id: number; booking_id: number; extra_type: string | null; description: string | null
@@ -165,6 +166,16 @@ const fmt     = (n: number | null | undefined) => '£' + (n || 0).toLocaleString
 const fmtDate = (d: string | null) => !d ? '—' : new Date(d.includes('T') ? d : d + 'T12:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
 const daysUntil = (d: string | null) => !d ? null : Math.ceil((new Date(d).getTime() - Date.now()) / 86400000)
 const TASK_CATEGORY_ORDER = ['Financial', 'Flights', 'Accommodation', 'Transfers', 'Documents', 'Pre-Departure', 'Post-Trip', 'Operations']
+
+function calcAge(dob: string | null): number | null {
+  if (!dob) return null
+  const d = new Date(dob.includes('T') ? dob : dob + 'T12:00')
+  const today = new Date()
+  let age = today.getFullYear() - d.getFullYear()
+  const m = today.getMonth() - d.getMonth()
+  if (m < 0 || (m === 0 && today.getDate() < d.getDate())) age--
+  return age
+}
 
 function calcNights(checkin: string | null, checkout: string | null): number | null {
   if (!checkin || !checkout) return null
@@ -268,8 +279,8 @@ export default function BookingDetailPage() {
     } catch { /* non-fatal */ }
   }
 
-  async function loadAll() {
-    setLoading(true)
+  async function loadAll(silent = false) {
+    if (!silent) setLoading(true)
     try {
       const { data } = await apiRequest<{
         data: {
@@ -302,10 +313,10 @@ export default function BookingDetailPage() {
       setSuppliers(suppliers || [])
       setCommissions(commissions || [])
     } catch (error: any) {
-      setBooking(null)
+      if (!silent) setBooking(null)
       showToast(error.message || 'Failed to load booking', 'error')
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }
 
@@ -514,9 +525,12 @@ export default function BookingDetailPage() {
         </div>
       </div>
 
+      {/* Pre-body alerts + ownership */}
+      <div style={{ padding:'16px 28px 0' }}>
+
       {/* Cancelled banner */}
       {booking.booking_status === 'cancelled' && (
-        <div style={{ margin:'0 0 16px', background:'#fee2e2', border:'1px solid #fca5a5', borderRadius:'10px', padding:'14px 18px' }}>
+        <div style={{ marginBottom:'16px', background:'#fee2e2', border:'1px solid #fca5a5', borderRadius:'10px', padding:'14px 18px' }}>
           <div style={{ display:'flex', alignItems:'center', gap:'10px', marginBottom: booking.cancellation_type ? '6px' : '0' }}>
             <span style={{ fontSize:'18px' }}>🚫</span>
             <div style={{ flex:1, fontSize:'13.5px', color:'#dc2626', fontWeight:'600' }}>
@@ -538,7 +552,7 @@ export default function BookingDetailPage() {
 
       {/* Balance due alert */}
       {booking.booking_status !== 'cancelled' && balDays !== null && balDays <= 14 && balDays >= 0 && balance > 0 && (
-        <div style={{ margin:'0 0 16px', background:'#fdeaea', border:'1px solid var(--red)', borderRadius:'10px', padding:'12px 18px', display:'flex', alignItems:'center', gap:'10px' }}>
+        <div style={{ marginBottom:'16px', background:'#fdeaea', border:'1px solid var(--red)', borderRadius:'10px', padding:'12px 18px', display:'flex', alignItems:'center', gap:'10px' }}>
           <span style={{ fontSize:'18px' }}>⚠️</span>
           <div style={{ flex:1, fontSize:'13.5px', color:'var(--red)', fontWeight:'500' }}>
             Balance of {fmt(balance)} due {balDays === 0 ? 'TODAY' : `in ${balDays} day${balDays===1?'':'s'}`} — {fmtDate(booking.balance_due_date)}
@@ -546,7 +560,7 @@ export default function BookingDetailPage() {
         </div>
       )}
 
-      <div style={{ margin:'0 0 16px' }} className="card">
+      <div style={{ marginBottom:'16px' }} className="card">
         <div style={{ padding:'16px 18px', display:'flex', justifyContent:'space-between', gap:'16px', alignItems:'flex-start', flexWrap:'wrap' }}>
           <div>
             {commissions.length > 1 ? (
@@ -733,6 +747,8 @@ export default function BookingDetailPage() {
         </div>
       </div>
 
+      </div>{/* end pre-body */}
+
       <div className="page-body">
         {/* Tabs */}
         <div style={{ display:'flex', borderBottom:'1px solid var(--border)', marginBottom:'20px', overflowX:'auto' }}>
@@ -760,37 +776,37 @@ export default function BookingDetailPage() {
 
         {/* ── PASSENGERS TAB ───────────────────────────── */}
         {tab === 'passengers' && (
-          <PassengersTab bookingId={booking.id} passengers={passengers} onUpdate={loadAll} showToast={showToast} />
+          <PassengersTab bookingId={booking.id} passengers={passengers} onUpdate={() => void loadAll(true)} showToast={showToast} />
         )}
 
         {/* ── FLIGHTS TAB ──────────────────────────────── */}
         {tab === 'flights' && (
           <FlightsTab bookingId={booking.id} outbound={outbound} returnFlts={returnFlts}
-            suppliers={suppliers} onUpdate={loadAll} showToast={showToast} />
+            suppliers={suppliers} onUpdate={() => void loadAll(true)} showToast={showToast} />
         )}
 
         {/* ── ACCOMMODATION TAB ────────────────────────── */}
         {tab === 'accommodation' && (
           <AccommodationTab bookingId={booking.id} accommodations={accommodations}
             hotels={hotels} suppliers={suppliers} passengers={passengers}
-            onUpdate={loadAll} showToast={showToast} />
+            onUpdate={() => void loadAll(true)} showToast={showToast} />
         )}
 
         {/* ── TRANSFERS TAB ────────────────────────────── */}
         {tab === 'transfers' && (
           <TransfersTab bookingId={booking.id} transfers={transfers} suppliers={suppliers}
-            flights={flights} onUpdate={loadAll} showToast={showToast} />
+            flights={flights} onUpdate={() => void loadAll(true)} showToast={showToast} />
         )}
 
         {/* ── EXTRAS TAB ───────────────────────────────── */}
         {tab === 'extras' && (
-          <ExtrasTab bookingId={booking.id} extras={extras} onUpdate={loadAll} showToast={showToast} />
+          <ExtrasTab bookingId={booking.id} extras={extras} onUpdate={() => void loadAll(true)} showToast={showToast} />
         )}
 
         {/* ── PAYMENTS TAB ─────────────────────────────── */}
         {tab === 'payments' && (
           <PaymentsTab booking={booking} payments={payments} balance={balance}
-            onUpdate={loadAll} showToast={showToast} currentStaff={currentStaff} />
+            onUpdate={() => void loadAll(true)} showToast={showToast} currentStaff={currentStaff} />
         )}
 
         {/* ── COSTING TAB ──────────────────────────────── */}
@@ -798,19 +814,19 @@ export default function BookingDetailPage() {
           <CostingTab booking={booking} flights={[...outbound, ...returnFlts]}
             accommodations={accommodations} transfers={transfers}
             extras={extras} payments={payments} suppliers={suppliers}
-            onUpdate={loadAll} showToast={showToast} currentStaff={currentStaff} />
+            onUpdate={() => void loadAll(true)} showToast={showToast} currentStaff={currentStaff} />
         )}
 
         {/* ── TASKS TAB ────────────────────────────────── */}
         {tab === 'tasks' && (
-          <TasksTab tasks={tasks} activities={booking.deals?.activities || []} bookingReference={booking.booking_reference} onUpdate={loadAll} showToast={showToast} />
+          <TasksTab tasks={tasks} activities={booking.deals?.activities || []} bookingReference={booking.booking_reference} onUpdate={() => void loadAll(true)} showToast={showToast} />
         )}
 
         {/* ── DOCUMENTS TAB ────────────────────────────── */}
         {tab === 'documents' && (
           <DocumentsTab booking={booking} client={client} passengers={passengers}
             outbound={outbound} returnFlts={returnFlts} accommodations={accommodations}
-            transfers={transfers} payments={payments} tasks={tasks} onUpdate={loadAll} showToast={showToast} />
+            transfers={transfers} payments={payments} tasks={tasks} onUpdate={() => void loadAll(true)} showToast={showToast} />
         )}
       </div>
 
@@ -841,7 +857,7 @@ export default function BookingDetailPage() {
               })
               setCancelModal(false)
               showToast(result.message || 'Booking cancelled')
-              loadAll()
+              void loadAll()
             } catch (error: any) {
               showToast(error.message || 'Failed to cancel booking', 'error')
             }
@@ -1397,7 +1413,7 @@ function PassengersTab({ bookingId, passengers, onUpdate, showToast }: any) {
                     <span style={{ fontSize:'11px', color:'var(--text-muted)', background:'var(--bg-tertiary)', padding:'1px 7px', borderRadius:'10px' }}>{p.passenger_type}</span>
                   </div>
                   <div style={{ fontSize:'12px', color:'var(--text-muted)', display:'flex', gap:'16px' }}>
-                    {p.date_of_birth && <span>DOB: {fmtDate(p.date_of_birth)}</span>}
+                    {p.date_of_birth && <span>DOB: {fmtDate(p.date_of_birth)}{calcAge(p.date_of_birth) !== null ? ` (age ${calcAge(p.date_of_birth)})` : ''}</span>}
                     {p.passport_number && <span>Passport: {p.passport_number}{p.passport_expiry ? ` (exp ${fmtDate(p.passport_expiry)})` : ''}</span>}
                   </div>
                 </div>
@@ -2129,15 +2145,17 @@ function AccommodationTab({ bookingId, accommodations, hotels, suppliers, passen
 
 // ── TRANSFERS TAB ────────────────────────────────────────────
 function TransfersTab({ bookingId, transfers, suppliers, flights, onUpdate, showToast }: any) {
-  const blankTransfer = { supplier_id:'', supplier_name:'', transfer_type:'private', meet_greet:true, local_rep:true, arrival_date:'', arrival_time:'', arrival_flight:'', departure_date:'', departure_time:'', departure_flight:'', inter_hotel_dates:'', net_cost:'', notes:'' }
+  const blankTransfer = { supplier_id:'', supplier_name:'', transfer_type:'private', meet_greet:true, local_rep:true, arrival_date:'', arrival_time:'', arrival_flight:'', departure_date:'', departure_time:'', departure_flight:'', inter_hotel_dates:'', net_cost:'', notes:'', confirmation_reference:'' }
   const [adding, setAdding]     = useState(false)
   const [form, setForm]         = useState<any>({ ...blankTransfer })
   const [editing, setEditing]   = useState<number|null>(null)
   const [editForm, setEditForm] = useState<any>({})
   const [saving, setSaving]     = useState(false)
 
-  const arrFlight = flights.find((f: Flight) => f.direction === 'outbound' && f.destination?.includes('MRU'))
-  const depFlight = flights.find((f: Flight) => f.direction === 'return' && f.origin?.includes('MRU'))
+  const outboundFlights = [...flights].filter((f: Flight) => f.direction === 'outbound').sort((a: Flight, b: Flight) => a.leg_order - b.leg_order)
+  const returnFlights   = [...flights].filter((f: Flight) => f.direction === 'return').sort((a: Flight, b: Flight) => a.leg_order - b.leg_order)
+  const arrFlight = outboundFlights[outboundFlights.length - 1] ?? null
+  const depFlight = returnFlights[0] ?? null
 
   async function addTransfer() {
     setSaving(true)
@@ -2159,6 +2177,7 @@ function TransfersTab({ bookingId, transfers, suppliers, flights, onUpdate, show
           inter_hotel_dates: form.inter_hotel_dates || null,
           net_cost: form.net_cost ? Number(form.net_cost) : null,
           notes: form.notes || null,
+          confirmation_reference: form.confirmation_reference || null,
         }),
       })
       showToast(result.message || 'Transfer added ✓')
@@ -2192,6 +2211,7 @@ function TransfersTab({ bookingId, transfers, suppliers, flights, onUpdate, show
           inter_hotel_dates: editForm.inter_hotel_dates || null,
           net_cost: editForm.net_cost ? Number(editForm.net_cost) : null,
           notes: editForm.notes || null,
+          confirmation_reference: editForm.confirmation_reference || null,
         }),
       })
       showToast(result.message || 'Transfer updated ✓')
@@ -2252,6 +2272,7 @@ function TransfersTab({ bookingId, transfers, suppliers, flights, onUpdate, show
                 <div><label className="label">Departure Flight</label><input className="input" value={editForm.departure_flight||''} onChange={e=>setEditForm((p:any)=>({...p,departure_flight:e.target.value.toUpperCase()}))}/></div>
                 <div><label className="label">Departure Date & Time</label><div style={{ display:'flex', gap:'8px' }}><DateInput value={editForm.departure_date||''} onChange={v=>setEditForm((p:any)=>({...p,departure_date:v}))}/><input className="input" style={{ width:'100px' }} value={editForm.departure_time||''} onChange={e=>setEditForm((p:any)=>({...p,departure_time:e.target.value}))}/></div></div>
                 <div style={{ gridColumn:'1/-1' }}><label className="label">Inter-Hotel Transfer Dates</label><input className="input" value={editForm.inter_hotel_dates||''} onChange={e=>setEditForm((p:any)=>({...p,inter_hotel_dates:e.target.value}))}/></div>
+                <div><label className="label">Confirmation / Ref</label><input className="input" placeholder="Supplier reference or booking number" value={editForm.confirmation_reference||''} onChange={e=>setEditForm((p:any)=>({...p,confirmation_reference:e.target.value}))}/></div>
                 <div style={{ gridColumn:'1/-1' }}><label className="label">Notes</label><textarea className="input" style={{ minHeight:'60px', resize:'vertical', fontSize:'13px' }} value={editForm.notes||''} onChange={e=>setEditForm((p:any)=>({...p,notes:e.target.value}))}/></div>
               </div>
               <div style={{ display:'flex', gap:'8px', justifyContent:'flex-end', marginTop:'14px' }}>
@@ -2287,6 +2308,7 @@ function TransfersTab({ bookingId, transfers, suppliers, flights, onUpdate, show
                 </div>
               </div>
               {t.inter_hotel_dates && <div style={{ marginTop:'8px', fontSize:'12.5px', color:'var(--text-muted)' }}>Inter-hotel: {t.inter_hotel_dates}</div>}
+              {t.confirmation_reference && <div style={{ marginTop:'6px', fontSize:'12.5px' }}><span style={{ color:'var(--text-muted)' }}>Ref: </span><span style={{ fontWeight:'600', color:'var(--text-primary)', fontFamily:'monospace' }}>{t.confirmation_reference}</span></div>}
               {t.net_cost && <div style={{ marginTop:'6px', fontSize:'13px', color:'var(--accent)' }}>Net: {fmt(t.net_cost)}</div>}
               {t.notes && <div style={{ marginTop:'8px', fontSize:'12.5px', color:'var(--text-muted)', fontStyle:'italic' }}>{t.notes}</div>}
             </>
@@ -2324,6 +2346,7 @@ function TransfersTab({ bookingId, transfers, suppliers, flights, onUpdate, show
             <div><label className="label">Departure Flight</label><input className="input" placeholder="e.g. BA2064" value={form.departure_flight} onChange={e=>setForm((p:any)=>({...p,departure_flight:e.target.value.toUpperCase()}))}/></div>
             <div><label className="label">Departure Date & Time</label><div style={{ display:'flex', gap:'8px' }}><DateInput value={form.departure_date} onChange={v=>setForm((p:any)=>({...p,departure_date:v}))}/><input className="input" style={{ width:'100px' }} placeholder="20:45" value={form.departure_time} onChange={e=>setForm((p:any)=>({...p,departure_time:e.target.value}))}/></div></div>
             <div style={{ gridColumn:'1/-1' }}><label className="label">Inter-Hotel Transfer Dates</label><input className="input" placeholder="e.g. 17-05-2026" value={form.inter_hotel_dates} onChange={e=>setForm((p:any)=>({...p,inter_hotel_dates:e.target.value}))}/></div>
+            <div><label className="label">Confirmation / Ref</label><input className="input" placeholder="Supplier reference or booking number" value={form.confirmation_reference} onChange={e=>setForm((p:any)=>({...p,confirmation_reference:e.target.value}))}/></div>
             <div style={{ gridColumn:'1/-1' }}><label className="label">Notes</label><textarea className="input" style={{ minHeight:'60px', resize:'vertical', fontSize:'13px' }} value={form.notes} onChange={e=>setForm((p:any)=>({...p,notes:e.target.value}))}/></div>
           </div>
           <div style={{ display:'flex', gap:'8px', justifyContent:'flex-end', marginTop:'14px' }}>
