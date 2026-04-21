@@ -771,42 +771,42 @@ export default function BookingDetailPage() {
             depDays={depDays} accommodations={accommodations} outbound={outbound}
             flights={[...outbound,...returnFlts]} transfers={transfers} extras={extras} tasks={tasks}
             onJumpTab={setTab}
-            onUpdate={loadAll} showToast={showToast} />
+            onUpdate={() => loadAll(true)} showToast={showToast} />
         )}
 
         {/* ── PASSENGERS TAB ───────────────────────────── */}
         {tab === 'passengers' && (
-          <PassengersTab bookingId={booking.id} passengers={passengers} onUpdate={() => void loadAll(true)} showToast={showToast} />
+          <PassengersTab bookingId={booking.id} passengers={passengers} onUpdate={() => loadAll(true)} showToast={showToast} />
         )}
 
         {/* ── FLIGHTS TAB ──────────────────────────────── */}
         {tab === 'flights' && (
           <FlightsTab bookingId={booking.id} outbound={outbound} returnFlts={returnFlts}
-            suppliers={suppliers} onUpdate={() => void loadAll(true)} showToast={showToast} />
+            suppliers={suppliers} onUpdate={() => loadAll(true)} showToast={showToast} />
         )}
 
         {/* ── ACCOMMODATION TAB ────────────────────────── */}
         {tab === 'accommodation' && (
           <AccommodationTab bookingId={booking.id} accommodations={accommodations}
             hotels={hotels} suppliers={suppliers} passengers={passengers}
-            onUpdate={() => void loadAll(true)} showToast={showToast} />
+            onUpdate={() => loadAll(true)} showToast={showToast} />
         )}
 
         {/* ── TRANSFERS TAB ────────────────────────────── */}
         {tab === 'transfers' && (
           <TransfersTab bookingId={booking.id} transfers={transfers} suppliers={suppliers}
-            flights={flights} onUpdate={() => void loadAll(true)} showToast={showToast} />
+            flights={flights} onUpdate={() => loadAll(true)} showToast={showToast} />
         )}
 
         {/* ── EXTRAS TAB ───────────────────────────────── */}
         {tab === 'extras' && (
-          <ExtrasTab bookingId={booking.id} extras={extras} onUpdate={() => void loadAll(true)} showToast={showToast} />
+          <ExtrasTab bookingId={booking.id} extras={extras} onUpdate={() => loadAll(true)} showToast={showToast} />
         )}
 
         {/* ── PAYMENTS TAB ─────────────────────────────── */}
         {tab === 'payments' && (
           <PaymentsTab booking={booking} payments={payments} balance={balance}
-            onUpdate={() => void loadAll(true)} showToast={showToast} currentStaff={currentStaff} />
+            onUpdate={() => loadAll(true)} showToast={showToast} currentStaff={currentStaff} />
         )}
 
         {/* ── COSTING TAB ──────────────────────────────── */}
@@ -814,19 +814,19 @@ export default function BookingDetailPage() {
           <CostingTab booking={booking} flights={[...outbound, ...returnFlts]}
             accommodations={accommodations} transfers={transfers}
             extras={extras} payments={payments} suppliers={suppliers}
-            onUpdate={() => void loadAll(true)} showToast={showToast} currentStaff={currentStaff} />
+            onUpdate={() => loadAll(true)} showToast={showToast} currentStaff={currentStaff} />
         )}
 
         {/* ── TASKS TAB ────────────────────────────────── */}
         {tab === 'tasks' && (
-          <TasksTab tasks={tasks} activities={booking.deals?.activities || []} bookingReference={booking.booking_reference} onUpdate={() => void loadAll(true)} showToast={showToast} />
+          <TasksTab tasks={tasks} activities={booking.deals?.activities || []} bookingReference={booking.booking_reference} onUpdate={() => loadAll(true)} showToast={showToast} />
         )}
 
         {/* ── DOCUMENTS TAB ────────────────────────────── */}
         {tab === 'documents' && (
           <DocumentsTab booking={booking} client={client} passengers={passengers}
             outbound={outbound} returnFlts={returnFlts} accommodations={accommodations}
-            transfers={transfers} payments={payments} tasks={tasks} onUpdate={() => void loadAll(true)} showToast={showToast} />
+            transfers={transfers} payments={payments} tasks={tasks} onUpdate={() => loadAll(true)} showToast={showToast} />
         )}
       </div>
 
@@ -885,8 +885,13 @@ function OverviewTab({ booking, client, balance, taskPct, tasksDone, tasksTotal,
   })
   const [savingRequest, setSavingRequest] = useState(false)
 
+  useEffect(() => {
+    setForm({ destination: booking.destination || '', booking_notes: booking.booking_notes || '' })
+    setBalDueDraft(booking.balance_due_date?.split('T')[0] || '')
+  }, [booking])
+
   const sell      = booking.total_sell || booking.deals?.deal_value || 0
-  const profit    = booking.gross_profit || 0
+  const profit    = booking.final_profit ?? booking.gross_profit ?? 0
   const commission = profit > 0 ? (profit - 10) * 0.1 : 0
 
   async function saveBalDue() {
@@ -900,9 +905,9 @@ function OverviewTab({ booking, client, balance, taskPct, tasksDone, tasksTotal,
     })
     const result = await response.json()
     if (result.success) {
+      await onUpdate()
       showToast('Balance due date updated ✓')
       setEditingBalDue(false)
-      onUpdate()
     } else {
       showToast('Failed: ' + result.message, 'error')
     }
@@ -922,8 +927,8 @@ function OverviewTab({ booking, client, balance, taskPct, tasksDone, tasksTotal,
     const result = await response.json()
     setSaving(false)
     if (result.success) {
+      await onUpdate()
       showToast('Overview details updated ✓')
-      onUpdate()
     } else {
       showToast('Save failed: ' + result.message, 'error')
     }
@@ -951,8 +956,8 @@ function OverviewTab({ booking, client, balance, taskPct, tasksDone, tasksTotal,
     })
     const result = await response.json()
     if (result.success) {
+      await onUpdate()
       showToast('Departure date synced from flight ✓')
-      onUpdate()
     } else {
       showToast('Failed: ' + result.message, 'error')
     }
@@ -969,8 +974,8 @@ function OverviewTab({ booking, client, balance, taskPct, tasksDone, tasksTotal,
     })
     const result = await response.json()
     if (result.success) {
+      await onUpdate()
       showToast('Return date synced from flights ✓')
-      onUpdate()
     } else {
       showToast('Failed: ' + result.message, 'error')
     }
@@ -996,6 +1001,7 @@ function OverviewTab({ booking, client, balance, taskPct, tasksDone, tasksTotal,
     const result = await response.json()
     setSavingRequest(false)
     if (result.success) {
+      await onUpdate()
       setRequestForm({
         task_name: '',
         notes: '',
@@ -1003,7 +1009,6 @@ function OverviewTab({ booking, client, balance, taskPct, tasksDone, tasksTotal,
         category: 'Operations',
       })
       showToast('Request added to Today work ✓')
-      onUpdate()
     } else {
       showToast('Failed: ' + result.message, 'error')
     }
@@ -1410,7 +1415,15 @@ function PassengersTab({ bookingId, passengers, onUpdate, showToast }: any) {
                   <div style={{ display:'flex', alignItems:'center', gap:'8px', marginBottom:'4px' }}>
                     <span style={{ fontSize:'15px', fontWeight:'500' }}>{p.title} {p.first_name} {p.last_name}</span>
                     {p.is_lead && <span style={{ fontSize:'10px', background:'#fef3c7', color:'#d97706', padding:'1px 7px', borderRadius:'10px', fontWeight:'600' }}>LEAD</span>}
-                    <span style={{ fontSize:'11px', color:'var(--text-muted)', background:'var(--bg-tertiary)', padding:'1px 7px', borderRadius:'10px' }}>{p.passenger_type}</span>
+                    {(() => {
+                      const age = calcAge(p.date_of_birth)
+                      const label = age === null ? p.passenger_type
+                        : age <= 1 ? 'Infant'
+                        : age <= 11 ? 'Child'
+                        : age <= 17 ? 'Teen'
+                        : 'Adult'
+                      return <span style={{ fontSize:'11px', color:'var(--text-muted)', background:'var(--bg-tertiary)', padding:'1px 7px', borderRadius:'10px' }}>{label}</span>
+                    })()}
                   </div>
                   <div style={{ fontSize:'12px', color:'var(--text-muted)', display:'flex', gap:'16px' }}>
                     {p.date_of_birth && <span>DOB: {fmtDate(p.date_of_birth)}{calcAge(p.date_of_birth) !== null ? ` (age ${calcAge(p.date_of_birth)})` : ''}</span>}
@@ -1561,10 +1574,10 @@ function FlightsTab({ bookingId, outbound, returnFlts, suppliers, onUpdate, show
         method: 'POST',
         body: JSON.stringify(seg),
       })
+      await onUpdate()
       showToast(result.message || `${seg.direction === 'outbound' ? 'Outbound' : 'Return'} segment added ✓`)
       setAdding(false)
       setSeg({ ...blankSeg })
-      onUpdate()
     } catch (error: any) {
       showToast(`Failed: ${error.message}`, 'error')
     } finally {
@@ -1581,9 +1594,9 @@ function FlightsTab({ bookingId, outbound, returnFlts, suppliers, onUpdate, show
         method: 'PUT',
         body: JSON.stringify({ legId: id, ...editPayload }),
       })
+      await onUpdate()
       showToast(result.message || 'Leg updated ✓')
       setEditingLeg(null)
-      onUpdate()
     } catch (error: any) {
       showToast(`Failed: ${error.message}`, 'error')
     } finally {
@@ -1599,10 +1612,10 @@ function FlightsTab({ bookingId, outbound, returnFlts, suppliers, onUpdate, show
         method: 'POST',
         body: JSON.stringify({ segmentId, direction: dir, leg: newLegForm, firstLeg }),
       })
+      await onUpdate()
       showToast(result.message || 'Connecting leg added ✓')
       setAddingLegSeg(null)
       setNewLegForm(blankLeg())
-      onUpdate()
     } catch (error: any) {
       showToast(`Failed: ${error.message}`, 'error')
     } finally {
@@ -1615,8 +1628,8 @@ function FlightsTab({ bookingId, outbound, returnFlts, suppliers, onUpdate, show
       const result = await apiRequest<{ message?: string }>(`/api/bookings/${bookingId}/flights?legId=${id}`, {
         method: 'DELETE',
       })
+      await onUpdate()
       showToast(result.message || 'Leg removed')
-      onUpdate()
     } catch (error: any) {
       showToast(error.message || 'Failed to delete leg', 'error')
     }
@@ -1902,9 +1915,10 @@ function AccommodationTab({ bookingId, accommodations, hotels, suppliers, passen
           reservation_email_to: form.reservation_email_to || null,
         }),
       })
+      await onUpdate()
       showToast(result.message || 'Stay added ✓')
       setAdding(false)
-      onUpdate()
+      setForm({ ...blankAccom, adults: String(totalAdults||2), children: String(totalChildren||0) })
     } catch (error: any) {
       showToast(`Failed: ${error.message}`, 'error')
     } finally {
@@ -1939,9 +1953,9 @@ function AccommodationTab({ bookingId, accommodations, hotels, suppliers, passen
           reservation_email_to: editForm.reservation_email_to || null,
         }),
       })
+      await onUpdate()
       showToast(result.message || 'Stay updated ✓')
       setEditing(null)
-      onUpdate()
     } catch (error: any) {
       showToast(`Failed: ${error.message}`, 'error')
     } finally {
@@ -1955,8 +1969,8 @@ function AccommodationTab({ bookingId, accommodations, hotels, suppliers, passen
         method: 'PUT',
         body: JSON.stringify({ action: 'reservation_status', accommodationId: id, status }),
       })
+      await onUpdate()
       showToast(result.message || 'Status updated')
-      onUpdate()
     } catch (error: any) {
       showToast(error.message || 'Failed to update status', 'error')
     }
@@ -1967,8 +1981,8 @@ function AccommodationTab({ bookingId, accommodations, hotels, suppliers, passen
       const result = await apiRequest<{ message?: string }>(`/api/bookings/${bookingId}/accommodations?accommodationId=${id}`, {
         method: 'DELETE',
       })
+      await onUpdate()
       showToast(result.message || 'Stay removed')
-      onUpdate()
     } catch (error: any) {
       showToast(error.message || 'Failed to delete stay', 'error')
     }
@@ -2180,9 +2194,10 @@ function TransfersTab({ bookingId, transfers, suppliers, flights, onUpdate, show
           confirmation_reference: form.confirmation_reference || null,
         }),
       })
+      await onUpdate()
       showToast(result.message || 'Transfer added ✓')
       setAdding(false)
-      onUpdate()
+      setForm({ ...blankTransfer })
     } catch (error: any) {
       showToast(`Failed: ${error.message}`, 'error')
     } finally {
@@ -2214,9 +2229,9 @@ function TransfersTab({ bookingId, transfers, suppliers, flights, onUpdate, show
           confirmation_reference: editForm.confirmation_reference || null,
         }),
       })
+      await onUpdate()
       showToast(result.message || 'Transfer updated ✓')
       setEditing(null)
-      onUpdate()
     } catch (error: any) {
       showToast(`Failed: ${error.message}`, 'error')
     } finally {
@@ -2229,8 +2244,8 @@ function TransfersTab({ bookingId, transfers, suppliers, flights, onUpdate, show
       const result = await apiRequest<{ message?: string }>(`/api/bookings/${bookingId}/transfers?transferId=${id}`, {
         method: 'DELETE',
       })
+      await onUpdate()
       showToast(result.message || 'Transfer removed')
-      onUpdate()
     } catch (error: any) {
       showToast(error.message || 'Failed to delete transfer', 'error')
     }
@@ -2241,15 +2256,24 @@ function TransfersTab({ bookingId, transfers, suppliers, flights, onUpdate, show
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'16px' }}>
         <div style={{ fontFamily:'Fraunces,serif', fontSize:'17px', fontWeight:'300' }}>Transfers</div>
         <button className="btn btn-cta" onClick={() => {
+          const deriveArrivalDate = (f: Flight | null): string => {
+            if (!f?.departure_date) return ''
+            if (f.next_day) {
+              const d = new Date(f.departure_date + 'T12:00')
+              d.setDate(d.getDate() + 1)
+              return d.toISOString().split('T')[0]
+            }
+            return f.departure_date.split('T')[0]
+          }
           setAdding(true)
           setForm({
             ...blankTransfer,
-            arrival_flight: arrFlight ? arrFlight.flight_number : '',
-            arrival_date:   arrFlight ? arrFlight.arrival_date : '',
-            arrival_time:   arrFlight ? arrFlight.arrival_time : '',
-            departure_flight: depFlight ? depFlight.flight_number : '',
-            departure_date:   depFlight ? depFlight.departure_date : '',
-            departure_time:   depFlight ? depFlight.departure_time : '',
+            arrival_flight:   arrFlight ? (arrFlight.flight_number || '') : '',
+            arrival_date:     deriveArrivalDate(arrFlight),
+            arrival_time:     arrFlight ? (arrFlight.arrival_time || '') : '',
+            departure_flight: depFlight ? (depFlight.flight_number || '') : '',
+            departure_date:   depFlight ? (depFlight.departure_date?.split('T')[0] || '') : '',
+            departure_time:   depFlight ? (depFlight.departure_time || '') : '',
           })
         }}>+ Add Transfers</button>
       </div>
@@ -2546,10 +2570,10 @@ function PaymentsTab({ booking, payments, balance, onUpdate, showToast, currentS
           notes: form.notes || null,
         }),
       })
+      await onUpdate()
       showToast(result.message || 'Payment recorded ✓')
       setAdding(false)
       setForm({ ...blank })
-      onUpdate()
     } catch (error: any) {
       showToast(`Failed: ${error.message}`, 'error')
     } finally {
@@ -2563,8 +2587,8 @@ function PaymentsTab({ booking, payments, balance, onUpdate, showToast, currentS
         method: 'PUT',
         body: JSON.stringify({ paymentId: id }),
       })
+      await onUpdate()
       showToast(result.message || 'Invoice marked as sent')
-      onUpdate()
     } catch (error: any) {
       showToast(error.message || 'Failed to mark invoice as sent', 'error')
     }
@@ -2576,8 +2600,8 @@ function PaymentsTab({ booking, payments, balance, onUpdate, showToast, currentS
       const result = await apiRequest<{ message?: string }>(`/api/bookings/${booking.id}/payments?paymentId=${id}`, {
         method: 'DELETE',
       })
+      await onUpdate()
       showToast(result.message || 'Payment removed')
-      onUpdate()
     } catch (error: any) {
       showToast(error.message || 'Failed to delete payment', 'error')
     }
@@ -2787,9 +2811,9 @@ function CostingTab({ booking, flights, accommodations, transfers, extras, payme
         method: 'PUT',
         body: JSON.stringify({ action: 'update_balance_due', balance_due_date: balDueDraft || null }),
       })
+      await onUpdate()
       showToast(result.message || 'Balance due date updated ✓')
       setEditingBalDue(false)
-      onUpdate()
     } catch (error: any) {
       showToast(`Failed: ${error.message}`, 'error')
     }
@@ -2802,9 +2826,9 @@ function CostingTab({ booking, flights, accommodations, transfers, extras, payme
         method: 'PUT',
         body: JSON.stringify({ action: 'update_cc_surcharge', cc_surcharge: Number(ccDraft) || 0 }),
       })
+      await onUpdate()
       showToast(result.message || 'CC surcharge updated ✓')
       setEditingCc(false)
-      onUpdate()
     } catch (error: any) {
       showToast(`Failed: ${error.message}`, 'error')
     }
@@ -2817,9 +2841,9 @@ function CostingTab({ booking, flights, accommodations, transfers, extras, payme
         method: 'PUT',
         body: JSON.stringify({ action: 'update_discount', discount: Number(discountDraft) || null }),
       })
+      await onUpdate()
       showToast(result.message || 'Discount updated ✓')
       setEditingDiscount(false)
-      onUpdate()
     } catch (error: any) {
       showToast(`Failed: ${error.message}`, 'error')
     }
@@ -2832,9 +2856,9 @@ function CostingTab({ booking, flights, accommodations, transfers, extras, payme
         method: 'PUT',
         body: JSON.stringify({ action: 'update_total_sell', total_sell: Number(sellDraft) || 0 }),
       })
+      await onUpdate()
       showToast(result.message || 'Client total updated ✓')
       setEditingSell(false)
-      onUpdate()
     } catch (error: any) {
       showToast(`Failed: ${error.message}`, 'error')
     }
@@ -2856,8 +2880,8 @@ function CostingTab({ booking, flights, accommodations, transfers, extras, payme
           cc_surcharge: Number(ccDraft) || 0,
         }),
       })
+      await onUpdate()
       showToast(result.message || 'Total sell, net and gross profit pushed to Overview ✓')
-      onUpdate()
     } catch (error: any) {
       showToast(`Failed: ${error.message}`, 'error')
     } finally {
