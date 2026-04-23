@@ -3,20 +3,11 @@
 import { useEffect, useState, useRef } from 'react'
 import { getAccessContext, isManager, type StaffUser } from '@/lib/access'
 import { authedFetch } from '@/lib/api-client'
-import { getAllClients, getClient, type ClientWithStats, BEHAVIOUR_TAGS, SOURCES, BUDGET_RANGES, STAGE_LABELS, STAGE_COLORS, AVATAR_COLORS, formatCurrency, getClientInitials, getAvatarColor, getTagInfo, calculateClientAge, getBudgetRangeLabel } from '@/lib/modules/clients/client.service'
+import { type ClientWithStats, BEHAVIOUR_TAGS, SOURCES, BUDGET_RANGES, formatCurrency, getClientInitials, getAvatarColor, getTagInfo, calculateClientAge, getBudgetRangeLabel } from '@/lib/modules/clients/client.service'
 import Link from 'next/link'
 
 // ── TYPES ─────────────────────────────────────────────────
 type Client = ClientWithStats
-
-type DealSnap = {
-  id: number
-  title: string
-  stage: string
-  deal_value: number
-  departure_date: string | null
-  created_at: string
-}
 
 // ── CONSTANTS ─────────────────────────────────────────────
 
@@ -43,6 +34,26 @@ function budgetLabel(min: number | null, max: number | null) {
 
 function tagInfo(key: string) {
   return getTagInfo(key)
+}
+
+function fmtDate(value: string | null) {
+  if (!value) return 'No date'
+  return new Date(value).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+}
+
+function historyStatusStyle(statusLabel: string) {
+  if (statusLabel === 'Booked') return { background: '#e6f4ee', color: '#10b981' }
+  if (statusLabel === 'Lost') return { background: '#fee2e2', color: '#dc2626' }
+  if (statusLabel === 'Cancelled') return { background: '#f3f4f6', color: '#6b7280' }
+  if (statusLabel === 'Quoted') return { background: '#fff7ed', color: '#f97316' }
+  return { background: '#eef2ff', color: '#4f46e5' }
+}
+
+function historyValueColor(valueTone: 'booked' | 'pipeline' | 'lost' | 'muted') {
+  if (valueTone === 'booked') return 'var(--green)'
+  if (valueTone === 'lost') return '#dc2626'
+  if (valueTone === 'pipeline') return 'var(--text-primary)'
+  return 'var(--text-muted)'
 }
 
 // ── BLANK FORM ─────────────────────────────────────────────
@@ -88,8 +99,11 @@ export default function ClientsPage() {
   async function loadClients(silent = false) {
     if (!silent) setLoading(true)
     try {
-      const fetched = await getAllClients()
-      setClients(fetched)
+      const res = await authedFetch('/api/clients')
+      const result = await res.json()
+      if (result.success && Array.isArray(result.data)) {
+        setClients(result.data as ClientWithStats[])
+      }
     } catch (err) {
       console.error('[loadClients] failed:', err)
     } finally {
@@ -139,7 +153,7 @@ export default function ClientsPage() {
         <div>
           <div className="page-title">Clients</div>
           <div style={{ fontSize: '13px', color: 'var(--text-muted)', marginTop: '2px' }}>
-            {clients.length} clients · {clients.filter(c => c.bookedCount > 0).length} have booked · {fmt(clients.reduce((a, c) => a + c.lifetimeValue, 0))} lifetime value
+            {clients.length} clients · {clients.reduce((sum, client) => sum + client.bookingCount, 0)} bookings · {fmt(clients.reduce((sum, client) => sum + client.bookedLifetimeValue, 0))} booked lifetime value · {fmt(clients.reduce((sum, client) => sum + client.openPipelineValue, 0))} open pipeline
           </div>
         </div>
         <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
@@ -281,14 +295,15 @@ export default function ClientsPage() {
                 )}
 
                 {/* Stats */}
-                <div style={{ display: 'flex', gap: '0', paddingTop: '12px', borderTop: '1px solid var(--border)', marginTop: '4px' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0', paddingTop: '12px', borderTop: '1px solid var(--border)', marginTop: '4px' }}>
                   {[
-                    { label: 'Enquiries', val: client.dealCount },
-                    { label: 'Booked', val: client.bookedCount },
-                    { label: 'Lifetime', val: client.lifetimeValue > 0 ? fmt(client.lifetimeValue) : '£0' },
+                    { label: 'Enquiries', val: client.enquiryCount, color: 'var(--text-primary)' },
+                    { label: 'Bookings', val: client.bookingCount, color: 'var(--green)' },
+                    { label: 'Booked Value', val: client.bookedLifetimeValue > 0 ? fmt(client.bookedLifetimeValue) : '£0', color: client.bookedLifetimeValue > 0 ? 'var(--green)' : 'var(--text-primary)' },
+                    { label: 'Open Pipeline', val: client.openPipelineValue > 0 ? fmt(client.openPipelineValue) : '£0', color: client.openPipelineValue > 0 ? 'var(--accent)' : 'var(--text-primary)' },
                   ].map((s, i) => (
                     <div key={s.label} style={{ flex: 1, textAlign: 'center', borderLeft: i > 0 ? '1px solid var(--border)' : 'none' }}>
-                      <div style={{ fontFamily: 'Instrument Serif, serif', fontSize: '18px', color: i === 2 && client.lifetimeValue > 0 ? 'var(--green)' : 'var(--text-primary)' }}>{s.val}</div>
+                      <div style={{ fontFamily: 'Instrument Serif, serif', fontSize: '18px', color: s.color }}>{s.val}</div>
                       <div style={{ fontSize: '10.5px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{s.label}</div>
                     </div>
                   ))}
@@ -304,11 +319,11 @@ export default function ClientsPage() {
             {/* Header */}
             <div style={{
               display: 'grid',
-              gridTemplateColumns: '200px 1fr 180px 110px 80px 100px 85px',
+              gridTemplateColumns: '190px 1fr 170px 110px 75px 85px 110px 110px',
               gap: '12px', padding: '0 16px 8px',
               borderBottom: '2px solid var(--border)',
             }}>
-              {['Client', 'Tags', 'Contact', 'Budget', 'Deals', 'Lifetime', 'Source'].map(h => (
+              {['Client', 'Tags', 'Contact', 'Budget', 'Enquiries', 'Bookings', 'Booked Value', 'Open Pipeline'].map(h => (
                 <div key={h} style={{ fontSize: '10px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', fontFamily: 'Outfit, sans-serif' }}>{h}</div>
               ))}
             </div>
@@ -320,7 +335,7 @@ export default function ClientsPage() {
                 onClick={() => setSelectedClient(client)}
                 style={{
                   display: 'grid',
-                  gridTemplateColumns: '200px 1fr 180px 110px 80px 100px 85px',
+                  gridTemplateColumns: '190px 1fr 170px 110px 75px 85px 110px 110px',
                   gap: '12px', padding: '11px 16px',
                   borderBottom: '1px solid var(--border)',
                   background: 'var(--surface)',
@@ -331,7 +346,7 @@ export default function ClientsPage() {
                   borderTopRightRadius: '8px', borderBottomRightRadius: '8px',
                   borderLeft: client.behaviour_tags?.includes('vip')
                     ? '3px solid var(--gold)'
-                    : client.lifetimeValue > 0
+                    : client.bookedLifetimeValue > 0
                     ? '3px solid var(--green)'
                     : '3px solid var(--border)',
                   transition: 'background 0.1s',
@@ -399,20 +414,22 @@ export default function ClientsPage() {
 
                 {/* Deals */}
                 <div style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: '14px', fontWeight: '700', color: 'var(--text-primary)', fontFamily: 'Outfit, sans-serif' }}>{client.dealCount}</div>
-                  {client.bookedCount > 0 && (
-                    <div style={{ fontSize: '10px', color: 'var(--green)', fontWeight: '600' }}>{client.bookedCount} booked</div>
-                  )}
+                  <div style={{ fontSize: '14px', fontWeight: '700', color: 'var(--text-primary)', fontFamily: 'Outfit, sans-serif' }}>{client.enquiryCount}</div>
                 </div>
 
-                {/* Lifetime value */}
-                <div style={{ fontSize: '13.5px', fontWeight: '700', fontFamily: 'Outfit, sans-serif', color: client.lifetimeValue > 0 ? 'var(--green)' : 'var(--text-muted)' }}>
-                  {client.lifetimeValue > 0 ? fmt(client.lifetimeValue) : '—'}
+                {/* Bookings */}
+                <div style={{ textAlign: 'center' }}>
+                  <div style={{ fontSize: '14px', fontWeight: '700', color: client.bookingCount > 0 ? 'var(--green)' : 'var(--text-primary)', fontFamily: 'Outfit, sans-serif' }}>{client.bookingCount}</div>
                 </div>
 
-                {/* Source */}
-                <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'Outfit, sans-serif' }}>
-                  {client.source ?? '—'}
+                {/* Booked value */}
+                <div style={{ fontSize: '13.5px', fontWeight: '700', fontFamily: 'Outfit, sans-serif', color: client.bookedLifetimeValue > 0 ? 'var(--green)' : 'var(--text-muted)' }}>
+                  {client.bookedLifetimeValue > 0 ? fmt(client.bookedLifetimeValue) : '—'}
+                </div>
+
+                {/* Open pipeline */}
+                <div style={{ fontSize: '13.5px', fontWeight: '700', fontFamily: 'Outfit, sans-serif', color: client.openPipelineValue > 0 ? 'var(--accent)' : 'var(--text-muted)' }}>
+                  {client.openPipelineValue > 0 ? fmt(client.openPipelineValue) : '—'}
                 </div>
               </div>
             )})}
@@ -427,8 +444,6 @@ export default function ClientsPage() {
           staffUsers={staffUsers}
           onClose={() => setSelectedClient(null)}
           onEdit={() => { setEditClient(selectedClient); setShowModal(true); setSelectedClient(null) }}
-          onRefresh={() => { loadClients(); setSelectedClient(null) }}
-          showToast={showToast}
         />
       )}
 
@@ -449,15 +464,12 @@ export default function ClientsPage() {
 }
 
 // ── CLIENT DETAIL PANEL ────────────────────────────────────
-function ClientDetailPanel({ client, staffUsers, onClose, onEdit, onRefresh, showToast }: {
+function ClientDetailPanel({ client, staffUsers, onClose, onEdit }: {
   client: ClientWithStats
   staffUsers: StaffUser[]
   onClose: () => void
   onEdit: () => void
-  onRefresh: () => void
-  showToast: (msg: string) => void
 }) {
-  const deals  = (client.deals || []) as DealSnap[]
   const clientAge = calcAge(client.date_of_birth)
   const ownerName = client.owner_staff_id ? staffUsers.find(staff => staff.id === client.owner_staff_id)?.name : null
 
@@ -506,12 +518,13 @@ function ClientDetailPanel({ client, staffUsers, onClose, onEdit, onRefresh, sho
             )}
           </div>
 
-          {/* Lifetime stats */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px', marginBottom: '20px' }}>
+          {/* Commercial summary */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px', marginBottom: '20px' }}>
             {[
-              { label: 'Enquiries', val: client.dealCount, color: 'var(--accent-mid)' },
-              { label: 'Bookings', val: client.bookedCount, color: 'var(--green)' },
-              { label: 'Lifetime Value', val: fmt(client.lifetimeValue), color: 'var(--gold)' },
+              { label: 'Enquiries', val: client.commercialSummary.enquiries, color: 'var(--accent-mid)' },
+              { label: 'Bookings', val: client.commercialSummary.bookings, color: 'var(--green)' },
+              { label: 'Booked Lifetime Value', val: fmt(client.commercialSummary.bookedLifetimeValue), color: 'var(--green)' },
+              { label: 'Open Pipeline Value', val: fmt(client.commercialSummary.openPipelineValue), color: 'var(--accent)' },
             ].map(s => (
               <div key={s.label} style={{ background: 'var(--bg-tertiary)', borderRadius: '10px', padding: '12px 14px', textAlign: 'center' }}>
                 <div style={{ fontFamily: 'Instrument Serif, serif', fontSize: '22px', color: s.color }}>{s.val}</div>
@@ -583,33 +596,40 @@ function ClientDetailPanel({ client, staffUsers, onClose, onEdit, onRefresh, sho
           {/* Deal history */}
           <div>
             <div style={{ fontSize: '11px', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '10px' }}>
-              Deal History ({deals.length})
+              Deal & Booking History ({client.commercialHistory.length})
             </div>
-            {deals.length === 0 ? (
+            {client.commercialHistory.length === 0 ? (
               <div style={{ fontSize: '13px', color: 'var(--text-muted)', textAlign: 'center', padding: '20px 0' }}>No deals yet</div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                {deals.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()).map(deal => (
-                  <Link key={deal.id} href={`/deals/${deal.id}`} style={{ textDecoration: 'none' }}>
+                {client.commercialHistory.map(item => {
+                  const statusStyle = historyStatusStyle(item.statusLabel)
+                  return (
+                  <Link key={item.id} href={`/deals/${item.dealId}`} style={{ textDecoration: 'none' }}>
                     <div style={{ padding: '12px 14px', background: 'var(--bg-tertiary)', borderRadius: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                       transition: 'background 0.12s', cursor: 'pointer' }}
                       onMouseEnter={e => (e.currentTarget.style.background = 'var(--accent-light)')}
                       onMouseLeave={e => (e.currentTarget.style.background = 'var(--bg-tertiary)')}>
                       <div>
-                        <div style={{ fontSize: '13.5px', fontWeight: '500', color: 'var(--text-primary)', marginBottom: '2px' }}>{deal.title}</div>
+                        <div style={{ fontSize: '13.5px', fontWeight: '500', color: 'var(--text-primary)', marginBottom: '2px' }}>{item.name}</div>
                         <div style={{ fontSize: '11.5px', color: 'var(--text-muted)' }}>
-                          {deal.departure_date ? new Date(deal.departure_date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'No date'}
+                          {fmtDate(item.date)}
                         </div>
                       </div>
                       <div style={{ textAlign: 'right' }}>
-                        <div style={{ fontSize: '13px', fontWeight: '500', color: 'var(--green)', marginBottom: '3px' }}>{fmt(deal.deal_value || 0)}</div>
-                        <span style={{ fontSize: '11px', padding: '2px 7px', borderRadius: '10px', background: (STAGE_COLORS[deal.stage] || '#888') + '22', color: STAGE_COLORS[deal.stage] || '#888', fontWeight: '500' }}>
-                          {STAGE_LABELS[deal.stage] || deal.stage}
+                        <div style={{ fontSize: '13px', fontWeight: '500', color: historyValueColor(item.valueTone), marginBottom: '3px' }}>
+                          {item.value !== null ? fmt(item.value) : '—'}
+                        </div>
+                        <div style={{ fontSize: '10.5px', color: 'var(--text-muted)', marginBottom: '4px' }}>
+                          {item.valueLabel}
+                        </div>
+                        <span style={{ fontSize: '11px', padding: '2px 7px', borderRadius: '10px', background: statusStyle.background, color: statusStyle.color, fontWeight: '500' }}>
+                          {item.statusLabel}
                         </span>
                       </div>
                     </div>
                   </Link>
-                ))}
+                )})}
               </div>
             )}
           </div>
@@ -718,7 +738,7 @@ function ClientModal({ client, staffUsers, currentStaff, onClose, onSaved }: {
 
       setSaving(false)
       onSaved()
-    } catch (error) {
+    } catch {
       setError('Failed to save client')
       setSaving(false)
     }

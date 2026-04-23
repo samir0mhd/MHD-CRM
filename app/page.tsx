@@ -157,15 +157,20 @@ export default function DashboardPage() {
   useEffect(() => {
     async function load() {
       setLoading(true)
-      const url = staffUser?.id ? `/api/dashboard?staffId=${staffUser.id}` : '/api/dashboard'
-      const response = await fetch(url)
-      if (response.ok) {
-        const result = await response.json()
-        setTarget(result.target || null)
-        setNoTargetConfigured(result.noTargetConfigured ?? false)
-        setData(result.data || null)
+      try {
+        const url = staffUser?.id ? `/api/dashboard?staffId=${staffUser.id}` : '/api/dashboard'
+        const response = await fetch(url)
+        if (response.ok) {
+          const result = await response.json()
+          setTarget(result.target || null)
+          setNoTargetConfigured(result.noTargetConfigured ?? false)
+          setData(result.data || null)
+        }
+      } catch {
+        // network error — dashboard stays empty
+      } finally {
+        setLoading(false)
       }
-      setLoading(false)
     }
 
     void load()

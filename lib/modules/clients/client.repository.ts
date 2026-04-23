@@ -31,7 +31,20 @@ export type DealSnap = {
   stage: string
   deal_value: number
   departure_date: string | null
+  lost_at?: string | null
   created_at: string
+  bookings?: BookingSnap[]
+}
+
+export type BookingSnap = {
+  id: number
+  created_at: string
+  status: string | null
+  booking_status: string | null
+  total_sell: number | null
+  total_net: number | null
+  gross_profit: number | null
+  final_profit: number | null
 }
 
 export type ClientWithDeals = Client & {
@@ -42,7 +55,28 @@ export type ClientWithDeals = Client & {
 export async function getClientsWithDeals(): Promise<ClientWithDeals[]> {
   const { data } = await supabase
     .from('clients')
-    .select('*, deals(id, title, stage, deal_value, departure_date, created_at)')
+    .select(`
+      *,
+      deals(
+        id,
+        title,
+        stage,
+        deal_value,
+        departure_date,
+        lost_at,
+        created_at,
+        bookings(
+          id,
+          created_at,
+          status,
+          booking_status,
+          total_sell,
+          total_net,
+          gross_profit,
+          final_profit
+        )
+      )
+    `)
     .order('created_at', { ascending: false })
 
   return (data || []) as ClientWithDeals[]
@@ -51,7 +85,28 @@ export async function getClientsWithDeals(): Promise<ClientWithDeals[]> {
 export async function getClientById(id: number): Promise<ClientWithDeals | null> {
   const { data } = await supabase
     .from('clients')
-    .select('*, deals(id, title, stage, deal_value, departure_date, created_at)')
+    .select(`
+      *,
+      deals(
+        id,
+        title,
+        stage,
+        deal_value,
+        departure_date,
+        lost_at,
+        created_at,
+        bookings(
+          id,
+          created_at,
+          status,
+          booking_status,
+          total_sell,
+          total_net,
+          gross_profit,
+          final_profit
+        )
+      )
+    `)
     .eq('id', id)
     .single()
 

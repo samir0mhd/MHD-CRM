@@ -1,28 +1,175 @@
-import { getClientsWithDeals, getClientById, createClient, updateClient, type ClientWithDeals, type CreateClientData, type UpdateClientData } from './client.repository'
+import { getClientsWithDeals, getClientById, createClient, updateClient, type BookingSnap, type ClientWithDeals, type CreateClientData, type DealSnap, type UpdateClientData } from './client.repository'
 import { buildFieldAuditEntries, logAuditEntries } from '@/lib/audit'
 import type { StaffUser } from '@/lib/access'
 
+export type ClientCommercialSummary = {
+  enquiries: number
+  bookings: number
+  bookedLifetimeValue: number
+  openPipelineValue: number
+}
+
+export type ClientCommercialHistoryItem = {
+  id: string
+  dealId: number
+  bookingId: number | null
+  name: string
+  date: string | null
+  statusLabel: string
+  value: number | null
+  valueLabel: string
+  valueTone: 'booked' | 'pipeline' | 'lost' | 'muted'
+}
+
 export type ClientWithStats = ClientWithDeals & {
-  dealCount: number
-  bookedCount: number
-  lifetimeValue: number
+  enquiryCount: number
+  bookingCount: number
+  bookedLifetimeValue: number
+  openPipelineValue: number
   lastDealDate: string | null
+  commercialSummary: ClientCommercialSummary
+  commercialHistory: ClientCommercialHistoryItem[]
 }
 
 // ── BUSINESS LOGIC ─────────────────────────────────────────
+function sortNewestFirst<T extends { created_at: string }>(rows: T[]): T[] {
+  return [...rows].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+}
+
+function getDealBookings(deal: DealSnap): BookingSnap[] {
+  const raw = deal.bookings
+  const arr = Array.isArray(raw) ? raw : []
+  return sortNewestFirst(arr.filter(Boolean) as BookingSnap[])
+}
+
+function getActiveBooking(deal: DealSnap): BookingSnap | null {
+  return getDealBookings(deal).find(booking => booking.booking_status !== 'cancelled') || null
+}
+
+function hasFinalCommercialTotal(booking: BookingSnap): boolean {
+  return booking.total_sell !== null
+    && booking.total_sell !== undefined
+    && booking.total_net !== null
+    && booking.total_net !== undefined
+    && (
+      booking.final_profit !== null
+      && booking.final_profit !== undefined
+      || booking.gross_profit !== null
+      && booking.gross_profit !== undefined
+    )
+}
+
+function getBookedValueInfo(deal: DealSnap): { bookingId: number | null; amount: number | null; label: string } {
+  const booking = getActiveBooking(deal)
+  if (!booking) {
+    return { bookingId: null, amount: null, label: 'Booked total pending' }
+  }
+
+  if (booking.total_sell === null || booking.total_sell === undefined) {
+    return { bookingId: booking.id, amount: null, label: 'Booked total pending' }
+  }
+
+  return {
+    bookingId: booking.id,
+    amount: Number(booking.total_sell),
+    label: hasFinalCommercialTotal(booking) ? 'Final commercial total' : 'Booked total',
+  }
+}
+
+function getHistoryItem(deal: DealSnap): ClientCommercialHistoryItem {
+  const activeBooking = getActiveBooking(deal)
+  const latestBooking = getDealBookings(deal)[0] || null
+
+  if (activeBooking || deal.stage === 'BOOKED') {
+    const bookedValue = getBookedValueInfo(deal)
+    return {
+      id: `deal-${deal.id}`,
+      dealId: deal.id,
+      bookingId: bookedValue.bookingId,
+      name: deal.title,
+      date: activeBooking?.created_at || deal.created_at,
+      statusLabel: 'Booked',
+      value: bookedValue.amount,
+      valueLabel: bookedValue.label,
+      valueTone: bookedValue.amount !== null ? 'booked' : 'muted',
+    }
+  }
+
+  if (latestBooking?.booking_status === 'cancelled') {
+    return {
+      id: `deal-${deal.id}`,
+      dealId: deal.id,
+      bookingId: latestBooking.id,
+      name: deal.title,
+      date: latestBooking.created_at,
+      statusLabel: 'Cancelled',
+      value: latestBooking.total_sell !== null && latestBooking.total_sell !== undefined ? Number(latestBooking.total_sell) : null,
+      valueLabel: latestBooking.total_sell !== null && latestBooking.total_sell !== undefined ? 'Cancelled booking value' : 'Cancelled booking total pending',
+      valueTone: 'muted',
+    }
+  }
+
+  if (deal.stage === 'LOST') {
+    return {
+      id: `deal-${deal.id}`,
+      dealId: deal.id,
+      bookingId: null,
+      name: deal.title,
+      date: deal.lost_at || deal.created_at,
+      statusLabel: 'Lost',
+      value: deal.deal_value || 0,
+      valueLabel: 'Lost opportunity value',
+      valueTone: 'lost',
+    }
+  }
+
+  return {
+    id: `deal-${deal.id}`,
+    dealId: deal.id,
+    bookingId: null,
+    name: deal.title,
+    date: deal.created_at,
+    statusLabel: deal.stage === 'QUOTE_SENT' ? 'Quoted' : 'Open',
+    value: deal.deal_value || 0,
+    valueLabel: deal.stage === 'QUOTE_SENT' ? 'Quoted value' : 'Open pipeline value',
+    valueTone: 'pipeline',
+  }
+}
+
 export function enrichClientWithStats(client: ClientWithDeals): ClientWithStats {
   const deals = client.deals || []
-  const bookedDeals = deals.filter(d => d.stage === 'BOOKED')
+  const allBookings = deals.flatMap(deal => getDealBookings(deal))
+  const convertedBookings = allBookings.filter(booking => booking.booking_status !== 'cancelled')
+  const bookedLifetimeValue = convertedBookings.reduce((sum, booking) => {
+    if (booking.total_sell === null || booking.total_sell === undefined) return sum
+    return sum + Number(booking.total_sell)
+  }, 0)
+  const openPipelineValue = deals.reduce((sum, deal) => {
+    const activeBooking = getActiveBooking(deal)
+    if (activeBooking || deal.stage === 'BOOKED' || deal.stage === 'LOST') return sum
+    return sum + Number(deal.deal_value || 0)
+  }, 0)
+  const commercialSummary: ClientCommercialSummary = {
+    enquiries: deals.length,
+    bookings: convertedBookings.length,
+    bookedLifetimeValue,
+    openPipelineValue,
+  }
 
   return {
     ...client,
     behaviour_tags: client.behaviour_tags || [],
-    dealCount: deals.length,
-    bookedCount: bookedDeals.length,
-    lifetimeValue: bookedDeals.reduce((sum, deal) => sum + (deal.deal_value || 0), 0),
+    enquiryCount: commercialSummary.enquiries,
+    bookingCount: commercialSummary.bookings,
+    bookedLifetimeValue: commercialSummary.bookedLifetimeValue,
+    openPipelineValue: commercialSummary.openPipelineValue,
     lastDealDate: deals.length > 0
       ? [...deals].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0].created_at
       : null,
+    commercialSummary,
+    commercialHistory: deals
+      .map(getHistoryItem)
+      .sort((a, b) => new Date(b.date || '').getTime() - new Date(a.date || '').getTime()),
   }
 }
 

@@ -120,12 +120,17 @@ export default function PipelinePage() {
 
   async function loadDeals() {
     setLoading(true)
-    const response = await authedFetch('/api/pipeline')
-    if (response.ok) {
-      const data = await response.json()
-      setDeals(data || [])
+    try {
+      const response = await authedFetch('/api/pipeline')
+      if (response.ok) {
+        const data = await response.json()
+        setDeals(data || [])
+      }
+    } catch {
+      // network error — deals stay as-is
+    } finally {
+      setLoading(false)
     }
-    setLoading(false)
   }
 
   useEffect(() => {

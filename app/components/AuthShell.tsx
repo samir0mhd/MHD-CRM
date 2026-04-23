@@ -12,6 +12,10 @@ export default function AuthShell({ children }: { children: React.ReactNode }) {
   const router = useRouter()
   const { session, loadingAuth, staffUser } = useAuth()
 
+  if (pathname.startsWith('/portal')) {
+    return <>{children}</>
+  }
+
   if (loadingAuth) {
     return (
       <div style={{ display:'flex', alignItems:'center', justifyContent:'center', minHeight:'100vh', color:'var(--text-muted)', fontSize:'14px' }}>

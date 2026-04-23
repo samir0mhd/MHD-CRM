@@ -238,7 +238,7 @@ export default function BookingDetailPage() {
   const [suppliers, setSuppliers]       = useState<Supplier[]>([])
   const [commissions, setCommissions]   = useState<BookingCommission[]>([])
   const [loading, setLoading]           = useState(true)
-  const [tab, setTab]                   = useState<'overview'|'passengers'|'flights'|'accommodation'|'transfers'|'extras'|'payments'|'costing'|'tasks'|'documents'>('overview')
+  const [tab, setTab]                   = useState<'overview'|'passengers'|'flights'|'accommodation'|'transfers'|'extras'|'payments'|'costing'|'tasks'|'documents'|'portal'>('overview')
   const [toast, setToast]               = useState<{ msg: string; type: 'success'|'error' } | null>(null)
   const [saving, setSaving]             = useState(false)
   const [cancelModal, setCancelModal]   = useState(false)
@@ -484,6 +484,7 @@ export default function BookingDetailPage() {
     { key:'costing',       label:'Costing'                              },
     { key:'tasks',         label:`Tasks ${taskPct}%`                    },
     { key:'documents',     label:'Documents'                             },
+    { key:'portal',        label:'Portal'                                },
   ] as const
 
   return (
@@ -828,6 +829,11 @@ export default function BookingDetailPage() {
             outbound={outbound} returnFlts={returnFlts} accommodations={accommodations}
             transfers={transfers} payments={payments} tasks={tasks} onUpdate={() => loadAll(true)} showToast={showToast} />
         )}
+
+        {/* ── PORTAL TAB ───────────────────────────────── */}
+        {tab === 'portal' && (
+          <PortalTab bookingId={booking.id} passengers={passengers} showToast={showToast} />
+        )}
       </div>
 
       {toast && <div className={`toast ${toast.type}`}>{toast.msg}</div>}
@@ -895,42 +901,51 @@ function OverviewTab({ booking, client, balance, taskPct, tasksDone, tasksTotal,
   const commission = profit > 0 ? (profit - 10) * 0.1 : 0
 
   async function saveBalDue() {
-    const response = await authedFetch(`/api/bookings/${booking.id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        action: 'update_balance_due',
-        balance_due_date: balDueDraft || null,
-      }),
-    })
-    const result = await response.json()
-    if (result.success) {
-      await onUpdate()
-      showToast('Balance due date updated ✓')
-      setEditingBalDue(false)
-    } else {
-      showToast('Failed: ' + result.message, 'error')
+    try {
+      const response = await authedFetch(`/api/bookings/${booking.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'update_balance_due',
+          balance_due_date: balDueDraft || null,
+        }),
+      })
+      const result = await response.json()
+      if (result.success) {
+        await onUpdate()
+        showToast('Balance due date updated ✓')
+        setEditingBalDue(false)
+      } else {
+        showToast('Failed: ' + result.message, 'error')
+      }
+    } catch (err: any) {
+      showToast(err.message || 'Failed to update balance due date', 'error')
     }
   }
 
   async function save() {
     setSaving(true)
-    const response = await authedFetch(`/api/bookings/${booking.id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        action: 'save_notes',
-        destination: form.destination,
-        booking_notes: form.booking_notes,
-      }),
-    })
-    const result = await response.json()
-    setSaving(false)
-    if (result.success) {
-      await onUpdate()
-      showToast('Overview details updated ✓')
-    } else {
-      showToast('Save failed: ' + result.message, 'error')
+    try {
+      const response = await authedFetch(`/api/bookings/${booking.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'save_notes',
+          destination: form.destination,
+          booking_notes: form.booking_notes,
+        }),
+      })
+      const result = await response.json()
+      if (result.success) {
+        await onUpdate()
+        showToast('Overview details updated ✓')
+      } else {
+        showToast('Save failed: ' + result.message, 'error')
+      }
+    } catch (err: any) {
+      showToast(err.message || 'Failed to save overview', 'error')
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -987,30 +1002,35 @@ function OverviewTab({ booking, client, balance, taskPct, tasksDone, tasksTotal,
     if (!taskName && !notes) { showToast('Add the request or reminder first', 'error'); return }
     if (!requestForm.due_date) { showToast('Choose a due date', 'error'); return }
     setSavingRequest(true)
-    const response = await authedFetch(`/api/bookings/${booking.id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        action: 'add_operational_request',
-        task_name: taskName,
-        notes: notes,
-        due_date: requestForm.due_date,
-        category: requestForm.category,
-      }),
-    })
-    const result = await response.json()
-    setSavingRequest(false)
-    if (result.success) {
-      await onUpdate()
-      setRequestForm({
-        task_name: '',
-        notes: '',
-        due_date: new Date().toISOString().split('T')[0],
-        category: 'Operations',
+    try {
+      const response = await authedFetch(`/api/bookings/${booking.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'add_operational_request',
+          task_name: taskName,
+          notes: notes,
+          due_date: requestForm.due_date,
+          category: requestForm.category,
+        }),
       })
-      showToast('Request added to Today work ✓')
-    } else {
-      showToast('Failed: ' + result.message, 'error')
+      const result = await response.json()
+      if (result.success) {
+        await onUpdate()
+        setRequestForm({
+          task_name: '',
+          notes: '',
+          due_date: new Date().toISOString().split('T')[0],
+          category: 'Operations',
+        })
+        showToast('Request added to Today work ✓')
+      } else {
+        showToast('Failed: ' + result.message, 'error')
+      }
+    } catch (err: any) {
+      showToast(err.message || 'Failed to add request', 'error')
+    } finally {
+      setSavingRequest(false)
     }
   }
 
@@ -1319,68 +1339,81 @@ function PassengersTab({ bookingId, passengers, onUpdate, showToast }: any) {
   async function addPassenger() {
     if (!form.first_name.trim() || !form.last_name.trim()) { showToast('Name required', 'error'); return }
     setSaving(true)
-    const response = await authedFetch(`/api/bookings/${bookingId}/passengers`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        title: form.title,
-        first_name: form.first_name.trim(),
-        last_name: form.last_name.trim(),
-        date_of_birth: form.date_of_birth || null,
-        passenger_type: form.passenger_type,
-        is_lead: passengers.length === 0 ? true : form.is_lead,
-        passport_number: form.passport_number || null,
-        passport_expiry: form.passport_expiry || null,
-      }),
-    })
-    const result = await response.json()
-    setSaving(false)
-    if (result.success) {
-      showToast('Passenger added ✓')
-      setAdding(false)
-      setForm({ ...blank })
-      onUpdate()
-    } else {
-      showToast('Failed: ' + result.message, 'error')
+    try {
+      const response = await authedFetch(`/api/bookings/${bookingId}/passengers`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: form.title,
+          first_name: form.first_name.trim(),
+          last_name: form.last_name.trim(),
+          date_of_birth: form.date_of_birth || null,
+          passenger_type: form.passenger_type,
+          is_lead: passengers.length === 0 ? true : form.is_lead,
+          passport_number: form.passport_number || null,
+          passport_expiry: form.passport_expiry || null,
+        }),
+      })
+      const result = await response.json()
+      if (result.success) {
+        showToast('Passenger added ✓')
+        setAdding(false)
+        setForm({ ...blank })
+        onUpdate()
+      } else {
+        showToast('Failed: ' + result.message, 'error')
+      }
+    } catch (err: any) {
+      showToast(err.message || 'Failed to add passenger', 'error')
+    } finally {
+      setSaving(false)
     }
   }
 
   async function saveEdit(id: number) {
-    const response = await authedFetch(`/api/bookings/${bookingId}/passengers`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        passengerId: id,
-        title: editForm.title,
-        first_name: editForm.first_name,
-        last_name: editForm.last_name,
-        date_of_birth: editForm.date_of_birth || null,
-        passenger_type: editForm.passenger_type,
-        is_lead: editForm.is_lead,
-        passport_number: editForm.passport_number || null,
-        passport_expiry: editForm.passport_expiry || null,
-      }),
-    })
-    const result = await response.json()
-    if (result.success) {
-      showToast('Passenger updated ✓')
-      setEditing(null)
-      onUpdate()
-    } else {
-      showToast('Failed: ' + result.message, 'error')
+    try {
+      const response = await authedFetch(`/api/bookings/${bookingId}/passengers`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          passengerId: id,
+          title: editForm.title,
+          first_name: editForm.first_name,
+          last_name: editForm.last_name,
+          date_of_birth: editForm.date_of_birth || null,
+          passenger_type: editForm.passenger_type,
+          is_lead: editForm.is_lead,
+          passport_number: editForm.passport_number || null,
+          passport_expiry: editForm.passport_expiry || null,
+        }),
+      })
+      const result = await response.json()
+      if (result.success) {
+        showToast('Passenger updated ✓')
+        setEditing(null)
+        onUpdate()
+      } else {
+        showToast('Failed: ' + result.message, 'error')
+      }
+    } catch (err: any) {
+      showToast(err.message || 'Failed to update passenger', 'error')
     }
   }
 
   async function deletePax(id: number) {
-    const response = await authedFetch(`/api/bookings/${bookingId}/passengers?passengerId=${id}`, {
-      method: 'DELETE',
-    })
-    const result = await response.json()
-    if (result.success) {
-      showToast('Passenger removed')
-      onUpdate()
-    } else {
-      showToast('Failed: ' + result.message, 'error')
+    try {
+      const response = await authedFetch(`/api/bookings/${bookingId}/passengers?passengerId=${id}`, {
+        method: 'DELETE',
+      })
+      const result = await response.json()
+      if (result.success) {
+        showToast('Passenger removed')
+        onUpdate()
+      } else {
+        showToast('Failed: ' + result.message, 'error')
+      }
+    } catch (err: any) {
+      showToast(err.message || 'Failed to remove passenger', 'error')
     }
   }
 
@@ -4005,6 +4038,261 @@ function CancellationModal({ booking, hasFlights, hasAccommodation, hasTransfers
           </button>
         </div>
       </div>
+    </div>
+  )
+}
+
+// ── PORTAL TAB ────────────────────────────────────────────
+function PortalTab({ bookingId, passengers, showToast }: { bookingId: number; passengers: any[]; showToast: (m: string) => void }) {
+  const [data, setData]           = useState<any>(null)
+  const [loading, setLoading]     = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [generating, setGen]      = useState(false)
+  const [revoking, setRevoke]     = useState(false)
+  const [notifBody, setNBody]     = useState('')
+  const [sendingN, setSendingN]   = useState(false)
+  const [passports, setPassports] = useState<any[]>([])
+  const [requests, setRequests]   = useState<any[]>([])
+
+  useEffect(() => { void load() }, [bookingId])
+
+  async function load() {
+    setLoading(true)
+    setLoadError(null)
+    try {
+      const [portalRes, passRes, reqRes] = await Promise.all([
+        authedFetch(`/api/bookings/${bookingId}/portal`).then((r: Response) => r.json()),
+        authedFetch(`/api/bookings/${bookingId}/passports`).then((r: Response) => r.json()),
+        authedFetch(`/api/bookings/${bookingId}/requests`).then((r: Response) => r.json()),
+      ])
+      if (portalRes.success) setData(portalRes.data)
+      if (passRes.success && Array.isArray(passRes.data)) setPassports(passRes.data)
+      if (reqRes.success && Array.isArray(reqRes.data)) setRequests(reqRes.data)
+    } catch (e) {
+      setLoadError(String(e))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function generate() {
+    setGen(true)
+    const res = await authedFetch(`/api/bookings/${bookingId}/portal/generate`, { method: 'POST' })
+    const r = await res.json()
+    setGen(false)
+    if (r.success) { showToast('Portal link generated'); void load() }
+    else showToast(r.message ?? 'Failed to generate link')
+  }
+
+  async function revoke() {
+    if (!confirm('Revoke this portal link? The client will lose access immediately.')) return
+    setRevoke(true)
+    await authedFetch(`/api/bookings/${bookingId}/portal/revoke`, { method: 'POST' })
+    setRevoke(false)
+    showToast('Portal access revoked')
+    void load()
+  }
+
+  async function sendNotification() {
+    if (!notifBody.trim()) return
+    setSendingN(true)
+    await authedFetch(`/api/bookings/${bookingId}/notifications`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ body: notifBody.trim() }),
+    })
+    setSendingN(false)
+    setNBody('')
+    showToast('Notification sent')
+  }
+
+  async function updatePassport(uploadId: string, status: string, issueNote?: string) {
+    await authedFetch(`/api/bookings/${bookingId}/passports/${uploadId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status, issue_note: issueNote ?? null }),
+    })
+    showToast(status === 'checked' ? 'Passport confirmed' : 'Issue flagged')
+    void load()
+  }
+
+  async function updateRequest(requestId: string, status: string) {
+    await authedFetch(`/api/bookings/${bookingId}/requests/${requestId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status }),
+    })
+    void load()
+  }
+
+  if (loading) return <div style={{ color: 'var(--text-muted)', fontSize: 14, padding: 20 }}>Loading portal data…</div>
+  if (loadError) return <div style={{ color: '#dc2626', fontSize: 13, padding: 20 }}>Failed to load portal data: {loadError}</div>
+
+  const token = data?.token
+  const readiness = data?.readiness
+  const isActive = token?.active
+
+  const STATUS_PASSPORT_LABEL: Record<string, string> = { pending: 'Awaiting upload', uploaded: 'Awaiting review', needs_attention: 'Issue flagged', checked: 'Confirmed' }
+  const STATUS_PASSPORT_COLOR: Record<string, string> = { pending: '#9ca3af', uploaded: '#1d4ed8', needs_attention: '#dc2626', checked: '#059669' }
+  const STATUS_REQ_LABEL: Record<string, string> = { submitted: 'Submitted', seen: 'In progress', actioned: 'Arranged' }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 24, maxWidth: 680 }}>
+
+      {/* Portal access card */}
+      <div style={{ background: 'var(--bg-secondary)', borderRadius: 10, padding: 20, border: '1px solid var(--border)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+          <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>Client Portal Access</h3>
+          <span style={{ fontSize: 12, fontWeight: 600, padding: '3px 10px', borderRadius: 20,
+            background: isActive ? '#dcfce7' : '#f3f4f6',
+            color: isActive ? '#166534' : '#6b7280' }}>
+            {isActive ? 'Active' : token?.revoked_at ? 'Revoked' : 'Not sent'}
+          </span>
+        </div>
+
+        {/* Readiness gate */}
+        {readiness && !readiness.ready && (
+          <div style={{ marginBottom: 16, padding: 12, background: '#fff7ed', borderRadius: 8, border: '1px solid #fed7aa' }}>
+            <p style={{ margin: '0 0 8px', fontSize: 13, fontWeight: 600, color: '#92400e' }}>Complete booking before sending portal link:</p>
+            {readiness.missing.map((m: any) => (
+              <p key={m.field} style={{ margin: '2px 0', fontSize: 13, color: '#b45309' }}>· {m.label}</p>
+            ))}
+          </div>
+        )}
+
+        {/* Active link display */}
+        {isActive && token?.portal_url && (
+          <div style={{ marginBottom: 16, padding: 10, background: '#f0fdf4', borderRadius: 8, border: '1px solid #bbf7d0' }}>
+            <p style={{ margin: '0 0 4px', fontSize: 12, color: '#6b7280' }}>Portal URL</p>
+            <p style={{ margin: '0 0 4px', fontSize: 12, fontFamily: 'monospace', wordBreak: 'break-all', color: '#111827' }}>{token.portal_url}</p>
+            <p style={{ margin: 0, fontSize: 12, color: '#9ca3af' }}>Expires {new Date(token.expires_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}</p>
+          </div>
+        )}
+
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button
+            onClick={generate}
+            disabled={generating || (readiness && !readiness.ready)}
+            style={{ fontSize: 13, fontWeight: 600, padding: '8px 16px', borderRadius: 7, border: 'none', background: (readiness && !readiness.ready) ? '#e5e7eb' : '#1a3a5c', color: (readiness && !readiness.ready) ? '#9ca3af' : '#fff', cursor: (generating || (readiness && !readiness.ready)) ? 'not-allowed' : 'pointer' }}
+          >
+            {generating ? 'Generating…' : isActive ? 'Regenerate link' : 'Send portal link'}
+          </button>
+
+          {isActive && (
+            <button onClick={revoke} disabled={revoking}
+              style={{ fontSize: 13, padding: '8px 16px', borderRadius: 7, border: '1px solid #dc2626', background: '#fff', color: '#dc2626', cursor: revoking ? 'not-allowed' : 'pointer' }}>
+              {revoking ? 'Revoking…' : 'Revoke access'}
+            </button>
+          )}
+
+          {isActive && token?.portal_url && (
+            <button onClick={() => { navigator.clipboard.writeText(token.portal_url); showToast('Link copied') }}
+              style={{ fontSize: 13, padding: '8px 16px', borderRadius: 7, border: '1px solid var(--border)', background: '#fff', color: 'var(--text-primary)', cursor: 'pointer' }}>
+              Copy link
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Passports panel */}
+      <div style={{ background: 'var(--bg-secondary)', borderRadius: 10, padding: 20, border: '1px solid var(--border)' }}>
+        <h3 style={{ margin: '0 0 16px', fontSize: 14, fontWeight: 600 }}>Passports</h3>
+        {passports.length === 0 ? (
+          <p style={{ fontSize: 14, color: 'var(--text-muted)', margin: 0 }}>No passport uploads yet.</p>
+        ) : passports.map((p: any) => (
+            <div key={p.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 0', borderBottom: '1px solid var(--border)' }}>
+              <div>
+                <p style={{ margin: '0 0 2px', fontSize: 14, fontWeight: 500 }}>{p.passenger_name}</p>
+                <p style={{ margin: 0, fontSize: 12, color: STATUS_PASSPORT_COLOR[p.status] ?? '#9ca3af', fontWeight: 600 }}>
+                  {STATUS_PASSPORT_LABEL[p.status] ?? p.status}
+                </p>
+                {p.issue_note && <p style={{ margin: '2px 0 0', fontSize: 12, color: '#dc2626' }}>Note: {p.issue_note}</p>}
+                {p.checked_at && <p style={{ margin: '2px 0 0', fontSize: 12, color: '#9ca3af' }}>Confirmed {new Date(p.checked_at).toLocaleDateString('en-GB')}</p>}
+              </div>
+              {p.status === 'uploaded' && (
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <button onClick={() => updatePassport(p.id, 'checked')}
+                    style={{ fontSize: 12, padding: '5px 10px', borderRadius: 6, border: 'none', background: '#059669', color: '#fff', cursor: 'pointer' }}>
+                    Mark checked
+                  </button>
+                  <button onClick={() => { const note = prompt('Describe the issue:'); if (note) updatePassport(p.id, 'needs_attention', note) }}
+                    style={{ fontSize: 12, padding: '5px 10px', borderRadius: 6, border: '1px solid #dc2626', background: '#fff', color: '#dc2626', cursor: 'pointer' }}>
+                    Flag issue
+                  </button>
+                </div>
+              )}
+              {p.status === 'needs_attention' && (
+                <button onClick={() => updatePassport(p.id, 'checked')}
+                  style={{ fontSize: 12, padding: '5px 10px', borderRadius: 6, border: 'none', background: '#059669', color: '#fff', cursor: 'pointer' }}>
+                  Mark checked
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+
+      {/* Client requests */}
+      <div style={{ background: 'var(--bg-secondary)', borderRadius: 10, padding: 20, border: '1px solid var(--border)' }}>
+        <h3 style={{ margin: '0 0 16px', fontSize: 14, fontWeight: 600 }}>
+          Client Requests
+          {requests.filter((r: any) => r.status === 'submitted').length > 0 && (
+            <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 700, padding: '2px 7px', borderRadius: 10, background: '#1a3a5c', color: '#fff' }}>
+              {requests.filter((r: any) => r.status === 'submitted').length} new
+            </span>
+          )}
+        </h3>
+        {requests.length === 0 ? (
+          <p style={{ fontSize: 14, color: 'var(--text-muted)', margin: 0 }}>No requests yet.</p>
+        ) : requests.map((r: any) => (
+          <div key={r.id} style={{ padding: '10px 0', borderBottom: '1px solid var(--border)' }}>
+            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
+              <div style={{ flex: 1 }}>
+                <p style={{ margin: '0 0 2px', fontSize: 12, color: 'var(--text-muted)' }}>{r.category}</p>
+                <p style={{ margin: 0, fontSize: 14 }}>{r.message}</p>
+                <p style={{ margin: '3px 0 0', fontSize: 12, color: 'var(--text-muted)' }}>{new Date(r.created_at).toLocaleDateString('en-GB')}</p>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
+                <span style={{ fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 10,
+                  background: r.status === 'actioned' ? '#dcfce7' : r.status === 'seen' ? '#dbeafe' : '#f3f4f6',
+                  color: r.status === 'actioned' ? '#166534' : r.status === 'seen' ? '#1e40af' : '#374151' }}>
+                  {STATUS_REQ_LABEL[r.status] ?? r.status}
+                </span>
+                {r.status === 'submitted' && (
+                  <button onClick={() => updateRequest(r.id, 'seen')}
+                    style={{ fontSize: 11, padding: '3px 8px', borderRadius: 5, border: '1px solid var(--border)', background: '#fff', cursor: 'pointer' }}>
+                    Mark seen
+                  </button>
+                )}
+                {r.status === 'seen' && (
+                  <button onClick={() => updateRequest(r.id, 'actioned')}
+                    style={{ fontSize: 11, padding: '3px 8px', borderRadius: 5, border: 'none', background: '#059669', color: '#fff', cursor: 'pointer' }}>
+                    Mark arranged
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Manual notification */}
+      {isActive && (
+        <div style={{ background: 'var(--bg-secondary)', borderRadius: 10, padding: 20, border: '1px solid var(--border)' }}>
+          <h3 style={{ margin: '0 0 12px', fontSize: 14, fontWeight: 600 }}>Send a Message to Client</h3>
+          <textarea
+            value={notifBody}
+            onChange={e => setNBody(e.target.value)}
+            placeholder="Message shown in client portal…"
+            rows={3}
+            maxLength={500}
+            style={{ width: '100%', padding: '8px 10px', borderRadius: 7, border: '1px solid var(--border)', fontSize: 14, resize: 'vertical', boxSizing: 'border-box', fontFamily: 'inherit', marginBottom: 8 }}
+          />
+          <button onClick={sendNotification} disabled={sendingN || !notifBody.trim()}
+            style={{ fontSize: 13, fontWeight: 600, padding: '8px 16px', borderRadius: 7, border: 'none', background: notifBody.trim() ? '#1a3a5c' : '#e5e7eb', color: notifBody.trim() ? '#fff' : '#9ca3af', cursor: (sendingN || !notifBody.trim()) ? 'not-allowed' : 'pointer' }}>
+            {sendingN ? 'Sending…' : 'Send to portal'}
+          </button>
+        </div>
+      )}
     </div>
   )
 }

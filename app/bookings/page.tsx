@@ -117,11 +117,16 @@ export default function BookingsPage() {
 
   async function loadBookings() {
     setLoading(true)
-    const response = await authedFetch('/api/bookings')
-    const { data, error } = await response.json()
-    if (error) throw error
-    setBookings(data || [])
-    setLoading(false)
+    try {
+      const response = await authedFetch('/api/bookings')
+      const { data, error } = await response.json()
+      if (error) throw error
+      setBookings(data || [])
+    } catch {
+      // network error — bookings list stays empty
+    } finally {
+      setLoading(false)
+    }
   }
 
   async function loadAccess() {
