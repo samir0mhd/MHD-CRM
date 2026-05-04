@@ -1,6 +1,9 @@
 'use client'
 
 import { useEffect, useState, useRef } from 'react'
+import { getAccessContext, isManager, type StaffUser } from '@/lib/access'
+import { markLost as markLostService } from '@/lib/modules/deals/deal.service'
+import { LOST_REASONS } from '@/lib/modules/lost/constants'
 import type { Deal } from '@/lib/supabase'
 import Link from 'next/link'
 import { authedFetch } from '@/lib/api-client'
@@ -39,7 +42,8 @@ function formatShortDate(date: string) {
 
 
 type DealWithClient = Deal & {
-  clients?: { first_name: string; last_name: string }
+  staff_id?: number | null
+  clients?: { first_name: string; last_name: string; owner_staff_id?: number | null }
   activities?: { created_at: string }[]
   quotes?: { id: number; quote_ref?: string; sent_to_client?: boolean }[]
 }
@@ -104,8 +108,90 @@ function calculateDealSignals(deal: Deal, renderTime: number = Date.now()): Deal
   return { daysUntilDeparture, isOverdue, overdueBy, daysUntilActivity, temp, valueTier }
 }
 
+function resolveConsultantId(deal: DealWithClient) {
+  return deal.staff_id ?? deal.clients?.owner_staff_id ?? null
+}
+
+function getPipelineSortBucket(sig: DealSignals) {
+  if (sig.isOverdue && sig.temp === 'frozen') return 0
+  if (sig.isOverdue) return 1
+  if (sig.daysUntilActivity === 0) return 2
+  return 3
+}
+
+function compareStageDeals(a: DealWithClient, b: DealWithClient, renderTime: number) {
+  const sigA = calculateDealSignals(a, renderTime)
+  const sigB = calculateDealSignals(b, renderTime)
+  const bucketDelta = getPipelineSortBucket(sigA) - getPipelineSortBucket(sigB)
+  if (bucketDelta !== 0) return bucketDelta
+
+  if (sigA.isOverdue && sigB.isOverdue && sigA.overdueBy !== sigB.overdueBy) {
+    return sigB.overdueBy - sigA.overdueBy
+  }
+
+  const departureA = sigA.daysUntilDeparture ?? Number.MAX_SAFE_INTEGER
+  const departureB = sigB.daysUntilDeparture ?? Number.MAX_SAFE_INTEGER
+  if (departureA !== departureB) return departureA - departureB
+
+  const valueDelta = (b.deal_value || 0) - (a.deal_value || 0)
+  if (valueDelta !== 0) return valueDelta
+
+  return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+}
+
+function getCardTone(sig: DealSignals) {
+  const isHighValue = sig.valueTier === 'whale' || sig.valueTier === 'high'
+  const isCombinedRisk = isHighValue && sig.isOverdue
+
+  if (isCombinedRisk) {
+    return {
+      background: 'linear-gradient(180deg, #fffaf4 0%, #fffefb 100%)',
+      borderColor: '#d6b98b',
+      shadow: '0 0 0 1px rgba(180, 131, 58, 0.18), 0 10px 26px rgba(71, 52, 24, 0.08)',
+      accent: '#8b6a32',
+    }
+  }
+
+  if (sig.isOverdue || sig.temp === 'frozen') {
+    return {
+      background: 'linear-gradient(180deg, #fff8f6 0%, #fffdfc 100%)',
+      borderColor: '#e9c5bb',
+      shadow: '0 0 0 1px rgba(184, 111, 88, 0.14), 0 8px 22px rgba(92, 58, 47, 0.06)',
+      accent: '#a45e46',
+    }
+  }
+
+  if (sig.temp === 'hot' || sig.daysUntilActivity === 0) {
+    return {
+      background: 'linear-gradient(180deg, #fffaf2 0%, #fffefd 100%)',
+      borderColor: '#ecd8b2',
+      shadow: '0 0 0 1px rgba(184, 144, 68, 0.10), 0 7px 18px rgba(94, 78, 42, 0.05)',
+      accent: '#a06c1f',
+    }
+  }
+
+  if (sig.temp === 'cold') {
+    return {
+      background: 'linear-gradient(180deg, #fbfcfe 0%, #ffffff 100%)',
+      borderColor: '#dbe4ef',
+      shadow: '0 1px 2px rgba(15, 23, 42, 0.04)',
+      accent: '#7a8da3',
+    }
+  }
+
+  return {
+    background: 'var(--surface)',
+    borderColor: 'var(--border)',
+    shadow: '0 1px 2px rgba(15, 23, 42, 0.05)',
+    accent: '#8b98aa',
+  }
+}
+
 export default function PipelinePage() {
   const [deals, setDeals]           = useState<DealWithClient[]>([])
+  const [staffUsers, setStaffUsers] = useState<StaffUser[]>([])
+  const [currentStaff, setCurrentStaff] = useState<StaffUser | null>(null)
+  const [accessLoaded, setAccessLoaded] = useState(false)
   const [loading, setLoading]       = useState(true)
   const [draggingId, setDraggingId] = useState<number | null>(null)
   const [dragOverStage, setDragOverStage] = useState<string | null>(null)
@@ -115,6 +201,10 @@ export default function PipelinePage() {
   const [search, setSearch]         = useState('')
   const [view, setView]             = useState<'kanban' | 'list'>('kanban')
   const [sort, setSort]             = useState<'created' | 'value' | 'departure'>('created')
+  const [consultantFilter, setConsultantFilter] = useState<string>('all')
+  const [lostDeal, setLostDeal]     = useState<DealWithClient | null>(null)
+  const [lostStructuredReason, setLostStructuredReason] = useState('')
+  const [lostDetail, setLostDetail] = useState('')
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [renderNow] = useState(() => Date.now())
 
@@ -136,6 +226,7 @@ export default function PipelinePage() {
   useEffect(() => {
     const timer = window.setTimeout(() => {
       void loadDeals()
+      void loadAccess()
     }, 0)
     const onFocus = () => { void loadDeals() }
     const onVisibility = () => { if (!document.hidden) void loadDeals() }
@@ -147,6 +238,19 @@ export default function PipelinePage() {
       document.removeEventListener('visibilitychange', onVisibility)
     }
   }, [])
+
+  async function loadAccess() {
+    try {
+      const access = await getAccessContext()
+      setStaffUsers(access.staffUsers)
+      setCurrentStaff(access.currentStaff)
+      if (access.currentStaff && !isManager(access.currentStaff)) {
+        setConsultantFilter(String(access.currentStaff.id))
+      }
+    } finally {
+      setAccessLoaded(true)
+    }
+  }
 
   function showToast(msg: string) {
     setToast(msg)
@@ -209,15 +313,39 @@ export default function PipelinePage() {
     }
   }
 
+  async function markLost() {
+    if (!lostDeal || !lostStructuredReason) return
+    try {
+      await markLostService(lostDeal.id, lostStructuredReason, lostDetail)
+      setDeals(prev => prev.filter(deal => deal.id !== lostDeal.id))
+      setLostDeal(null)
+      setLostStructuredReason('')
+      setLostDetail('')
+      showToast('Deal marked as lost')
+      void loadDeals()
+    } catch {
+      showToast('Failed to mark deal as lost')
+    }
+  }
+
+  const consultantScoped = deals.filter(deal => {
+    if (!currentStaff) return true
+    if (isManager(currentStaff)) {
+      if (consultantFilter === 'all') return true
+      return String(resolveConsultantId(deal) ?? '') === consultantFilter
+    }
+    return String(resolveConsultantId(deal) ?? '') === String(currentStaff.id)
+  })
+
   const filtered = search
-    ? deals.filter(d =>
+    ? consultantScoped.filter(d =>
         d.title?.toLowerCase().includes(search.toLowerCase()) ||
         d.clients?.first_name?.toLowerCase().includes(search.toLowerCase()) ||
         d.clients?.last_name?.toLowerCase().includes(search.toLowerCase())
       )
-    : deals
+    : consultantScoped
 
-  const totalPipeline = deals.reduce((a, d) => a + (d.deal_value || 0), 0)
+  const totalPipeline = filtered.reduce((a, d) => a + (d.deal_value || 0), 0)
 
   const sortedFiltered = view === 'list' ? [...filtered].sort((a, b) => {
     if (sort === 'value') return (b.deal_value || 0) - (a.deal_value || 0)
@@ -230,7 +358,7 @@ export default function PipelinePage() {
     return 0
   }) : filtered
 
-  if (loading) {
+  if (loading || !accessLoaded) {
     return (
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '80vh' }}>
         <div style={{ color: 'var(--text-muted)', fontSize: '14px' }}>Loading pipeline…</div>
@@ -244,12 +372,26 @@ export default function PipelinePage() {
         <div>
           <div className="page-title">Pipeline</div>
           <div style={{ fontSize: '13px', color: 'var(--text-muted)', marginTop: '2px' }}>
-            {deals.length} deals · {fmt(totalPipeline)} total
+            {filtered.length} deals · {fmt(totalPipeline)} total
           </div>
         </div>
         <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
           <input className="input" style={{ width: '220px' }} placeholder="Search deals…"
             value={search} onChange={e => setSearch(e.target.value)} />
+          <select
+            className="input"
+            style={{ width: isManager(currentStaff) ? '170px' : '150px' }}
+            value={isManager(currentStaff) ? consultantFilter : String(currentStaff?.id ?? '')}
+            onChange={e => setConsultantFilter(e.target.value)}
+            disabled={!isManager(currentStaff)}
+          >
+            {isManager(currentStaff) && <option value="all">All consultants</option>}
+            {staffUsers.map(staff => (
+              <option key={staff.id} value={String(staff.id)}>
+                {staff.name}
+              </option>
+            ))}
+          </select>
           {/* View toggle */}
           <div style={{ display: 'flex', background: 'var(--bg-tertiary)', border: '1px solid var(--border)', borderRadius: '8px', padding: '3px', gap: '2px' }}>
             {(['kanban', 'list'] as const).map(v => (
@@ -275,8 +417,8 @@ export default function PipelinePage() {
       <div style={{ padding: '0 24px 16px' }}>
         <div style={{ display: 'flex', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '12px', overflow: 'hidden' }}>
           {STAGES.map((stage, i) => {
-            const count = deals.filter(d => d.stage === stage.key).length
-            const pct   = deals.length > 0 ? Math.round(count / deals.length * 100) : 0
+            const count = filtered.filter(d => d.stage === stage.key).length
+            const pct   = filtered.length > 0 ? Math.round(count / filtered.length * 100) : 0
             return (
               <div key={stage.key} style={{ flex: 1, padding: '12px 14px', borderLeft: i > 0 ? '1px solid var(--border)' : 'none', position: 'relative', paddingBottom: '16px' }}>
                 <div style={{ fontSize: '9.5px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.07em', color: stage.color, marginBottom: '5px', fontFamily: 'Outfit, sans-serif' }}>{stage.label}</div>
@@ -295,7 +437,7 @@ export default function PipelinePage() {
       {view === 'kanban' && <div style={{ padding: '0 24px 20px', overflowX: 'auto' }}>
         <div className="kanban-board">
           {STAGES.map(stage => {
-            const stageDeals   = filtered.filter(d => d.stage === stage.key)
+            const stageDeals   = [...filtered.filter(d => d.stage === stage.key)].sort((a, b) => compareStageDeals(a, b, renderNow))
             const stageVal     = stageDeals.reduce((a, d) => a + (d.deal_value || 0), 0)
             const isDragOver   = dragOverStage === stage.key
 
@@ -324,6 +466,12 @@ export default function PipelinePage() {
                   {stageDeals.map(deal => {
                     const client = deal.clients
                     const sig    = calculateDealSignals(deal, renderNow)
+                    const hasQuotes = (deal.quotes || []).length > 0
+                    const quoteSent = (deal.quotes || []).some(q => !!q.sent_to_client)
+                    const isHighValue = sig.valueTier === 'whale' || sig.valueTier === 'high'
+                    const isEscalated = sig.isOverdue && isHighValue
+                    const cardTone = getCardTone(sig)
+                    const refs = [...new Set((deal.quotes || []).map(q => q.quote_ref).filter(Boolean))]
                     const actionText = deal.next_activity_note?.trim() || 'No action note'
                     const displayTags: string[] = []
                     if (deal.source) displayTags.push(deal.source)
@@ -346,31 +494,81 @@ export default function PipelinePage() {
                         className={`deal-card ${draggingId === deal.id ? 'dragging' : ''}`}
                         draggable
                         onDragStart={() => setDraggingId(deal.id)}
-                        onDragEnd={() => { setDraggingId(null); setDragOverStage(null) }}>
+                        onDragEnd={() => { setDraggingId(null); setDragOverStage(null) }}
+                        style={{
+                          background: cardTone.background,
+                          borderColor: cardTone.borderColor,
+                          boxShadow: cardTone.shadow,
+                          borderLeft: `3px solid ${cardTone.accent}`,
+                        }}>
 
                         <Link href={`/deals/${deal.id}`} style={{ textDecoration: 'none', display: 'block' }}>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '12px', marginBottom: '10px' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '12px', marginBottom: '12px' }}>
                             <div style={{ minWidth: 0, flex: 1 }}>
-                              <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-primary)', fontFamily: 'Outfit, sans-serif', lineHeight: '1.3', marginBottom: '4px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              <div style={{ fontSize: '12px', fontWeight: '600', color: sig.temp === 'cold' ? 'var(--text-secondary)' : 'var(--text-primary)', fontFamily: 'Outfit, sans-serif', lineHeight: '1.3', marginBottom: '5px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                                 {client ? `${client.first_name} ${client.last_name}` : deal.title}
                               </div>
-                              <div style={{ fontFamily: 'Fraunces, serif', fontSize: '15px', fontWeight: '300', color: 'var(--text-secondary)', lineHeight: '1.3', letterSpacing: '-0.01em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              <div style={{ fontFamily: 'Fraunces, serif', fontSize: '16px', fontWeight: isEscalated ? '500' : '400', color: 'var(--text-primary)', lineHeight: '1.28', letterSpacing: '-0.01em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                                 {deal.title}
                               </div>
                             </div>
-                            <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: '17px', fontWeight: '700', letterSpacing: '-0.03em', color: deal.deal_value > 0 ? 'var(--text-primary)' : 'var(--text-muted)', flexShrink: 0 }}>
-                              {deal.deal_value > 0 ? fmt(deal.deal_value) : '—'}
+                            <div style={{ flexShrink: 0, textAlign: 'right' }}>
+                              <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: isHighValue ? '18px' : '17px', fontWeight: isHighValue ? '800' : '700', letterSpacing: '-0.03em', color: deal.deal_value > 0 ? (isEscalated ? '#7c5b25' : isHighValue ? '#74511f' : 'var(--text-primary)') : 'var(--text-muted)' }}>
+                                {deal.deal_value > 0 ? fmt(deal.deal_value) : '—'}
+                              </div>
+                              {sig.valueTier && (
+                                <div style={{
+                                  marginTop: '4px',
+                                  fontSize: '9px',
+                                  fontWeight: '700',
+                                  textTransform: 'uppercase',
+                                  letterSpacing: '0.06em',
+                                  color: sig.valueTier === 'whale' ? '#8b6a32' : '#7c6b3d',
+                                }}>
+                                  {sig.valueTier === 'whale' ? 'Whale' : 'High Value'}
+                                </div>
+                              )}
                             </div>
                           </div>
 
-                          <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-primary)', fontFamily: 'Outfit, sans-serif', lineHeight: '1.45', marginBottom: '10px' }}>
+                          <div style={{ fontSize: '13px', fontWeight: '600', color: sig.temp === 'cold' ? 'var(--text-secondary)' : 'var(--text-primary)', fontFamily: 'Outfit, sans-serif', lineHeight: '1.45', marginBottom: '12px' }}>
                             {actionText}
                           </div>
 
-                          <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', marginBottom: displayTags.length > 0 ? '10px' : '12px', fontSize: '11px', fontWeight: '600', color: urgencyTone.color, background: urgencyTone.background, border: `1px solid ${urgencyTone.border}`, borderRadius: '999px', padding: '4px 9px', fontFamily: 'Outfit, sans-serif' }}>
+                          <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', marginBottom: '10px', fontSize: '11px', fontWeight: '600', color: urgencyTone.color, background: urgencyTone.background, border: `1px solid ${urgencyTone.border}`, borderRadius: '999px', padding: '4px 9px', fontFamily: 'Outfit, sans-serif' }}>
                             <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: urgencyTone.color, display: 'inline-block', flexShrink: 0 }} />
                             {urgencyText}
                           </div>
+
+                          {(hasQuotes || refs.length > 0) && (
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', marginBottom: '10px' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0 }}>
+                                {hasQuotes && (
+                                  <span style={{
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '6px',
+                                    fontSize: '10px',
+                                    fontWeight: '600',
+                                    color: quoteSent ? '#0f766e' : '#8a5a18',
+                                    background: quoteSent ? '#edfdfa' : '#fff8e8',
+                                    border: `1px solid ${quoteSent ? '#99f6e4' : '#ead5a0'}`,
+                                    padding: '3px 8px',
+                                    borderRadius: '999px',
+                                    fontFamily: 'Outfit, sans-serif',
+                                  }}>
+                                    <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: quoteSent ? '#0f766e' : '#b7791f', display: 'inline-block', flexShrink: 0 }} />
+                                    {quoteSent ? 'Sent' : 'Drafted'}
+                                  </span>
+                                )}
+                              </div>
+                              {refs.length > 0 && (
+                                <div style={{ fontSize: '10px', fontFamily: 'monospace', color: 'var(--text-muted)', textAlign: 'right', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                  {refs[0]}{refs.length > 1 ? ` +${refs.length - 1}` : ''}
+                                </div>
+                              )}
+                            </div>
+                          )}
 
                           {displayTags.length > 0 && (
                             <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexWrap: 'wrap', marginBottom: '12px' }}>
@@ -382,16 +580,6 @@ export default function PipelinePage() {
                             </div>
                           )}
                         </Link>
-
-                        {/* Quote refs */}
-                        {(() => {
-                          const refs = [...new Set((deal.quotes || []).map(q => q.quote_ref).filter(Boolean))]
-                          return refs.length > 0 ? (
-                            <div style={{ fontSize: '10px', fontFamily: 'monospace', color: 'var(--text-muted)', marginBottom: '8px' }}>
-                              {refs[0]}{refs.length > 1 ? ` +${refs.length - 1}` : ''}
-                            </div>
-                          ) : null
-                        })()}
 
                         {/* Controls: stage movement + snooze (de-emphasised) */}
                         <div style={{ display: 'flex', alignItems: 'center', gap: '3px', flexWrap: 'wrap' }}>
@@ -414,6 +602,17 @@ export default function PipelinePage() {
                               {d}d
                             </button>
                           ))}
+                          <button
+                            onClick={e => {
+                              e.stopPropagation()
+                              setLostDeal(deal)
+                              setLostStructuredReason('')
+                              setLostDetail('')
+                            }}
+                            style={{ fontSize: '9px', padding: '2px 6px', borderRadius: '4px', border: '1px solid #fecaca', background: '#fff1f2', color: '#b91c1c', cursor: 'pointer', fontFamily: 'Outfit, sans-serif', transition: 'all 0.1s' }}
+                          >
+                            Mark Lost
+                          </button>
                         </div>
 
                       </div>
@@ -616,6 +815,36 @@ export default function PipelinePage() {
           onClose={() => setShowNewDeal(false)}
           onSaved={() => { setShowNewDeal(false); loadDeals(); showToast('Deal created!') }}
         />
+      )}
+
+      {lostDeal && (
+        <div className="modal-backdrop" onClick={e => { if (e.target === e.currentTarget) setLostDeal(null) }}>
+          <div className="modal" style={{ maxWidth: '440px' }}>
+            <div className="modal-title">Mark Deal as Lost</div>
+            <div style={{ fontSize: '13.5px', color: 'var(--text-muted)', marginBottom: '14px' }}>
+              Select a reason for <strong style={{ color: 'var(--text-primary)' }}>{lostDeal.title}</strong> — this uses the existing structured lost workflow.
+            </div>
+            <label className="label">Reason <span style={{ color: 'var(--red)' }}>*</span></label>
+            <select className="input" style={{ marginBottom: '14px' }} value={lostStructuredReason} onChange={e => setLostStructuredReason(e.target.value)}>
+              <option value="">— select reason —</option>
+              {LOST_REASONS.map(reason => (
+                <option key={reason.key} value={reason.key}>{reason.label}</option>
+              ))}
+            </select>
+            <label className="label">Detail <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: 400 }}>(optional)</span></label>
+            <textarea
+              className="input"
+              style={{ minHeight: '70px', resize: 'vertical', marginBottom: '16px' }}
+              placeholder="Any extra context…"
+              value={lostDetail}
+              onChange={e => setLostDetail(e.target.value)}
+            />
+            <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+              <button className="btn btn-secondary" onClick={() => { setLostDeal(null); setLostStructuredReason(''); setLostDetail('') }}>Cancel</button>
+              <button className="btn btn-danger" onClick={markLost} disabled={!lostStructuredReason}>Mark as Lost</button>
+            </div>
+          </div>
+        </div>
       )}
 
       {toast && <div className="toast">{toast}</div>}

@@ -62,6 +62,9 @@ export default function WorkspacePage() {
   const [data, setData] = useState<WorkspaceResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [uploadingPhoto, setUploadingPhoto] = useState(false)
+  const [removingPhoto, setRemovingPhoto] = useState(false)
+  const [photoError, setPhotoError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
   const [form, setForm] = useState({
@@ -161,6 +164,68 @@ export default function WorkspacePage() {
     await refreshStaff()
     await loadWorkspace(requestedStaffId)
     setSaving(false)
+  }
+
+  async function handlePhotoUpload(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    if (!file) return
+
+    if (file.size > 2 * 1024 * 1024) {
+      setPhotoError('File must be under 2 MB')
+      return
+    }
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+      setPhotoError('Only JPG, PNG or WebP accepted')
+      return
+    }
+
+    setPhotoError(null)
+    setUploadingPhoto(true)
+    const fd = new FormData()
+    fd.append('file', file)
+    try {
+      const response = await authedFetch('/api/workspace/photo', { method: 'POST', body: fd })
+      const json = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        setPhotoError(json.error || 'Upload failed')
+        return
+      }
+      setForm(current => ({ ...current, profile_photo_url: json.url }))
+      await refreshStaff()
+    } catch {
+      setPhotoError('Upload failed — check your connection')
+    } finally {
+      setUploadingPhoto(false)
+      event.target.value = ''
+    }
+  }
+
+  async function handlePhotoRemove() {
+    setPhotoError(null)
+    setRemovingPhoto(true)
+    try {
+      const response = await authedFetch('/api/workspace', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          job_title: form.job_title,
+          profile_photo_url: '',
+          email_signature: form.email_signature,
+        }),
+      })
+      const json = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        setPhotoError(typeof json.error === 'string' ? json.error : 'Failed to remove photo')
+        return
+      }
+      setForm(current => ({ ...current, profile_photo_url: '' }))
+      await refreshStaff()
+      await loadWorkspace(requestedStaffId)
+    } catch {
+      setPhotoError('Failed to remove photo')
+    } finally {
+      setRemovingPhoto(false)
+    }
   }
 
   if (loading) {
@@ -409,14 +474,61 @@ export default function WorkspacePage() {
                 />
               </div>
               <div>
-                <label className="label">Profile photo URL</label>
-                <input
-                  className="input"
-                  value={form.profile_photo_url}
-                  onChange={event => setForm(current => ({ ...current, profile_photo_url: event.target.value }))}
-                  placeholder="https://..."
-                  disabled={!isOwnWorkspace}
-                />
+                <label className="label">Profile photo</label>
+                {isOwnWorkspace ? (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+                    <div className="workspace-profile-card-avatar" style={{ width: '52px', height: '52px' }}>
+                      {form.profile_photo_url ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={form.profile_photo_url} alt={data.profile.name} className="workspace-avatar-image" />
+                      ) : (
+                        <span>{initials(data.profile.name)}</span>
+                      )}
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                      <label
+                        style={{
+                          display: 'inline-flex', alignItems: 'center', gap: '6px',
+                          padding: '0 14px', height: '36px', borderRadius: '8px',
+                          border: '1px solid var(--border)', background: 'var(--surface)',
+                          fontSize: '13px', cursor: uploadingPhoto ? 'not-allowed' : 'pointer',
+                          color: 'var(--text)', whiteSpace: 'nowrap',
+                          opacity: uploadingPhoto ? 0.6 : 1,
+                        }}
+                      >
+                        <input
+                          type="file"
+                          accept="image/jpeg,image/png,image/webp"
+                          style={{ display: 'none' }}
+                          onChange={handlePhotoUpload}
+                          disabled={uploadingPhoto}
+                        />
+                        {uploadingPhoto ? 'Uploading…' : form.profile_photo_url ? 'Replace photo' : 'Upload photo'}
+                      </label>
+                      {form.profile_photo_url && (
+                        <button
+                          className="btn btn-ghost btn-xs"
+                          style={{ color: 'var(--text-muted)', fontSize: '12px' }}
+                          onClick={() => void handlePhotoRemove()}
+                          type="button"
+                          disabled={removingPhoto || uploadingPhoto}
+                        >
+                          {removingPhoto ? 'Removing…' : 'Remove'}
+                        </button>
+                      )}
+                      <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                        JPG, PNG or WebP up to 2 MB
+                      </div>
+                    </div>
+                    {photoError && (
+                      <span style={{ fontSize: '12px', color: 'var(--red)' }}>{photoError}</span>
+                    )}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: '13px', color: 'var(--text-muted)' }}>
+                    {form.profile_photo_url ? 'Photo set' : 'No photo'}
+                  </div>
+                )}
               </div>
               <div style={{ gridColumn: '1 / -1' }}>
                 <label className="label">Email signature</label>
