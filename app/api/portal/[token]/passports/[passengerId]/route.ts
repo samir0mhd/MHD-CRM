@@ -46,13 +46,18 @@ export async function POST(
     return NextResponse.json({ success: false, message: 'Upload failed' }, { status: 500 })
   }
 
-  await upsertPassportUpload({
-    booking_id:   validation.bookingId,
-    passenger_id: passengerId,
-    status:       'uploaded',
-    storage_path: storagePath,
-    uploaded_at:  new Date().toISOString(),
-  })
+  try {
+    await upsertPassportUpload({
+      booking_id:   validation.bookingId,
+      passenger_id: passengerId,
+      status:       'uploaded',
+      storage_path: storagePath,
+      uploaded_at:  new Date().toISOString(),
+    })
+  } catch (dbErr) {
+    console.error('[passport upload] db write failed:', dbErr)
+    return NextResponse.json({ success: false, message: 'Upload saved but record update failed' }, { status: 500 })
+  }
 
   return NextResponse.json({ success: true, status: 'uploaded' })
 }

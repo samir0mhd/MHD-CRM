@@ -460,7 +460,11 @@ export default function BookingDetailPage() {
 
   const client      = booking.deals?.clients
   const totalPaid   = payments.reduce((a, p) => a + (p.amount || 0), 0)
-  const balance     = (booking.total_sell || booking.deals?.deal_value || 0) - totalPaid
+  const grossSell   = booking.total_sell || booking.deals?.deal_value || 0
+  const sellValue   = Math.max(0, grossSell - Number(booking.discount || 0))
+  const rawBalance  = Math.round((sellValue - totalPaid) * 100) / 100
+  const balance     = Math.max(0, rawBalance)
+  const overpayment = rawBalance < 0 ? Math.round(Math.abs(rawBalance) * 100) / 100 : 0
   const tasksDone   = tasks.filter(t => t.is_done).length
   const taskPct     = tasks.length ? Math.round((tasksDone / tasks.length) * 100) : 0
   const depDays     = daysUntil(booking.departure_date)
@@ -767,7 +771,7 @@ export default function BookingDetailPage() {
 
         {/* ── OVERVIEW TAB ─────────────────────────────── */}
         {tab === 'overview' && (
-          <OverviewTab booking={booking} client={client} balance={balance} taskPct={taskPct}
+          <OverviewTab booking={booking} client={client} balance={balance} overpayment={overpayment} taskPct={taskPct}
             tasksDone={tasksDone} tasksTotal={tasks.length}
             depDays={depDays} accommodations={accommodations} outbound={outbound}
             flights={[...outbound,...returnFlts]} transfers={transfers} extras={extras} tasks={tasks}
@@ -806,7 +810,7 @@ export default function BookingDetailPage() {
 
         {/* ── PAYMENTS TAB ─────────────────────────────── */}
         {tab === 'payments' && (
-          <PaymentsTab booking={booking} payments={payments} balance={balance}
+          <PaymentsTab booking={booking} payments={payments} balance={balance} overpayment={overpayment}
             onUpdate={() => loadAll(true)} showToast={showToast} currentStaff={currentStaff} />
         )}
 
@@ -875,7 +879,7 @@ export default function BookingDetailPage() {
 }
 
 // ── OVERVIEW TAB ─────────────────────────────────────────────
-function OverviewTab({ booking, client, balance, taskPct, tasksDone, tasksTotal, depDays, accommodations, outbound, flights, transfers, extras, tasks, onJumpTab, onUpdate, showToast }: any) {
+function OverviewTab({ booking, client, balance, overpayment, taskPct, tasksDone, tasksTotal, depDays, accommodations, outbound, flights, transfers, extras, tasks, onJumpTab, onUpdate, showToast }: any) {
   const [form, setForm]       = useState({
     destination:    booking.destination || '',
     booking_notes:  booking.booking_notes || '',
@@ -1054,7 +1058,7 @@ function OverviewTab({ booking, client, balance, taskPct, tasksDone, tasksTotal,
             {[
               { label:'Client Total', value: fmt(sell), color:'var(--accent-mid)' },
               { label:'Gross Profit', value: fmt(profit), color: profit >= 0 ? 'var(--green)' : 'var(--red)' },
-              { label:'Balance', value: fmt(balance), color: balance > 0 ? 'var(--red)' : 'var(--green)' },
+              { label:'Balance', value: overpayment > 0 ? `Overpaid ${fmt(overpayment)}` : fmt(balance), color: overpayment > 0 ? 'var(--red)' : balance > 0 ? 'var(--red)' : 'var(--green)' },
               { label:'Commission', value: profit > 0 ? fmt(commission) : '—', color:'var(--text-primary)' },
             ].map(item => (
               <div key={item.label} style={{ background:'var(--bg-secondary)', borderRadius:'8px', padding:'12px 14px' }}>
@@ -1291,10 +1295,11 @@ function OverviewTab({ booking, client, balance, taskPct, tasksDone, tasksTotal,
               ) : (
                 <div style={{ display:'flex', alignItems:'center', gap:'5px' }}>
                   <div style={{ textAlign:'right' }}>
-                    <span style={{ fontSize:'13px', color: balance <= 0 ? 'var(--green)' : 'var(--red)', fontWeight:'500' }}>
+                    <span style={{ fontSize:'13px', color: balance <= 0 && overpayment === 0 ? 'var(--green)' : balance > 0 ? 'var(--red)' : 'var(--red)', fontWeight:'500' }}>
                       {fmtDate(booking.balance_due_date)}
                     </span>
-                    {balance <= 0 && <div style={{ fontSize:'10.5px', color:'var(--text-muted)' }}>Paid ✓</div>}
+                    {balance <= 0 && overpayment === 0 && <div style={{ fontSize:'10.5px', color:'var(--text-muted)' }}>Paid ✓</div>}
+                    {overpayment > 0 && <div style={{ fontSize:'10.5px', color:'var(--red)', fontWeight:'600' }}>Overpaid ⚠</div>}
                   </div>
                   <button onClick={() => setEditingBalDue(true)}
                     style={{ background:'none', border:'none', cursor:'pointer', fontSize:'11px', color:'var(--text-muted)', padding:'2px', opacity:0.6 }}
@@ -2570,13 +2575,13 @@ function ExtrasTab({ bookingId, extras, onUpdate, showToast }: any) {
 }
 
 // ── PAYMENTS TAB ─────────────────────────────────────────────
-function PaymentsTab({ booking, payments, balance, onUpdate, showToast, currentStaff }: any) {
+function PaymentsTab({ booking, payments, balance, overpayment, onUpdate, showToast, currentStaff }: any) {
   const blank = { amount:'', payment_date: new Date().toISOString().split('T')[0], debit_card:'', credit_card:'', amex:'', bank_transfer:'', notes:'' }
   const [adding, setAdding] = useState(false)
   const [form, setForm]     = useState<any>({ ...blank })
   const [saving, setSaving] = useState(false)
   const totalPaid           = payments.reduce((a: number, p: Payment) => a + (p.amount || 0), 0)
-  const sell                = booking.total_sell || booking.deals?.deal_value || 0
+  const sell                = Math.max(0, (booking.total_sell || booking.deals?.deal_value || 0) - Number(booking.discount || 0))
   const paymentLockActive   = !!booking.balance_cleared_at || balance <= 0
   const paymentLocked       = paymentLockActive && !isManager(currentStaff)
 
@@ -2585,8 +2590,13 @@ function PaymentsTab({ booking, payments, balance, onUpdate, showToast, currentS
     const total = (Number(form.debit_card)||0) + (Number(form.credit_card)||0) + (Number(form.amex)||0) + (Number(form.bank_transfer)||0)
     const amount = total || Number(form.amount)
     if (!amount) { showToast('Enter payment amount', 'error'); return }
-    if (sell > 0 && amount > balance + 0.005) {
-      showToast(`Payment of £${amount.toLocaleString('en-GB', { minimumFractionDigits: 2 })} exceeds outstanding balance of £${balance.toLocaleString('en-GB', { minimumFractionDigits: 2 })}`, 'error')
+    if (sell === 0) {
+      showToast('Cannot record payment: invoice total is not set. Please set it in the Costing tab first.', 'error')
+      return
+    }
+    if (amount > balance + 0.005) {
+      const excess = (amount - balance).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+      showToast(`This payment exceeds the outstanding balance by £${excess}. Please correct the amount.`, 'error')
       return
     }
     setSaving(true)
@@ -2649,6 +2659,12 @@ function PaymentsTab({ booking, payments, balance, onUpdate, showToast, currentS
         <button className="btn btn-cta" onClick={() => setAdding(true)} disabled={paymentLocked}>+ Add Payment</button>
       </div>
 
+      {overpayment > 0 && (
+        <div style={{ marginBottom:'16px', background:'#fef2f2', border:'1px solid #fecaca', borderRadius:'10px', padding:'14px 16px', fontSize:'12.5px', color:'#991b1b' }}>
+          <strong>Overpayment of {fmt(overpayment)} detected.</strong> Payments received exceed the invoice total by {fmt(overpayment)}. Please correct the payment records — delete the incorrect entry and re-enter the right amount. Overpayment is not counted as revenue or profit.
+        </div>
+      )}
+
       {paymentLockActive && (
         <div style={{ marginBottom:'16px', background:isManager(currentStaff) ? '#eff6ff' : '#fff7ed', border:`1px solid ${isManager(currentStaff) ? '#93c5fd' : '#fdba74'}`, borderRadius:'10px', padding:'12px 16px', fontSize:'12.5px', color:isManager(currentStaff) ? '#1d4ed8' : '#9a3412' }}>
           {isManager(currentStaff)
@@ -2669,8 +2685,13 @@ function PaymentsTab({ booking, payments, balance, onUpdate, showToast, currentS
             <div style={{ fontSize:'22px', fontWeight:'600', color:'var(--green)' }}>{fmt(totalPaid)}</div>
           </div>
           <div>
-            <div style={{ fontSize:'11px', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:'4px' }}>Balance Remaining</div>
-            <div style={{ fontSize:'22px', fontWeight:'600', color: balance > 0 ? 'var(--red)' : 'var(--green)' }}>{balance > 0 ? fmt(balance) : 'PAID ✓'}</div>
+            <div style={{ fontSize:'11px', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:'4px' }}>{overpayment > 0 ? 'Status' : 'Balance Remaining'}</div>
+            <div style={{ fontSize:'22px', fontWeight:'600', color: overpayment > 0 ? 'var(--red)' : balance > 0 ? 'var(--red)' : 'var(--green)' }}>
+              {overpayment > 0 ? 'PAID ✓' : balance > 0 ? fmt(balance) : 'PAID ✓'}
+            </div>
+            {overpayment > 0 && (
+              <div style={{ fontSize:'13px', fontWeight:'600', color:'var(--red)', marginTop:'3px' }}>Overpaid by {fmt(overpayment)}</div>
+            )}
           </div>
         </div>
         <div style={{ height:'6px', background:'var(--border)', borderRadius:'3px', overflow:'hidden' }}>
@@ -2829,14 +2850,15 @@ function CostingTab({ booking, flights, accommodations, transfers, extras, payme
   const isManagerUser       = isManager(currentStaff)
   const canEditCommercial   = !booking.deposit_received || isManagerUser
   const managerMode         = canEditCommercial  // alias kept so downstream references compile
+  const effectiveClientTotal = sell - discount  // amount client owes after discount; cc_surcharge is an agency cost, not client-facing
   let running = 0
   const receiptRows = payments.map((p: Payment, i: number) => {
     running += p.amount
-    const owing = sell - running
+    const owing = effectiveClientTotal - running
     const type  = i === 0 ? 'Deposit' : (i === payments.length - 1 && owing <= 0) ? 'Balance' : 'Interim'
     return { ...p, amountOwing: Math.max(0, owing), type, runningTotal: running }
   })
-  const balanceDue = sell - totalPaid
+  const balanceDue = effectiveClientTotal - totalPaid
 
   async function saveBalDue() {
     try {
@@ -3116,12 +3138,25 @@ function CostingTab({ booking, flights, accommodations, transfers, extras, payme
       </div>
 
       {/* ── Balance Due ── */}
-      <div className="card" style={{ padding:'20px 24px', border: `2px solid ${balanceDue > 0 ? 'var(--red)' : 'var(--green)'}` }}>
+      {(() => {
+        const overpaidAmt = balanceDue < 0 ? Math.round(Math.abs(balanceDue) * 100) / 100 : 0
+        const displayBal  = Math.max(0, balanceDue)
+        const borderColor = overpaidAmt > 0 ? 'var(--red)' : displayBal > 0 ? 'var(--red)' : 'var(--green)'
+        const textColor   = borderColor
+        return (
+      <div className="card" style={{ padding:'20px 24px', border: `2px solid ${borderColor}` }}>
+        {overpaidAmt > 0 && (
+          <div style={{ marginBottom:'12px', background:'#fef2f2', border:'1px solid #fecaca', borderRadius:'8px', padding:'10px 14px', fontSize:'12.5px', color:'#991b1b' }}>
+            <strong>Overpayment of {fmt(overpaidAmt)}</strong> — payments received exceed invoice total. Surplus must be reconciled and does not affect profit or commission.
+          </div>
+        )}
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
           <div>
-            <div style={{ fontSize:'11px', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:'6px' }}>Balance Due</div>
-            <div style={{ fontSize:'30px', fontWeight:'700', fontFamily:'Outfit,sans-serif', color: balanceDue > 0 ? 'var(--red)' : 'var(--green)' }}>
-              {balanceDue <= 0 ? 'FULLY PAID ✓' : fmt(balanceDue)}
+            <div style={{ fontSize:'11px', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:'6px' }}>{overpaidAmt > 0 ? 'Balance Status' : 'Balance Due'}</div>
+            <div style={{ fontSize:'30px', fontWeight:'700', fontFamily:'Outfit,sans-serif', color: textColor }}>
+              {overpaidAmt > 0
+                ? <><span style={{ color:'var(--green)' }}>FULLY PAID ✓</span><span style={{ fontSize:'16px', color:'var(--red)', marginLeft:'10px' }}>+ {fmt(overpaidAmt)} overpaid</span></>
+                : displayBal > 0 ? fmt(displayBal) : 'FULLY PAID ✓'}
             </div>
           </div>
           <div style={{ textAlign:'right' }}>
@@ -3135,7 +3170,7 @@ function CostingTab({ booking, flights, accommodations, transfers, extras, payme
               </div>
             ) : (
               <div style={{ display:'flex', alignItems:'center', gap:'8px', justifyContent:'flex-end' }}>
-                <span style={{ fontSize:'18px', fontWeight:'600', color: balanceDue > 0 ? 'var(--red)' : 'var(--green)' }}>
+                <span style={{ fontSize:'18px', fontWeight:'600', color: textColor }}>
                   {booking.balance_due_date ? fmtDate(booking.balance_due_date) : '—'}
                 </span>
                 <button onClick={() => setEditingBalDue(true)}
@@ -3146,6 +3181,8 @@ function CostingTab({ booking, flights, accommodations, transfers, extras, payme
           </div>
         </div>
       </div>
+        )
+      })()}
 
     </div>
   )
@@ -3336,10 +3373,6 @@ function DocumentsTab({ booking, client, passengers, outbound, returnFlts, accom
         position:absolute; bottom: 18px; left:0; right:0;
         text-align:center; font-size: 9px;
       }
-      .terms-block { margin-bottom:18px; }
-      .terms-block h3 { font-size:12px; text-transform:uppercase; letter-spacing:0.08em; color:#64748b; margin-bottom:8px; }
-      .terms-block ul { padding-left:18px; }
-      .terms-block li { margin-bottom:6px; }
       @media print { body { padding: 20px; } .no-print { display: none; } }
     </style>`
 
@@ -3420,65 +3453,6 @@ function DocumentsTab({ booking, client, passengers, outbound, returnFlts, accom
       </body></html>`
     }
 
-    if (docId === 'booking_terms') {
-      return `<!DOCTYPE html><html><head><title>Booking Terms & Conditions — ${ref}</title>${docStyles}</head><body>
-        ${brandHeader('Booking Terms & Conditions', `Booking reference: ${ref}`)}
-        <p style="line-height:1.8;margin-bottom:18px;">These booking conditions apply to the holiday arrangements confirmed under booking reference <strong>${ref}</strong>. They are supplied separately from the commercial confirmation and ATOL Certificate for easier client review.</p>
-
-        <div class="terms-block">
-          <h3>1. Your Booking</h3>
-          <ul>
-            <li>Your booking is confirmed once we accept your booking and receive payment or authority to take payment.</li>
-            <li>Please check all names, dates and booked arrangements immediately on receipt of your confirmation documents.</li>
-            <li>Passenger names must match passports exactly. Any correction costs charged by airlines or suppliers will be payable by the client.</li>
-          </ul>
-        </div>
-
-        <div class="terms-block">
-          <h3>2. Payments</h3>
-          <ul>
-            <li>The total booking value currently recorded is <strong>£${sell.toLocaleString('en-GB', { minimumFractionDigits: 2 })}</strong>.</li>
-            <li>Payments received to date total <strong>£${totalPaid.toLocaleString('en-GB', { minimumFractionDigits: 2 })}</strong>.</li>
-            <li>${balance > 0 ? `The outstanding balance is <strong>£${balance.toLocaleString('en-GB', { minimumFractionDigits: 2 })}</strong>${booking.balance_due_date ? ` and is due by <strong>${fmtDate(booking.balance_due_date)}</strong>` : ''}.` : 'This booking is currently shown as paid in full.'}</li>
-            <li>If balance is not paid by the due date, suppliers may cancel arrangements and cancellation charges may apply.</li>
-          </ul>
-        </div>
-
-        <div class="terms-block">
-          <h3>3. Changes And Cancellations</h3>
-          <ul>
-            <li>If you ask to change your booking after confirmation, we will do our best to assist but changes are subject to supplier availability and any charges imposed by airlines, hotels or other providers.</li>
-            <li>Cancellations after confirmation may incur charges up to the full booking cost, depending on the timing and supplier terms.</li>
-            <li>Requests such as room upgrades, extra nights, special services or date changes should be requested as early as possible and are not confirmed until we confirm them back to you in writing.</li>
-          </ul>
-        </div>
-
-        <div class="terms-block">
-          <h3>4. Travel Requirements</h3>
-          <ul>
-            <li>You are responsible for ensuring all travellers have valid passports, visas, health documentation and travel insurance suitable for the trip.</li>
-            <li>Airlines and local authorities may refuse travel if documentation is incomplete or incorrect.</li>
-            <li>Special requests are passed to suppliers but cannot be guaranteed unless expressly confirmed in writing.</li>
-          </ul>
-        </div>
-
-        <div class="terms-block">
-          <h3>5. ATOL Protection</h3>
-          <ul>
-            <li>Flight-inclusive packages protected by ATOL are covered by MHD Travel Ltd, ATOL 11423.</li>
-            <li>Your ATOL Certificate is issued separately and is the formal evidence of the protection that applies to your booking.</li>
-            <li>Only the protected components shown on the ATOL Certificate are covered by that certificate.</li>
-          </ul>
-        </div>
-
-        <div class="terms-block">
-          <h3>6. Operational Notes For This Booking</h3>
-          <p style="font-size:13px;line-height:1.7;color:#374151;">Destination: ${booking.destination || 'TBC'}<br>Travel period: ${fmtDate(booking.departure_date)} to ${fmtDate(booking.return_date)}<br>Passengers: ${paxList || clientName}</p>
-        </div>
-
-        <div class="footer">Separate booking conditions supplied with ${ref} · ${today}</div>
-      </body></html>`
-    }
 
     if (docId === 'itinerary') {
       const allLegs = [
@@ -3732,6 +3706,11 @@ function DocumentsTab({ booking, client, passengers, outbound, returnFlts, accom
   }
 
   function openDoc(docId: string) {
+    if (docId === 'booking_terms') {
+      setActiveDoc('booking_terms')
+      setPreview(null)
+      return
+    }
     setActiveDoc(docId)
     setPreview(generateDoc(docId))
   }
@@ -3773,7 +3752,28 @@ function DocumentsTab({ booking, client, passengers, outbound, returnFlts, accom
 
       {/* Preview */}
       <div>
-        {activeDoc && preview ? (
+        {activeDoc === 'booking_terms' ? (
+          <div className="card" style={{ padding: '32px 28px' }}>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '20px' }}>
+              <button className="btn btn-secondary" onClick={() => setActiveDoc(null)}>✕ Close</button>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '14px', marginBottom: '20px' }}>
+              <span style={{ fontSize: '32px' }}>📘</span>
+              <div style={{ fontFamily: 'Fraunces,serif', fontSize: '17px', fontWeight: '300' }}>Booking Terms & Conditions</div>
+            </div>
+            <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '20px', lineHeight: '1.6' }}>
+              Standard booking conditions issued with every confirmation. This document will be attached automatically when email integration is enabled.
+            </p>
+            <div style={{ display: 'flex', gap: '10px' }}>
+              <button className="btn btn-cta" onClick={() => window.open('/legal/booking-conditions.pdf', '_blank', 'noopener,noreferrer')}>
+                👁 View PDF
+              </button>
+              <a href="/legal/booking-conditions.pdf" download="Booking_Conditions_MHD.pdf" className="btn btn-secondary" style={{ textDecoration: 'none' }}>
+                ⬇ Download PDF
+              </a>
+            </div>
+          </div>
+        ) : activeDoc && preview ? (
           <div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginBottom: '10px' }}>
               <button className="btn btn-secondary" onClick={() => { setActiveDoc(null); setPreview(null) }}>✕ Close</button>
@@ -4206,27 +4206,36 @@ function PortalTab({ bookingId, passengers, showToast }: { bookingId: number; pa
                 <p style={{ margin: 0, fontSize: 12, color: STATUS_PASSPORT_COLOR[p.status] ?? '#9ca3af', fontWeight: 600 }}>
                   {STATUS_PASSPORT_LABEL[p.status] ?? p.status}
                 </p>
+                {p.uploaded_at && <p style={{ margin: '2px 0 0', fontSize: 11, color: '#9ca3af' }}>Uploaded {new Date(p.uploaded_at).toLocaleDateString('en-GB')}</p>}
                 {p.issue_note && <p style={{ margin: '2px 0 0', fontSize: 12, color: '#dc2626' }}>Note: {p.issue_note}</p>}
                 {p.checked_at && <p style={{ margin: '2px 0 0', fontSize: 12, color: '#9ca3af' }}>Confirmed {new Date(p.checked_at).toLocaleDateString('en-GB')}</p>}
               </div>
-              {p.status === 'uploaded' && (
-                <div style={{ display: 'flex', gap: 6 }}>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                {p.signed_url && (
+                  <a href={p.signed_url} target="_blank" rel="noopener noreferrer"
+                    style={{ fontSize: 12, padding: '5px 10px', borderRadius: 6, border: '1px solid #1a3a5c', background: '#fff', color: '#1a3a5c', textDecoration: 'none' }}>
+                    View
+                  </a>
+                )}
+                {p.status === 'uploaded' && (
+                  <>
+                    <button onClick={() => updatePassport(p.id, 'checked')}
+                      style={{ fontSize: 12, padding: '5px 10px', borderRadius: 6, border: 'none', background: '#059669', color: '#fff', cursor: 'pointer' }}>
+                      Mark checked
+                    </button>
+                    <button onClick={() => { const note = prompt('Describe the issue:'); if (note) updatePassport(p.id, 'needs_attention', note) }}
+                      style={{ fontSize: 12, padding: '5px 10px', borderRadius: 6, border: '1px solid #dc2626', background: '#fff', color: '#dc2626', cursor: 'pointer' }}>
+                      Flag issue
+                    </button>
+                  </>
+                )}
+                {p.status === 'needs_attention' && (
                   <button onClick={() => updatePassport(p.id, 'checked')}
                     style={{ fontSize: 12, padding: '5px 10px', borderRadius: 6, border: 'none', background: '#059669', color: '#fff', cursor: 'pointer' }}>
                     Mark checked
                   </button>
-                  <button onClick={() => { const note = prompt('Describe the issue:'); if (note) updatePassport(p.id, 'needs_attention', note) }}
-                    style={{ fontSize: 12, padding: '5px 10px', borderRadius: 6, border: '1px solid #dc2626', background: '#fff', color: '#dc2626', cursor: 'pointer' }}>
-                    Flag issue
-                  </button>
-                </div>
-              )}
-              {p.status === 'needs_attention' && (
-                <button onClick={() => updatePassport(p.id, 'checked')}
-                  style={{ fontSize: 12, padding: '5px 10px', borderRadius: 6, border: 'none', background: '#059669', color: '#fff', cursor: 'pointer' }}>
-                  Mark checked
-                </button>
-              )}
+                )}
+              </div>
             </div>
           ))}
         </div>

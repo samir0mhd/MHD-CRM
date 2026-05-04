@@ -2,6 +2,7 @@ import * as repo from './booking.repository'
 import { buildFieldAuditEntries, logAuditEntries } from '@/lib/audit'
 import { dbMutate } from '@/lib/api-client'
 import type { StaffUser } from '@/lib/access'
+import { getBookingSell, computePaymentSummary } from '@/lib/modules/payments/payment.utils'
 
 /** Returns 'YYYY-MM' from any ISO timestamp string. */
 function toYearMonth(iso: string): string {
@@ -620,6 +621,7 @@ export async function deleteFlightLeg(id: number, bookingId: number) {
 export async function createAccommodation(bookingId: number, values: Record<string, unknown>, stayOrder: number) {
   try {
     await repo.insertAccommodation({ booking_id: bookingId, stay_order: stayOrder, ...values })
+    await repo.setDestinationIfNull(bookingId, 'Mauritius')
     return { success: true, message: 'Stay added ✓' }
   } catch (error) {
     return { success: false, message: error instanceof Error ? error.message : 'Failed to add stay' }
@@ -712,17 +714,24 @@ export async function deleteExtraEntry(id: number) {
 
 export async function addPaymentToBooking(booking: repo.Booking, paymentData: Record<string, unknown>, currentStaff?: StaffUser | null) {
   try {
-    const sell = booking.total_sell || booking.deals?.deal_value || 0
-    if (sell > 0) {
-      const { payments: existingPayments } = await repo.getBookingWithAllData(booking.id)
-      const totalAlreadyPaid = existingPayments.reduce((sum, p) => sum + (p.amount || 0), 0)
-      const outstanding = Number((sell - totalAlreadyPaid).toFixed(2))
-      const incoming = Number(paymentData.amount) || 0
-      if (incoming > outstanding) {
-        return {
-          success: false,
-          message: `Payment of £${incoming.toLocaleString('en-GB', { minimumFractionDigits: 2 })} exceeds outstanding balance of £${outstanding.toLocaleString('en-GB', { minimumFractionDigits: 2 })}`,
-        }
+    const sell = getBookingSell(booking)
+    const incoming = Number(paymentData.amount) || 0
+
+    // Block payments when no invoice total is set — validation cannot be skipped for any booking type
+    if (sell === 0) {
+      return {
+        success: false,
+        message: 'Cannot record payment: invoice total is not set. Please set it in the Costing tab first.',
+      }
+    }
+
+    const { payments: existingPayments } = await repo.getBookingWithAllData(booking.id)
+    const summary = computePaymentSummary(booking, existingPayments)
+    if (incoming > summary.balanceDue + 0.005) {
+      const excess = (incoming - summary.balanceDue).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+      return {
+        success: false,
+        message: `This payment exceeds the outstanding balance by £${excess}. Please correct the amount.`,
       }
     }
 
@@ -730,10 +739,11 @@ export async function addPaymentToBooking(booking: repo.Booking, paymentData: Re
     const { payments } = await repo.getBookingWithAllData(booking.id)
     const totalPaid = payments.reduce((sum, entry) => sum + (entry.amount || 0), 0)
 
-    // balance_cleared_at is only set against total_sell (the confirmed costing figure).
+    // balance_cleared_at is only set against total_sell (the confirmed costing figure),
+    // minus any discount — this is the actual amount the client owes.
     // deal_value is used above for overpayment validation only — it must not trigger
     // commission recognition, which requires real costing to have been pushed.
-    const confirmedSell = Number(booking.total_sell || 0)
+    const confirmedSell = Math.max(0, Number(booking.total_sell || 0) - Number(booking.discount || 0))
     const newBalanceClearedAt = confirmedSell > 0 && totalPaid >= confirmedSell
       ? (booking.balance_cleared_at || new Date().toISOString())
       : null
@@ -800,7 +810,7 @@ export async function deletePaymentFromBooking(booking: repo.Booking, paymentId:
     const { payments: remainingPayments } = await repo.getBookingWithAllData(booking.id)
     const totalPaid = remainingPayments.reduce((sum, entry) => sum + (entry.amount || 0), 0)
 
-    const confirmedSell = Number(booking.total_sell || 0)
+    const confirmedSell = Math.max(0, Number(booking.total_sell || 0) - Number(booking.discount || 0))
     await repo.updateBooking(booking.id, {
       deposit_received: totalPaid > 0,
       balance_cleared_at: confirmedSell > 0 && totalPaid >= confirmedSell
@@ -850,8 +860,8 @@ export async function pushCostingToOverview(booking: repo.Booking, updates: {
     // cleared — this re-opens the balance_received task and the Today balance alert.
     const { payments } = await repo.getBookingWithAllData(booking.id)
     const totalPaid = payments.reduce((sum, p) => sum + (p.amount || 0), 0)
-    const newSell = updates.total_sell
-    const balanceClearedAt = newSell > 0 && totalPaid >= newSell
+    const effectiveSell = Math.max(0, updates.total_sell - Number(booking.discount || 0))
+    const balanceClearedAt = effectiveSell > 0 && totalPaid >= effectiveSell
       ? (booking.balance_cleared_at || new Date().toISOString())
       : null
 

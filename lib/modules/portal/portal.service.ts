@@ -121,12 +121,16 @@ export async function assemblePortalView(bookingId: number): Promise<PortalBooki
       }
     }),
 
-    balance: {
-      total_sell:       Number(booking.total_sell ?? 0),
-      total_paid:       totalPaid,
-      balance_due:      Math.max(0, Number(booking.total_sell ?? 0) - totalPaid),
-      balance_due_date: booking.balance_due_date,
-    },
+    balance: (() => {
+      const effectiveSell = Math.max(0, Number(booking.total_sell ?? 0) - Number((booking as any).discount ?? 0))
+      return {
+        total_sell:       effectiveSell,
+        total_paid:       totalPaid,
+        balance_due:      Math.max(0, effectiveSell - totalPaid),
+        balance_due_date: booking.balance_due_date,
+        overpayment:      Math.max(0, totalPaid - effectiveSell),
+      }
+    })(),
 
     requests: requests.map(r => ({
       id:             r.id,
@@ -157,8 +161,6 @@ export async function checkPortalReadiness(bookingId: number): Promise<PortalRea
 
   if (booking.status !== 'CONFIRMED')
     missing.push({ field: 'status', label: 'Booking must be confirmed', section: 'overview' })
-  if (!booking.destination?.trim())
-    missing.push({ field: 'destination', label: 'Add destination', section: 'overview' })
   if (!booking.return_date)
     missing.push({ field: 'return_date', label: 'Set return date', section: 'overview' })
   if (!booking.departure_date)

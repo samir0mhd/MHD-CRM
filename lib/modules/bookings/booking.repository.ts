@@ -794,6 +794,14 @@ export async function deletePayment(id: number) {
   if (error) throw error
 }
 
+export async function setDestinationIfNull(bookingId: number, destination: string) {
+  await supabase
+    .from('bookings')
+    .update({ destination })
+    .eq('id', bookingId)
+    .is('destination', null)
+}
+
 // ── UTILITY QUERIES ───────────────────────────────────────────
 export async function getHotels() {
   const { data } = await supabase

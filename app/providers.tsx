@@ -40,10 +40,12 @@ export function useAuth() {
 }
 
 export function Providers({ children }: { children: React.ReactNode }) {
-  const [theme, setTheme] = useState<Theme>(() => {
-    if (typeof window === 'undefined') return 'light'
-    return (localStorage.getItem('mhd-theme') as Theme) || 'light'
-  })
+  const [theme, setTheme] = useState<Theme>('light')
+
+  useEffect(() => {
+    const stored = localStorage.getItem('mhd-theme') as Theme | null
+    if (stored === 'dark') setTheme('dark')
+  }, [])
   const [session, setSession] = useState<Session | null>(null)
   const [user, setUser] = useState<User | null>(null)
   const [staffUser, setStaffUser] = useState<StaffUser | null>(null)

@@ -11,6 +11,7 @@ function fmtDate(d: string | null) {
 
 export default function BalanceSection({ balance }: { balance: PortalBalanceView }) {
   const paid = balance.total_paid >= balance.total_sell
+  const overpaid = balance.overpayment > 0
 
   return (
     <div style={{ padding: '20px', background: '#fff' }}>
@@ -39,7 +40,15 @@ export default function BalanceSection({ balance }: { balance: PortalBalanceView
         )}
       </div>
 
-      {!paid && (
+      {overpaid && (
+        <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: '12px 14px', marginBottom: 12 }}>
+          <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: '#dc2626' }}>
+            Overpaid by {fmt(balance.overpayment)} — please contact your consultant to arrange a refund or credit.
+          </p>
+        </div>
+      )}
+
+      {!paid && !overpaid && (
         <p style={{ fontSize: 13, color: '#6b7280', margin: 0, lineHeight: 1.5 }}>
           To arrange payment, please contact your consultant directly.
         </p>

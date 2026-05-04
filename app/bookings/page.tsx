@@ -276,12 +276,13 @@ export default function BookingsPage() {
               </thead>
               <tbody>
                 {filtered.map((booking) => {
-                  const client   = booking.deals?.clients
-                  const tasks    = booking.booking_tasks || []
-                  const progress = taskProgress(tasks)
-                  const depDays  = daysUntil(booking.departure_date)
-                  const balDays  = daysUntil(booking.balance_due_date)
-                  const cfg      = STATUS_CONFIG[booking.status] || STATUS_CONFIG.CONFIRMED
+                  const client        = booking.deals?.clients
+                  const tasks         = booking.booking_tasks || []
+                  const progress      = taskProgress(tasks)
+                  const depDays       = daysUntil(booking.departure_date)
+                  const balDays       = daysUntil(booking.balance_due_date)
+                  const balancePaid   = tasks.some((t: BookingTask) => t.task_key === 'balance_received' && t.is_done)
+                  const cfg           = STATUS_CONFIG[booking.status] || STATUS_CONFIG.CONFIRMED
                   const consultant = staffUsers.find(staff => staff.id === booking.staff_id)
                   const needsCleanup = bookingNeedsOwnershipCleanup(booking)
 
@@ -366,10 +367,12 @@ export default function BookingsPage() {
                       <td style={{ padding: '12px 14px', whiteSpace: 'nowrap' }}>
                         {booking.balance_due_date ? (
                           <div>
-                            <div style={{ fontSize: '13px', color: balDays !== null && balDays <= 14 ? 'var(--red)' : 'var(--text-primary)' }}>
+                            <div style={{ fontSize: '13px', color: !balancePaid && balDays !== null && balDays <= 14 ? 'var(--red)' : 'var(--text-primary)' }}>
                               {fmtDate(booking.balance_due_date, { day: 'numeric', month: 'short' })}
                             </div>
-                            {balDays !== null && balDays >= 0 && (
+                            {balancePaid ? (
+                              <div style={{ fontSize: '11px', color: 'var(--green)', fontWeight: '500' }}>Paid ✓</div>
+                            ) : balDays !== null && balDays >= 0 && (
                               <div style={{ fontSize: '11px', color: balDays <= 14 ? 'var(--red)' : 'var(--text-muted)', fontWeight: '500' }}>
                                 {balDays === 0 ? 'Due today!' : `${balDays}d`}
                               </div>

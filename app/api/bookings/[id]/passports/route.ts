@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getAccessContext } from '@/lib/access'
 import { getPassportUploads } from '@/lib/modules/portal/portal.repository'
 import { supabase } from '@/lib/supabase'
+import { supabaseAdmin } from '@/lib/supabase-admin'
 
 export async function GET(
   req: NextRequest,
@@ -23,8 +24,15 @@ export async function GET(
 
   const passengerMap = new Map((passengers ?? []).map(p => [p.id, p]))
 
-  const enriched = uploads.map(u => {
+  const enriched = await Promise.all(uploads.map(async u => {
     const p = passengerMap.get(u.passenger_id)
+    let signed_url: string | null = null
+    if (u.storage_path && supabaseAdmin) {
+      const { data: urlData } = await supabaseAdmin.storage
+        .from('passport-uploads')
+        .createSignedUrl(u.storage_path, 3600)
+      signed_url = urlData?.signedUrl ?? null
+    }
     return {
       id:                  u.id,
       passenger_id:        u.passenger_id,
@@ -32,12 +40,13 @@ export async function GET(
       passenger_type:      p?.passenger_type ?? null,
       status:              u.status,
       storage_path:        u.storage_path,
+      signed_url,
       uploaded_at:         u.uploaded_at,
       issue_note:          u.issue_note,
       checked_at:          u.checked_at,
       checked_by_staff_id: u.checked_by_staff_id,
     }
-  })
+  }))
 
   return NextResponse.json({ success: true, data: enriched })
 }

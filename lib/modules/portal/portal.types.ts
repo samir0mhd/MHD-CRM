@@ -90,6 +90,7 @@ export type PortalBalanceView = {
   total_paid: number
   balance_due: number
   balance_due_date: string | null
+  overpayment: number
 }
 
 export type PortalRequestView = {

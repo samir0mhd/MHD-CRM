@@ -69,6 +69,7 @@ export async function getPortalBookingData(bookingId: number) {
       return_date,
       booking_notes,
       total_sell,
+      discount,
       balance_due_date,
       staff_id,
       status
@@ -159,13 +160,10 @@ export async function upsertPassportUpload(values: {
   storage_path?: string
   uploaded_at?: string
 }) {
-  return dbMutate<{ id: string }>({
-    table: 'passport_uploads',
-    action: 'upsert',
-    values,
-    select: 'id',
-    returning: 'single',
-  })
+  const { error } = await supabase
+    .from('passport_uploads')
+    .upsert(values, { onConflict: 'booking_id,passenger_id' })
+  if (error) throw error
 }
 
 export async function updatePassportStatus(uploadId: string, values: {
@@ -188,11 +186,9 @@ export async function initPassportRows(bookingId: number, passengerIds: number[]
     passenger_id,
     status: 'pending' as PassportStatus,
   }))
-  return dbMutate({
-    table: 'passport_uploads',
-    action: 'upsert',
-    values: rows,
-  })
+  await supabase
+    .from('passport_uploads')
+    .upsert(rows, { onConflict: 'booking_id,passenger_id', ignoreDuplicates: true })
 }
 
 // ── Request queries ────────────────────────────────────────
