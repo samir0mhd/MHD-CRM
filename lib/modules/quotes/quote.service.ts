@@ -1,5 +1,14 @@
 import * as quoteRepository from './quote.repository'
 import type { HotelOption, Centre, ExtraItem, DealInfo, EmailTemplate } from './quote.repository'
+import {
+  bookingTypeAllowsMultiCentre,
+  bookingTypeRequiresAccommodation,
+  normalizeBookingType,
+  normalizeQuoteMode,
+  resolveQuoteModeFromRecord,
+  type BookingType,
+  type QuoteMode,
+} from '@/lib/modules/bookings/booking-types'
 
 // Re-export types for convenience
 export type {
@@ -100,7 +109,7 @@ export function newHotelOption(): HotelOption {
   }
 }
 
-export function newCentre(destination: string, index: number): Centre {
+export function newCentre(destination: string): Centre {
   return {
     id: uid(),
     destination,
@@ -132,6 +141,9 @@ type FlightOptionInput = {
   retLegs?: quoteRepository.FlightLeg[]
   flightNet?: string
   transNet?: string
+  sellPrice?: string
+  margin?: string
+  profit?: string
 }
 
 type AccommodationOptionInput = {
@@ -209,6 +221,7 @@ async function generateNextQuoteRef(dealId: number, initials: string): Promise<s
 function buildSingleQuoteRow(
   option: HotelOption,
   {
+    productType,
     adults,
     children,
     infants,
@@ -217,6 +230,7 @@ function buildSingleQuoteRow(
     additionalServices,
     builderState,
   }: {
+    productType: BookingType
     adults: number
     children: number
     infants: number
@@ -236,14 +250,16 @@ function buildSingleQuoteRow(
   const accN = parseFloat(option.accNet) || 0
   const transN = parseFloat(option.transNet) || 0
   const extrasN = option.extras.reduce((a: number, e: ExtraItem) => a + (e.net || 0), 0)
+  const departureDate = option.outLegs[0]?.date || option.checkinDate || null
 
   return {
     hotel: option.hotel.trim(),
     board_basis: option.boardBasis,
     room_type: option.roomType || null,
-    quote_type: 'single',
+    quote_type: productType,
+    quote_mode: 'single',
     cabin_class: option.outLegs[0]?.cabin || 'Economy',
-    departure_date: option.outLegs[0]?.date || null,
+    departure_date: departureDate,
     departure_airport: option.outLegs[0]?.from || null,
     airline: option.outLegs[0]?.airline || null,
     nights: parseInt(option.nights) || null,
@@ -276,6 +292,7 @@ function buildSingleQuoteRow(
 function buildMultiCentreRow(
   centres: Centre[],
   {
+    productType,
     adults,
     children,
     infants,
@@ -286,6 +303,7 @@ function buildMultiCentreRow(
     margin,
     profit,
   }: {
+    productType: BookingType
     adults: number
     children: number
     infants: number
@@ -307,7 +325,8 @@ function buildMultiCentreRow(
   }, 0)
 
   return {
-    quote_type: 'multi_centre',
+    quote_type: productType,
+    quote_mode: 'multi_centre',
     centres,
     hotel: `Multi-Centre: ${destList}`,
     destination: destList,
@@ -348,24 +367,30 @@ export async function loadDeal(id: number): Promise<DealInfo | null> {
   return await quoteRepository.getDealById(id)
 }
 
-export async function loadExistingQuote(quoteId: number): Promise<any> {
+export async function loadExistingQuote(quoteId: number): Promise<Record<string, unknown> | null> {
   const quote = await quoteRepository.getQuoteById(quoteId)
   if (!quote) return null
 
-  if (quote.quote_type === 'single' && quote.quote_ref && quote.deal_id) {
+  const quoteMode = resolveQuoteModeFromRecord(quote)
+
+  if (quoteMode === 'single' && quote.quote_ref && quote.deal_id) {
     const quoteGroup = await quoteRepository.getQuotesByRef(quote.deal_id, quote.quote_ref)
     const builderState = quoteGroup.find(row => row.flight_details?.builder_state)?.flight_details?.builder_state
       || quote.flight_details?.builder_state
 
     return {
       ...quote,
+      quote_mode: quoteMode,
       quote_group_ids: quoteGroup.map(row => row.id),
       quote_group_size: quoteGroup.length || 1,
       ...(builderState ? { single_quote_builder: builderState } : {}),
     }
   }
 
-  return quote
+  return {
+    ...quote,
+    quote_mode: quoteMode,
+  }
 }
 
 export async function loadCustomTemplates(): Promise<EmailTemplate[]> {
@@ -383,7 +408,8 @@ export async function saveToTable(table: string, field: string, value: string): 
 export async function saveQuote(
   dealId: number,
   quoteData: {
-    quoteType: 'single' | 'multi'
+    productType: BookingType
+    quoteMode: QuoteMode
     quoteRef: string
     adults: number
     children: number
@@ -398,11 +424,11 @@ export async function saveQuote(
     profit?: number
     singleQuoteBuilder?: SingleQuoteBuilderState
   },
-  isEdit: boolean = false,
   editQuoteId?: number
 ): Promise<SaveQuoteResult> {
   const {
-    quoteType,
+    productType,
+    quoteMode,
     quoteRef,
     adults,
     children,
@@ -420,7 +446,7 @@ export async function saveQuote(
 
   const refs: string[] = []
 
-  if (quoteType === 'single' && hotelOptions) {
+  if (quoteMode === 'single' && hotelOptions) {
     const providedQuoteRef = quoteRef.trim()
     const existingQuoteGroup = providedQuoteRef
       ? await quoteRepository.getQuotesByRef(dealId, providedQuoteRef)
@@ -448,6 +474,7 @@ export async function saveQuote(
         version,
         sent_to_client: sentToClient,
         ...buildSingleQuoteRow(option, {
+          productType,
           adults,
           children,
           infants,
@@ -474,8 +501,9 @@ export async function saveQuote(
 
     const first = hotelOptions[0]
     await quoteRepository.updateDeal(dealId, {
+      booking_type: productType,
       deal_value: parseFloat(first.sellPrice) || 0,
-      departure_date: first.outLegs[0]?.date || undefined,
+      departure_date: first.outLegs[0]?.date || first.checkinDate || undefined,
     })
 
     await quoteRepository.createActivity({
@@ -492,7 +520,7 @@ export async function saveQuote(
     }
   }
 
-  if (quoteType === 'multi' && centres) {
+  if (quoteMode === 'multi_centre' && centres) {
     const providedQuoteRef = quoteRef.trim()
     const existingQuoteGroup = providedQuoteRef
       ? await quoteRepository.getQuotesByRef(dealId, providedQuoteRef)
@@ -514,6 +542,7 @@ export async function saveQuote(
       version: baseQuote?.version || 1,
       sent_to_client: !!baseQuote?.sent_to_client,
       ...buildMultiCentreRow(centres, {
+        productType,
         adults,
         children,
         infants,
@@ -536,8 +565,9 @@ export async function saveQuote(
     }
 
     await quoteRepository.updateDeal(dealId, {
+      booking_type: productType,
       deal_value: sellPrice || 0,
-      departure_date: centres[0]?.inboundLegs[0]?.date || undefined,
+      departure_date: centres[0]?.inboundLegs[0]?.date || centres[0]?.checkinDate || undefined,
     })
 
     await quoteRepository.createActivity({
@@ -559,7 +589,8 @@ export async function saveQuote(
 
 export async function saveQuoteFromRequest(body: {
   dealId?: number | string
-  quoteType?: 'single' | 'multi'
+  quoteType?: BookingType | 'single' | 'multi'
+  quoteMode?: QuoteMode | 'single' | 'multi'
   quoteRef?: string
   adults?: number | string
   children?: number | string
@@ -581,7 +612,14 @@ export async function saveQuoteFromRequest(body: {
     throw new Error('Deal ID is required')
   }
 
-  const quoteType = body.quoteType || 'single'
+  const productType = normalizeBookingType(
+    body.quoteType === 'single' || body.quoteType === 'multi' ? 'package' : body.quoteType,
+    'package'
+  )
+  const quoteMode = normalizeQuoteMode(
+    body.quoteMode || body.quoteType || (Array.isArray(body.centres) && body.centres.length > 0 ? 'multi_centre' : 'single'),
+    'single'
+  )
   const sellPrice = body.sellPrice === undefined || body.sellPrice === null || body.sellPrice === ''
     ? undefined
     : Number(body.sellPrice)
@@ -592,7 +630,7 @@ export async function saveQuoteFromRequest(body: {
     ? undefined
     : Number(body.profit)
 
-  const validationError = validateQuote(quoteType, body.hotelOptions, body.centres, sellPrice)
+  const validationError = validateQuote(productType, quoteMode, body.hotelOptions, body.centres, sellPrice)
   if (validationError) {
     throw new Error(validationError)
   }
@@ -600,7 +638,8 @@ export async function saveQuoteFromRequest(body: {
   return saveQuote(
     dealId,
     {
-      quoteType,
+      productType,
+      quoteMode,
       quoteRef: body.quoteRef || '',
       adults: Number(body.adults) || 2,
       children: Number(body.children) || 0,
@@ -615,32 +654,42 @@ export async function saveQuoteFromRequest(body: {
       profit,
       singleQuoteBuilder: body.singleQuoteBuilder,
     },
-    Boolean(body.isEdit),
     body.editQuoteId ? Number(body.editQuoteId) : undefined
   )
 }
 
 export function validateQuote(
-  quoteType: 'single' | 'multi',
+  productType: BookingType,
+  quoteMode: QuoteMode,
   hotelOptions?: HotelOption[],
   centres?: Centre[],
   sellPrice?: number
 ): string | null {
-  if (quoteType === 'single' && hotelOptions) {
+  if (quoteMode === 'multi_centre' && !bookingTypeAllowsMultiCentre(productType)) {
+    return 'This booking type only supports single-destination quotes'
+  }
+
+  if (quoteMode === 'single') {
+    if (!hotelOptions) {
+      return 'Quote options are required'
+    }
     if (hotelOptions.length === 0) {
       return 'At least one client-facing quote option is required'
     }
-    if (hotelOptions.some(o => !o.hotel.trim())) {
+    if (bookingTypeRequiresAccommodation(productType) && hotelOptions.some(o => !o.hotel.trim())) {
       return 'All hotel options need a hotel name'
     }
     if (hotelOptions.some(o => !o.sellPrice)) {
       return 'All hotel options need a sell price'
     }
-  } else if (quoteType === 'multi' && centres) {
+  } else if (quoteMode === 'multi_centre') {
+    if (!centres) {
+      return 'Centres are required'
+    }
     if (centres.some(c => !c.destination.trim())) {
       return 'All centres need a destination'
     }
-    if (centres.some(c => !c.hotel.trim())) {
+    if (bookingTypeRequiresAccommodation(productType) && centres.some(c => !c.hotel.trim())) {
       return 'All centres need a hotel'
     }
     if (!sellPrice) {
@@ -681,4 +730,3 @@ export const quoteService = {
   validateQuote,
   getQuoteCountForDeal,
 }
-

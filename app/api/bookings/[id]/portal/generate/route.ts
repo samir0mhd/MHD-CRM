@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getAccessContext } from '@/lib/access'
-import { checkPortalReadiness, generatePortalLink } from '@/lib/modules/portal/portal.service'
-import { supabase } from '@/lib/supabase'
+import { checkPortalReadiness, generatePortalLink, getPortalGenerationContext } from '@/lib/modules/portal/portal.service'
 
 export async function POST(
   req: NextRequest,
@@ -20,25 +19,15 @@ export async function POST(
     return NextResponse.json({ success: false, message: 'Booking is not portal-ready', missing: readiness.missing }, { status: 422 })
   }
 
-  // Fetch client_id and return_date from booking
-  const { data: booking } = await supabase
-    .from('bookings')
-    .select('return_date, deal_id, deals(client_id)')
-    .eq('id', bookingId)
-    .single()
-
-  if (!booking?.return_date) {
-    return NextResponse.json({ success: false, message: 'Return date is required' }, { status: 422 })
-  }
-
-  // Get client_id via deal
-  const dealRaw = booking.deals as unknown
-  const clientId = (Array.isArray(dealRaw) ? dealRaw[0] : dealRaw as { client_id: number } | null)?.client_id
+  const { clientId, tripEndDate } = await getPortalGenerationContext(bookingId)
   if (!clientId) {
     return NextResponse.json({ success: false, message: 'Client not found for this booking' }, { status: 422 })
   }
+  if (!tripEndDate) {
+    return NextResponse.json({ success: false, message: 'Trip end date is required' }, { status: 422 })
+  }
 
-  const result = await generatePortalLink(bookingId, clientId, booking.return_date, currentStaff.id)
+  const result = await generatePortalLink(bookingId, clientId, tripEndDate, currentStaff.id)
 
   return NextResponse.json({ success: true, data: result })
 }

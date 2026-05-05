@@ -7,6 +7,7 @@ export type Booking = {
   id: number
   booking_reference: string
   deal_id: number
+  booking_type: string | null
   status: string
   booking_status: string | null
   departure_date: string | null
@@ -88,6 +89,8 @@ export type Payment = {
   id: number; booking_id: number; amount: number; payment_date: string
   debit_card: number; credit_card: number; amex: number; bank_transfer: number
   notes: string | null; invoice_sent: boolean; invoice_sent_at: string | null
+  payment_type: 'payment' | 'refund' | 'adjustment'
+  refund_reason: string | null
 }
 
 export type BookingTask = {

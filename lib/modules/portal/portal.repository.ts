@@ -64,6 +64,7 @@ export async function getPortalBookingData(bookingId: number) {
     .from('bookings')
     .select(`
       booking_reference,
+      booking_type,
       destination,
       departure_date,
       return_date,
@@ -276,10 +277,10 @@ export async function markNotificationRead(notificationId: string, bookingId: nu
 
 // ── Completeness gate raw query ────────────────────────────
 export async function getBookingReadinessData(bookingId: number) {
-  const [bookingRes, passengersRes, accommodationsRes] = await Promise.all([
+  const [bookingRes, passengersRes, accommodationsRes, flightsRes, transfersRes] = await Promise.all([
     supabase
       .from('bookings')
-      .select('destination, return_date, departure_date, total_sell, balance_due_date, staff_id, status')
+      .select('deal_id, deals(client_id), booking_type, destination, return_date, departure_date, total_sell, balance_due_date, staff_id, status')
       .eq('id', bookingId)
       .single(),
     supabase
@@ -289,6 +290,19 @@ export async function getBookingReadinessData(bookingId: number) {
       .limit(1),
     supabase
       .from('booking_accommodations')
+      .select('id, checkout_date')
+      .eq('booking_id', bookingId)
+      .order('checkout_date', { ascending: false })
+      .limit(1),
+    supabase
+      .from('booking_flights')
+      .select('id, arrival_date, departure_date')
+      .eq('booking_id', bookingId)
+      .order('arrival_date', { ascending: false })
+      .order('departure_date', { ascending: false })
+      .limit(1),
+    supabase
+      .from('booking_transfers')
       .select('id')
       .eq('booking_id', bookingId)
       .limit(1),
@@ -297,5 +311,9 @@ export async function getBookingReadinessData(bookingId: number) {
     booking: bookingRes.data,
     hasPassengers: (passengersRes.data?.length ?? 0) > 0,
     hasAccommodation: (accommodationsRes.data?.length ?? 0) > 0,
+    hasFlights: (flightsRes.data?.length ?? 0) > 0,
+    hasTransfers: (transfersRes.data?.length ?? 0) > 0,
+    latestAccommodationCheckout: accommodationsRes.data?.[0]?.checkout_date ?? null,
+    latestFlightDate: flightsRes.data?.map(f => f.arrival_date || f.departure_date).filter(Boolean).sort().slice(-1)[0] ?? null,
   }
 }

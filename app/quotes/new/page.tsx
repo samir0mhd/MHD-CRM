@@ -4,6 +4,14 @@ import { useEffect, useState, useRef } from 'react'
 import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { authedFetch } from '@/lib/api-client'
+import {
+  BOOKING_TYPE_LABELS,
+  bookingTypeAllowsMultiCentre,
+  normalizeBookingType,
+  normalizeQuoteMode,
+  resolveQuoteModeFromRecord,
+  type BookingType,
+} from '@/lib/modules/bookings/booking-types'
 
 // ── CONSTANTS ─────────────────────────────────────────────
 type FlightLeg = {
@@ -55,6 +63,9 @@ type FlightOption = {
   retLegs: FlightLeg[]
   flightNet: string
   transNet: string
+  sellPrice: string
+  margin: string
+  profit: string
 }
 
 type SharedQuoteDefaults = {
@@ -283,6 +294,9 @@ function newFlightOption(defaults: SharedQuoteDefaults = newSharedQuoteDefaults(
     retLegs: [{ ...newLeg('ret'), to: defaults.origin || 'LHR', date: defaults.returnDate || '' }],
     flightNet: '',
     transNet: '',
+    sellPrice: '',
+    margin: '',
+    profit: '',
   }
 }
 
@@ -400,6 +414,56 @@ function getFlightOptionSummary(option: FlightOption): string {
 function getFlightCostTotal(option: FlightOption | null | undefined): number {
   if (!option) return 0
   return numVal(option.flightNet) + numVal(option.transNet)
+}
+
+function buildAccommodationOnlyQuoteOptions(accommodationOptions: AccommodationOption[]): HotelOption[] {
+  return accommodationOptions
+    .filter(option => option.hotel.trim() || numVal(option.sellPrice) > 0)
+    .map(option => ({
+      id: option.id,
+      hotel: option.hotel,
+      roomType: option.roomType,
+      boardBasis: option.boardBasis,
+      nights: option.nights,
+      checkinDate: option.checkinDate,
+      checkinNextDay: option.checkinNextDay,
+      outLegs: [],
+      retLegs: [],
+      flightNet: '0',
+      accNet: option.accNet,
+      transNet: '0',
+      extras: option.extras,
+      sellPrice: option.sellPrice,
+      margin: option.margin,
+      profit: option.profit,
+      optionLabel: option.hotel || 'Accommodation only',
+    }))
+}
+
+function buildFlightOnlyQuoteOptions(flightOptions: FlightOption[]): HotelOption[] {
+  return flightOptions
+    .filter(option => option.label.trim() || option.outLegs.some(leg => leg.date || leg.from || leg.to || leg.airline) || numVal(option.sellPrice) > 0)
+    .map((option, index) => ({
+      id: option.id,
+      hotel: option.label.trim() || getFlightOptionTitle(option, index),
+      roomType: '',
+      boardBasis: 'Flight Only',
+      nights: '0',
+      checkinDate: option.outLegs[0]?.date || '',
+      checkinNextDay: false,
+      outLegs: sortFlightLegs(option.outLegs || []),
+      retLegs: sortFlightLegs(option.retLegs || []),
+      flightNet: option.flightNet,
+      accNet: '0',
+      transNet: option.transNet,
+      extras: [],
+      sellPrice: option.sellPrice,
+      margin: option.margin,
+      profit: option.profit,
+      optionLabel: option.label.trim() || getFlightOptionTitle(option, index),
+      flightOptionId: option.id,
+      flightOptionLabel: option.label.trim() || getFlightOptionTitle(option, index),
+    }))
 }
 
 function getAccommodationExtrasTotal(option: AccommodationOption): number {
@@ -1241,6 +1305,8 @@ function FlightOptionPanel({
   index,
   totalOptions,
   isDefault,
+  showClientPricing,
+  productType,
   onSetDefault,
   onChange,
   onRemove,
@@ -1251,6 +1317,8 @@ function FlightOptionPanel({
   index: number
   totalOptions: number
   isDefault: boolean
+  showClientPricing: boolean
+  productType: BookingType
   onSetDefault: () => void
   onChange: (option: FlightOption) => void
   onRemove: () => void
@@ -1262,6 +1330,31 @@ function FlightOptionPanel({
   const updLeg=(dir:'out'|'ret',legs:FlightLeg[])=>onChange({...option,[dir==='out'?'outLegs':'retLegs']:legs})
   const flightN=numVal(option.flightNet)
   const transN=numVal(option.transNet)
+  const sellN=numVal(option.sellPrice)
+  const profitN=numVal(option.profit)
+  const markupN=numVal(option.margin)||(sellN>0&&profitN>0&&profitN<sellN?(profitN/(sellN-profitN))*100:0)
+
+  function onSell(v:string){
+    const sell=numVal(v),mg=numVal(option.margin),pr=numVal(option.profit)
+    const totalNet = flightN + transN
+    if(sell>0&&mg>0){const profit=totalNet>0?totalNet*mg/100:sell*mg/(100+mg);onChange({...option,sellPrice:v,profit:profit.toFixed(2)})}
+    else if(sell>0&&pr>0){const markup=sell>pr?(pr/(sell-pr))*100:0;onChange({...option,sellPrice:v,margin:markup.toFixed(1)})}
+    else onChange({...option,sellPrice:v})
+  }
+  function onMargin(v:string){
+    const sell=numVal(option.sellPrice),mg=numVal(v)
+    const totalNet = flightN + transN
+    if(totalNet>0&&mg>0){const s=totalNet*(1+mg/100);onChange({...option,margin:v,sellPrice:s.toFixed(2),profit:(totalNet*mg/100).toFixed(2)})}
+    else if(sell>0&&mg>0){const profit=sell*mg/(100+mg);onChange({...option,margin:v,profit:profit.toFixed(2)})}
+    else onChange({...option,margin:v})
+  }
+  function onProfit(v:string){
+    const sell=numVal(option.sellPrice),pr=numVal(v)
+    const totalNet = flightN + transN
+    if(sell>0&&pr>0){const markup=sell>pr?(pr/(sell-pr))*100:0;onChange({...option,profit:v,margin:markup.toFixed(1)})}
+    else if(totalNet>0&&pr>0){const s=totalNet+pr;onChange({...option,profit:v,sellPrice:s.toFixed(2),margin:((pr/totalNet)*100).toFixed(1)})}
+    else onChange({...option,profit:v})
+  }
 
   return (
     <div className="card" style={{marginBottom:'14px',borderLeft:`3px solid ${isDefault?'#d4a84a':'#3b82f6'}`,overflow:'hidden'}}>
@@ -1285,27 +1378,61 @@ function FlightOptionPanel({
       {!collapsed&&(
         <div style={{padding:'18px'}}>
           <div style={{marginBottom:'14px'}}>
-            <label className="label">Flight Option Label</label>
-            <input className="input" placeholder="e.g. Direct BA, Emirates via Dubai..." value={option.label} onChange={e=>upd('label',e.target.value)}/>
-            <div style={{fontSize:'11.5px',color:'var(--text-muted)',marginTop:'6px'}}>Used in hotel assignment and in the final option list when flights differ.</div>
+            <label className="label">{productType === 'accommodation_transfer' ? 'Transfer Option Label' : 'Flight Option Label'}</label>
+            <input className="input" placeholder={productType === 'accommodation_transfer' ? 'e.g. Private airport transfer, resort shuttle...' : 'e.g. Direct BA, Emirates via Dubai...'} value={option.label} onChange={e=>upd('label',e.target.value)}/>
+            <div style={{fontSize:'11.5px',color:'var(--text-muted)',marginTop:'6px'}}>
+              {productType === 'accommodation_transfer'
+                ? 'Used in hotel assignment and in the final option list when transfer choices differ.'
+                : 'Used in hotel assignment and in the final option list when flights differ.'}
+            </div>
           </div>
 
-          <div style={{marginBottom:'14px'}}>
-            <div style={{fontWeight:'600',fontSize:'12px',color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'8px'}}>Outbound Flights</div>
-            {option.outLegs.map(leg=><LegRow key={leg.id} leg={leg} legs={option.outLegs} setLegs={legs=>updLeg('out',legs)} canRemove={option.outLegs.length>1} airports={airports} onCreateAirport={onCreateAirport}/>)}
-            <button className="btn btn-ghost btn-sm" style={{border:'1.5px dashed var(--border)',width:'100%',justifyContent:'center'}} onClick={()=>updLeg('out',[...option.outLegs,newLeg('out')])}>+ Add outbound leg</button>
-          </div>
+          {productType !== 'accommodation_transfer' && (
+            <>
+              <div style={{marginBottom:'14px'}}>
+                <div style={{fontWeight:'600',fontSize:'12px',color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'8px'}}>Outbound Flights</div>
+                {option.outLegs.map(leg=><LegRow key={leg.id} leg={leg} legs={option.outLegs} setLegs={legs=>updLeg('out',legs)} canRemove={option.outLegs.length>1} airports={airports} onCreateAirport={onCreateAirport}/>)}
+                <button className="btn btn-ghost btn-sm" style={{border:'1.5px dashed var(--border)',width:'100%',justifyContent:'center'}} onClick={()=>updLeg('out',[...option.outLegs,newLeg('out')])}>+ Add outbound leg</button>
+              </div>
 
-          <div style={{marginBottom:'14px'}}>
-            <div style={{fontWeight:'600',fontSize:'12px',color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'8px'}}>Return Flights</div>
-            {option.retLegs.map(leg=><LegRow key={leg.id} leg={leg} legs={option.retLegs} setLegs={legs=>updLeg('ret',legs)} canRemove={option.retLegs.length>1} airports={airports} onCreateAirport={onCreateAirport}/>)}
-            <button className="btn btn-ghost btn-sm" style={{border:'1.5px dashed var(--border)',width:'100%',justifyContent:'center'}} onClick={()=>updLeg('ret',[...option.retLegs,newLeg('ret')])}>+ Add return leg</button>
-          </div>
+              <div style={{marginBottom:'14px'}}>
+                <div style={{fontWeight:'600',fontSize:'12px',color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'8px'}}>Return Flights</div>
+                {option.retLegs.map(leg=><LegRow key={leg.id} leg={leg} legs={option.retLegs} setLegs={legs=>updLeg('ret',legs)} canRemove={option.retLegs.length>1} airports={airports} onCreateAirport={onCreateAirport}/>)}
+                <button className="btn btn-ghost btn-sm" style={{border:'1.5px dashed var(--border)',width:'100%',justifyContent:'center'}} onClick={()=>updLeg('ret',[...option.retLegs,newLeg('ret')])}>+ Add return leg</button>
+              </div>
+            </>
+          )}
 
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px'}}>
-            <div><label className="label">Flight Net (£)</label><input className="input" type="number" step="0.01" placeholder="0.00" value={option.flightNet} onChange={e=>upd('flightNet',e.target.value)}/></div>
+            {productType !== 'accommodation_transfer' && (
+              <div><label className="label">Flight Net (£)</label><input className="input" type="number" step="0.01" placeholder="0.00" value={option.flightNet} onChange={e=>upd('flightNet',e.target.value)}/></div>
+            )}
             <div><label className="label">Transfer Net (£)</label><input className="input" type="number" step="0.01" placeholder="0.00" value={option.transNet} onChange={e=>upd('transNet',e.target.value)}/></div>
           </div>
+          {showClientPricing && (
+            <>
+              <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'10px',marginTop:'12px'}}>
+                <div><label className="label">Sell Price (£) *</label><input className="input" type="number" step="1" placeholder="950" value={option.sellPrice} onChange={e=>onSell(e.target.value)} style={{fontSize:'15px',fontWeight:'500'}}/></div>
+                <div><label className="label">Markup %</label><div style={{position:'relative'}}><input className="input" type="number" step="0.1" placeholder="10" value={option.margin} onChange={e=>onMargin(e.target.value)} style={{paddingRight:'26px'}}/><span style={{position:'absolute',right:'10px',top:'50%',transform:'translateY(-50%)',color:'var(--text-muted)',fontSize:'13px',pointerEvents:'none'}}>%</span></div></div>
+                <div><label className="label">Profit (£)</label><input className="input" type="number" step="1" placeholder="Auto" value={option.profit} onChange={e=>onProfit(e.target.value)} style={{color:'var(--gold)',fontWeight:'500'}}/></div>
+              </div>
+              {sellN>0&&(
+                <div style={{display:'flex',gap:'14px',padding:'10px 14px',background:'var(--bg-tertiary)',borderRadius:'8px',marginTop:'10px'}}>
+                  {[{l:'Net',v:fmtS(flightN+transN),c:'var(--text-primary)'},{l:'Sell',v:fmtS(sellN),c:'var(--text-primary)'},{l:'Profit',v:fmtS(profitN),c:'var(--gold)'},{l:'Markup',v:markupN.toFixed(1)+'%',c:markupN>=10?'var(--green)':markupN>=7?'var(--amber)':'var(--red)'}].map(s=>(
+                    <div key={s.l} style={{textAlign:'center'}}>
+                      <div style={{fontSize:'10px',textTransform:'uppercase',letterSpacing:'0.06em',color:'var(--text-muted)',marginBottom:'2px'}}>{s.l}</div>
+                      <div style={{fontFamily:'Fraunces,serif',fontSize:'17px',fontWeight:'300',color:s.c}}>{s.v}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+          {showClientPricing && (
+            <div style={{fontSize:'11.5px',color:'var(--text-muted)',marginTop:'8px'}}>
+              {'Flight-only quotes save total_sell directly from this option, without relying on accommodation pricing.'}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -1318,6 +1445,10 @@ function AssignedAccommodationOptionPanel({
   totalOptions,
   flightOptions,
   defaultFlightOptionId,
+  enableFlightAssignments,
+  assignmentHeading,
+  assignmentEmptyLabel,
+  pricingFlightLabel,
   onChange,
   onRemove,
   onDuplicate,
@@ -1327,6 +1458,10 @@ function AssignedAccommodationOptionPanel({
   totalOptions: number
   flightOptions: FlightOption[]
   defaultFlightOptionId: string
+  enableFlightAssignments: boolean
+  assignmentHeading: string
+  assignmentEmptyLabel: string
+  pricingFlightLabel: string
   onChange: (o: AccommodationOption) => void
   onRemove: () => void
   onDuplicate: () => void
@@ -1337,6 +1472,7 @@ function AssignedAccommodationOptionPanel({
   const pricingFlightOption = resolveAccommodationPricingFlight(normalizedOption, flightOptions, defaultFlightOptionId)
   const defaultFlightOption = flightOptions.find(flightOption => flightOption.id === defaultFlightOptionId) || null
   const nonDefaultFlightOptions = flightOptions.filter(flightOption => flightOption.id !== defaultFlightOptionId)
+  const assignmentSubject = assignmentHeading === 'Transfer Assignment' ? 'transfer option' : 'flight option'
 
   const upd=(field:keyof AccommodationOption,val:any)=>onChange(normalizeAccommodationOptionAssignments({...normalizedOption,[field]:val}, flightOptions, defaultFlightOptionId))
   const updExtra=(id:string,field:keyof ExtraItem,val:any)=>upd('extras',normalizedOption.extras.map(extra=>extra.id===id?{...extra,[field]:val}:extra))
@@ -1432,16 +1568,18 @@ function AssignedAccommodationOptionPanel({
           </div>
 
           <div style={{background:'var(--bg-tertiary)',borderRadius:'10px',padding:'14px',marginBottom:'12px'}}>
-            <div style={{fontWeight:'600',fontSize:'11px',color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'10px'}}>Flight Assignment</div>
+            <div style={{fontWeight:'600',fontSize:'11px',color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'10px'}}>{assignmentHeading}</div>
+            {enableFlightAssignments ? (
+              <>
             <label style={{display:'flex',alignItems:'flex-start',gap:'10px',cursor:'pointer',padding:'10px 12px',background:'var(--surface)',border:'1px solid var(--border)',borderRadius:'8px',marginBottom:'10px'}}>
               <input type="checkbox" checked={normalizedOption.useDefaultFlight} onChange={e=>onChange(normalizeAccommodationOptionAssignments({...normalizedOption,useDefaultFlight:e.target.checked}, flightOptions, defaultFlightOptionId))} style={{width:'16px',height:'16px',marginTop:'1px'}}/>
               <span>
-                <span style={{display:'block',fontSize:'13px',fontWeight:'600',color:'var(--text-primary)'}}>Use default flight option</span>
-                <span style={{display:'block',fontSize:'11.5px',color:'var(--text-muted)',marginTop:'2px'}}>{defaultFlightOption ? `${getFlightOptionTitle(defaultFlightOption, flightOptions.findIndex(flightOption => flightOption.id === defaultFlightOption.id))} · ${getFlightOptionSummary(defaultFlightOption)}` : 'Create a flight option first'}</span>
+                <span style={{display:'block',fontSize:'13px',fontWeight:'600',color:'var(--text-primary)'}}>{`Use default ${assignmentSubject}`}</span>
+                <span style={{display:'block',fontSize:'11.5px',color:'var(--text-muted)',marginTop:'2px'}}>{defaultFlightOption ? `${getFlightOptionTitle(defaultFlightOption, flightOptions.findIndex(flightOption => flightOption.id === defaultFlightOption.id))} · ${getFlightOptionSummary(defaultFlightOption)}` : `Create a ${assignmentSubject} first`}</span>
               </span>
             </label>
 
-            <div style={{fontSize:'11px',fontWeight:'700',color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'8px'}}>Specific flight options</div>
+            <div style={{fontSize:'11px',fontWeight:'700',color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'8px'}}>{`Specific ${assignmentSubject}s`}</div>
             {nonDefaultFlightOptions.length>0 ? nonDefaultFlightOptions.map(flightOption => {
               const flightIndex = flightOptions.findIndex(existingOption => existingOption.id === flightOption.id)
               return (
@@ -1454,15 +1592,15 @@ function AssignedAccommodationOptionPanel({
                 </label>
               )
             }) : (
-              <div style={{fontSize:'11.5px',color:'var(--text-muted)',padding:'8px 0'}}>No extra flight options yet. Add another flight option above to attach alternatives to this hotel.</div>
+              <div style={{fontSize:'11.5px',color:'var(--text-muted)',padding:'8px 0'}}>{assignmentEmptyLabel}</div>
             )}
 
             {selectedFlightOptions.length>0 ? (
               <div style={{fontSize:'11.5px',color:'var(--text-muted)',marginTop:'4px'}}>
-                Client options from this hotel: <strong style={{color:'var(--text-primary)'}}>{selectedFlightOptions.map(flightOption => getFlightOptionTitle(flightOption, flightOptions.findIndex(existingOption => existingOption.id === flightOption.id))).join(', ')}</strong>
+                {`Client options from this hotel: `}<strong style={{color:'var(--text-primary)'}}>{selectedFlightOptions.map(flightOption => getFlightOptionTitle(flightOption, flightOptions.findIndex(existingOption => existingOption.id === flightOption.id))).join(', ')}</strong>
               </div>
             ) : (
-              <div style={{fontSize:'11.5px',color:'var(--red)',marginTop:'4px'}}>Select the default flight or at least one specific flight option so this hotel produces a quote option.</div>
+              <div style={{fontSize:'11.5px',color:'var(--red)',marginTop:'4px'}}>{`Select the default ${assignmentSubject} or at least one specific ${assignmentSubject} so this hotel produces a quote option.`}</div>
             )}
 
             {selectedFlightOptions.length>1&&(
@@ -1474,8 +1612,12 @@ function AssignedAccommodationOptionPanel({
                     return <option key={flightOption.id} value={flightOption.id}>{getFlightOptionTitle(flightOption, flightIndex)}</option>
                   })}
                 </select>
-                <div style={{fontSize:'11.5px',color:'var(--text-muted)',marginTop:'6px'}}>Other attached flights inherit this hotel price and adjust it only by the flight and transfer net difference.</div>
+                <div style={{fontSize:'11.5px',color:'var(--text-muted)',marginTop:'6px'}}>{`Other attached ${assignmentSubject}s inherit this hotel price and adjust it only by the flight and transfer net difference.`}</div>
               </div>
+            )}
+              </>
+            ) : (
+              <div style={{fontSize:'11.5px',color:'var(--text-muted)',padding:'8px 0'}}>Accommodation-only pricing does not require flight assignment. Sell totals come from accommodation and extras only.</div>
             )}
           </div>
 
@@ -1487,7 +1629,7 @@ function AssignedAccommodationOptionPanel({
             </div>
             {pricingFlightOption&&(
               <div style={{fontSize:'11.5px',color:'var(--text-muted)',marginBottom:'10px',padding:'7px 10px',background:'var(--surface)',borderRadius:'6px',border:'1px solid var(--border)'}}>
-                Pricing flight: <strong style={{color:'var(--text-primary)'}}>{getFlightOptionTitle(pricingFlightOption, flightOptions.findIndex(existingOption => existingOption.id === pricingFlightOption.id))}</strong> · Flight net: {pricingFlightOption.flightNet?fmt(numVal(pricingFlightOption.flightNet)):'—'} · Transfer net: {pricingFlightOption.transNet?fmt(numVal(pricingFlightOption.transNet)):'—'}
+                {pricingFlightLabel}: <strong style={{color:'var(--text-primary)'}}>{getFlightOptionTitle(pricingFlightOption, flightOptions.findIndex(existingOption => existingOption.id === pricingFlightOption.id))}</strong> · Flight net: {pricingFlightOption.flightNet?fmt(numVal(pricingFlightOption.flightNet)):'—'} · Transfer net: {pricingFlightOption.transNet?fmt(numVal(pricingFlightOption.transNet)):'—'}
               </div>
             )}
             {normalizedOption.extras.length>0&&(
@@ -1709,6 +1851,8 @@ export default function NewQuotePage(){
   const [emailTemplate,setEmailTemplate] = useState<1|2|3|4>(1)
   const [dealIdVal,setDealIdVal] = useState(dealId?String(dealId):'')
 
+  const [productType,setProductType] = useState<BookingType>('package')
+
   // Mode: 'single' or 'multi'
   const [quoteMode,setQuoteMode] = useState<'single'|'multi'>('single')
 
@@ -1754,15 +1898,34 @@ export default function NewQuotePage(){
   }, [flightOptions, defaultFlightOptionId])
 
   useEffect(() => {
+    if (!bookingTypeAllowsMultiCentre(productType) && quoteMode === 'multi') {
+      setQuoteMode('single')
+    }
+  }, [productType, quoteMode])
+
+  useEffect(() => {
     setFlightOptions(prev => prev.map(option => applySharedDefaultsToFlightOption(option, sharedQuoteDefaults)))
     setAccommodationOptions(prev => prev.map(option => applySharedDefaultsToAccommodationOption(option, sharedQuoteDefaults)))
   }, [sharedQuoteDefaults])
 
-  const singleQuoteOptions = buildSingleQuoteHotelOptions(
-    flightOptions,
-    defaultFlightOptionId,
-    accommodationOptions
-  ).map(normalizeHotelOption)
+  const singleQuoteOptions = (() => {
+    switch (productType) {
+      case 'accommodation_only':
+        return buildAccommodationOnlyQuoteOptions(accommodationOptions).map(normalizeHotelOption)
+      case 'flight_only':
+        return buildFlightOnlyQuoteOptions(flightOptions).map(normalizeHotelOption)
+      default:
+        return buildSingleQuoteHotelOptions(
+          flightOptions,
+          defaultFlightOptionId,
+          accommodationOptions
+        ).map(normalizeHotelOption)
+    }
+  })()
+
+  const supportsMultiCentre = bookingTypeAllowsMultiCentre(productType)
+  const showFlightOptionsSection = quoteMode === 'single' && productType !== 'accommodation_only'
+  const showAccommodationSection = quoteMode === 'single' && productType !== 'flight_only'
 
   async function loadAirports() {
     try {
@@ -1851,7 +2014,9 @@ export default function NewQuotePage(){
         setAdults(String(data.adults||2)); setChildren(String(data.children||0)); setInfants(String(data.infants||0))
         setChildAges(Array.isArray(data.child_ages)&&data.child_ages.length>0 ? data.child_ages.map(String) : Array(data.children||0).fill(''))
         setInitials(data.consultant_initials||'SA'); setAdditionalServices(data.additional_services||'')
-        if(data.quote_type==='multi_centre'&&data.centres){
+        setProductType(normalizeBookingType(data.quote_type, 'package'))
+        const nextQuoteMode = normalizeQuoteMode(resolveQuoteModeFromRecord(data))
+        if(nextQuoteMode==='multi_centre'&&data.centres){
           setQuoteMode('multi'); setCentres(sortCentresChronologically(data.centres))
           setMcSell(String(data.price||'')); setMcMargin(String(data.margin_percent||'')); setMcProfit(String(data.profit||''))
         } else {
@@ -1871,6 +2036,9 @@ export default function NewQuotePage(){
                 retLegs: sortFlightLegs(option.retLegs?.length > 0 ? option.retLegs : [newLeg('ret')]),
                 flightNet: String(option.flightNet || ''),
                 transNet: String(option.transNet || ''),
+                sellPrice: String(option.sellPrice || ''),
+                margin: String(option.margin || ''),
+                profit: String(option.profit || ''),
               }, nextSharedDefaults))
             const nextDefaultFlightOptionId = nextFlightOptions.some((option: FlightOption) => option.id === builderState.defaultFlightOptionId)
               ? builderState.defaultFlightOptionId
@@ -1918,6 +2086,9 @@ export default function NewQuotePage(){
             retLegs: returnLegs,
             flightNet: String(costs.flight_net||''),
             transNet: String(costs.trans_net||''),
+            sellPrice: String(data.price||''),
+            margin: String(data.margin_percent||''),
+            profit: String(data.profit||''),
           }])
           setDefaultFlightOptionId(flightOptionId)
           setAccommodationOptions([{
@@ -2033,7 +2204,17 @@ export default function NewQuotePage(){
   async function handleSave(){
     const tid = Number(dealIdVal)
     if(!tid){ setError('Select a deal'); return }
-    if(quoteMode==='single' && singleQuoteOptions.length===0){ setError('Add at least one complete hotel + flight option before saving'); return }
+    if(quoteMode==='single' && singleQuoteOptions.length===0){
+      const singleModeMessage = productType === 'flight_only'
+        ? 'Add at least one complete flight option before saving'
+        : productType === 'accommodation_only'
+          ? 'Add at least one complete accommodation option before saving'
+          : productType === 'accommodation_transfer'
+            ? 'Add at least one complete accommodation + transfer option before saving'
+            : 'Add at least one complete client-facing quote option before saving'
+      setError(singleModeMessage)
+      return
+    }
     const childCount = parseInt(children)||0
     if(childCount>0){
       if(childAges.length!==childCount||childAges.some(a=>!a.trim())){ setError(`Enter age for all ${childCount} child${childCount>1?'ren':''}`); return }
@@ -2049,7 +2230,8 @@ export default function NewQuotePage(){
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           dealId: tid,
-          quoteType: quoteMode,
+          quoteType: productType,
+          quoteMode,
           quoteRef: quoteRef,
           adults: parseInt(adults),
           children: parseInt(children),
@@ -2158,27 +2340,59 @@ export default function NewQuotePage(){
               )}
             </div>
 
-            {/* Quote type toggle */}
+            {/* Product type + itinerary mode */}
             {!isEditMode&&(
-              <div className="card" style={{padding:'18px 20px'}}>
-                <div style={{fontFamily:'Fraunces,serif',fontSize:'17px',fontWeight:'300',marginBottom:'14px'}}>Quote Type</div>
-                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px'}}>
+              <>
+                <div className="card" style={{padding:'18px 20px'}}>
+                  <div style={{fontFamily:'Fraunces,serif',fontSize:'17px',fontWeight:'300',marginBottom:'14px'}}>Booking Type</div>
+                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px'}}>
+                    {([
+                      {key:'package',desc:'Flights + accommodation with optional transfers'},
+                      {key:'accommodation_only',desc:'Accommodation-led sale with no flights required'},
+                      {key:'flight_only',desc:'Flights only with standalone sell total'},
+                      {key:'accommodation_transfer',desc:'Accommodation plus transfers without flights'},
+                      {key:'custom',desc:'Flexible mixed build with manual component control'},
+                    ] as { key: BookingType; desc: string }[]).map(option=>(
+                      <button key={option.key} onClick={()=>{ markDirty(); setProductType(option.key) }}
+                        style={{padding:'14px',borderRadius:'10px',border:'2px solid',textAlign:'left',cursor:'pointer',fontFamily:'Outfit,sans-serif',
+                          borderColor:productType===option.key?'var(--accent-mid)':'var(--border)',
+                          background:productType===option.key?'var(--accent-light)':'transparent',
+                          transition:'all 0.15s'}}>
+                        <div style={{fontSize:'13.5px',fontWeight:'600',color:productType===option.key?'var(--accent-mid)':'var(--text-primary)',marginBottom:'3px'}}>
+                          {BOOKING_TYPE_LABELS[option.key]}
+                        </div>
+                        <div style={{fontSize:'11.5px',color:'var(--text-muted)',lineHeight:'1.4'}}>{option.desc}</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="card" style={{padding:'18px 20px'}}>
+                  <div style={{fontFamily:'Fraunces,serif',fontSize:'17px',fontWeight:'300',marginBottom:'14px'}}>Quote Layout</div>
+                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px'}}>
                   {[
                     {key:'single',label:'Single Destination',desc:'One or more hotel options for the same destination',icon:'🏨'},
                     {key:'multi',label:'Multi-Centre',desc:'Sequential itinerary across 2+ destinations (e.g. Dubai + Mauritius)',icon:'✈'},
                   ].map(t=>(
-                    <button key={t.key} onClick={()=>{ markDirty(); setQuoteMode(t.key as 'single'|'multi') }}
+                    <button
+                      key={t.key}
+                      onClick={()=>{ if (t.key === 'multi' && !supportsMultiCentre) return; markDirty(); setQuoteMode(t.key as 'single'|'multi') }}
+                      disabled={t.key === 'multi' && !supportsMultiCentre}
                       style={{padding:'14px',borderRadius:'10px',border:'2px solid',textAlign:'left',cursor:'pointer',fontFamily:'Outfit,sans-serif',
+                        opacity:t.key === 'multi' && !supportsMultiCentre ? 0.55 : 1,
                         borderColor:quoteMode===t.key?'var(--accent-mid)':'var(--border)',
                         background:quoteMode===t.key?'var(--accent-light)':'transparent',
                         transition:'all 0.15s'}}>
                       <div style={{fontSize:'18px',marginBottom:'6px'}}>{t.icon}</div>
                       <div style={{fontSize:'13.5px',fontWeight:'600',color:quoteMode===t.key?'var(--accent-mid)':'var(--text-primary)',marginBottom:'3px'}}>{t.label}</div>
-                      <div style={{fontSize:'11.5px',color:'var(--text-muted)',lineHeight:'1.4'}}>{t.desc}</div>
+                      <div style={{fontSize:'11.5px',color:'var(--text-muted)',lineHeight:'1.4'}}>
+                        {t.key === 'multi' && !supportsMultiCentre ? 'Available for package and custom quotes only' : t.desc}
+                      </div>
                     </button>
                   ))}
+                  </div>
                 </div>
-              </div>
+              </>
             )}
 
             {/* Passengers */}
@@ -2216,70 +2430,105 @@ export default function NewQuotePage(){
             {/* ── SINGLE DESTINATION ── */}
             {quoteMode==='single'&&(
               <div>
-                <div className="card" style={{padding:'18px 20px',marginBottom:'16px'}}>
-                  <div style={{fontFamily:'Fraunces,serif',fontSize:'17px',fontWeight:'300',marginBottom:'4px'}}>Shared Quote Defaults</div>
-                  <div style={{fontSize:'12px',color:'var(--text-muted)',marginBottom:'14px'}}>Passengers stay at quote level, and these defaults pre-fill new flight and hotel options without forcing full itinerary duplication.</div>
-                  <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'10px'}}>
-                    <div><label className="label">Origin</label><input className="input" placeholder="LHR" value={sharedQuoteDefaults.origin} onChange={e=>updateSharedQuoteDefaults('origin',e.target.value.toUpperCase())}/></div>
-                    <div><label className="label">Outbound Date</label><input className="input" type="date" value={sharedQuoteDefaults.outboundDate} onChange={e=>updateSharedQuoteDefaults('outboundDate',e.target.value)}/></div>
-                    <div><label className="label">Return Date</label><input className="input" type="date" value={sharedQuoteDefaults.returnDate} onChange={e=>updateSharedQuoteDefaults('returnDate',e.target.value)}/></div>
-                  </div>
-                </div>
+                {showFlightOptionsSection && (
+                  <>
+                    <div className="card" style={{padding:'18px 20px',marginBottom:'16px'}}>
+                      <div style={{fontFamily:'Fraunces,serif',fontSize:'17px',fontWeight:'300',marginBottom:'4px'}}>
+                        {productType === 'accommodation_transfer' ? 'Transfer Defaults' : 'Shared Quote Defaults'}
+                      </div>
+                      <div style={{fontSize:'12px',color:'var(--text-muted)',marginBottom:'14px'}}>
+                        {productType === 'accommodation_transfer'
+                          ? 'Use these dates to anchor transfer-only options that attach to your accommodation choices.'
+                          : 'Passengers stay at quote level, and these defaults pre-fill new flight and hotel options without forcing full itinerary duplication.'}
+                      </div>
+                      <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'10px'}}>
+                        <div><label className="label">Origin</label><input className="input" placeholder="LHR" value={sharedQuoteDefaults.origin} onChange={e=>updateSharedQuoteDefaults('origin',e.target.value.toUpperCase())}/></div>
+                        <div><label className="label">Outbound Date</label><input className="input" type="date" value={sharedQuoteDefaults.outboundDate} onChange={e=>updateSharedQuoteDefaults('outboundDate',e.target.value)}/></div>
+                        <div><label className="label">Return Date</label><input className="input" type="date" value={sharedQuoteDefaults.returnDate} onChange={e=>updateSharedQuoteDefaults('returnDate',e.target.value)}/></div>
+                      </div>
+                    </div>
 
-                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'12px'}}>
-                  <div>
-                    <div style={{fontFamily:'Fraunces,serif',fontSize:'17px',fontWeight:'300'}}>Flight Options</div>
-                    <div style={{fontSize:'12px',color:'var(--text-muted)',marginTop:'2px'}}>Add reusable flight-only options once, then attach them to one or more hotels below.</div>
-                  </div>
-                  <button className="btn btn-secondary btn-sm" onClick={addFlightOption}>+ Add Flight Option</button>
-                </div>
-                {flightOptions.map((option,index)=>(
-                  <FlightOptionPanel
-                    key={option.id}
-                    option={option}
-                    index={index}
-                    totalOptions={flightOptions.length}
-                    isDefault={option.id===defaultFlightOptionId}
-                    onSetDefault={()=>{ markDirty(); setDefaultFlightOptionId(option.id); setAccommodationOptions(prev=>prev.map(acc=>normalizeAccommodationOptionAssignments(acc, flightOptions, option.id))) }}
-                    onChange={updated=>updateFlightOption(updated)}
-                    onRemove={()=>removeFlightOption(option.id)}
-                    airports={airportOptions}
-                    onCreateAirport={createAirport}
-                  />
-                ))}
-                {flightOptions.length<6&&(
-                  <button onClick={addFlightOption}
-                    style={{width:'100%',padding:'13px',border:'2px dashed var(--border)',borderRadius:'12px',background:'transparent',color:'var(--text-muted)',fontSize:'13px',cursor:'pointer',fontFamily:'Outfit,sans-serif',marginBottom:'18px'}}
-                    onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--accent)';e.currentTarget.style.color='var(--accent)'}}
-                    onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--border)';e.currentTarget.style.color='var(--text-muted)'}}>
-                    + Add Another Flight Option
-                  </button>
+                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'12px'}}>
+                      <div>
+                        <div style={{fontFamily:'Fraunces,serif',fontSize:'17px',fontWeight:'300'}}>
+                          {productType === 'flight_only' ? 'Flight Options' : productType === 'accommodation_transfer' ? 'Transfer Options' : 'Flight Options'}
+                        </div>
+                        <div style={{fontSize:'12px',color:'var(--text-muted)',marginTop:'2px'}}>
+                          {productType === 'flight_only'
+                            ? 'Each option carries its own client sell price and uses real flight data only.'
+                            : productType === 'accommodation_transfer'
+                              ? 'Add transfer-priced options that can be attached to accommodation choices without requiring flights.'
+                              : 'Add reusable flight-only options once, then attach them to one or more hotels below.'}
+                        </div>
+                      </div>
+                      <button className="btn btn-secondary btn-sm" onClick={addFlightOption}>
+                        + Add {productType === 'accommodation_transfer' ? 'Transfer' : 'Flight'} Option
+                      </button>
+                    </div>
+                    {flightOptions.map((option,index)=>(
+                      <FlightOptionPanel
+                        key={option.id}
+                        option={option}
+                        index={index}
+                        totalOptions={flightOptions.length}
+                        isDefault={option.id===defaultFlightOptionId}
+                        showClientPricing={productType === 'flight_only'}
+                        productType={productType}
+                        onSetDefault={()=>{ markDirty(); setDefaultFlightOptionId(option.id); setAccommodationOptions(prev=>prev.map(acc=>normalizeAccommodationOptionAssignments(acc, flightOptions, option.id))) }}
+                        onChange={updated=>updateFlightOption(updated)}
+                        onRemove={()=>removeFlightOption(option.id)}
+                        airports={airportOptions}
+                        onCreateAirport={createAirport}
+                      />
+                    ))}
+                    {flightOptions.length<6&&(
+                      <button onClick={addFlightOption}
+                        style={{width:'100%',padding:'13px',border:'2px dashed var(--border)',borderRadius:'12px',background:'transparent',color:'var(--text-muted)',fontSize:'13px',cursor:'pointer',fontFamily:'Outfit,sans-serif',marginBottom:showAccommodationSection?'18px':'0'}}
+                        onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--accent)';e.currentTarget.style.color='var(--accent)'}}
+                        onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--border)';e.currentTarget.style.color='var(--text-muted)'}}>
+                        + Add Another {productType === 'accommodation_transfer' ? 'Transfer' : 'Flight'} Option
+                      </button>
+                    )}
+                  </>
                 )}
 
-                {/* Accommodation options */}
-                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'12px'}}>
-                  <div>
-                    <div style={{fontFamily:'Fraunces,serif',fontSize:'17px',fontWeight:'300'}}>Accommodation Options</div>
-                    <div style={{fontSize:'12px',color:'var(--text-muted)',marginTop:'2px'}}>Hotels stay separate from flights, and each hotel can use the default flight and/or attach specific alternatives.</div>
-                  </div>
-                  <button className="btn btn-secondary btn-sm" onClick={()=>{ markDirty(); setAccommodationOptions(p=>[...p,newAccOption(sharedQuoteDefaults)]) }}>+ Add Accommodation Option</button>
-                </div>
-                {accommodationOptions.map((o,i)=>(
-                  <AssignedAccommodationOptionPanel key={o.id} option={o} index={i} totalOptions={accommodationOptions.length}
-                    flightOptions={flightOptions}
-                    defaultFlightOptionId={defaultFlightOptionId}
-                    onChange={updated=>{ markDirty(); setAccommodationOptions(p=>p.map(x=>x.id===updated.id?updated:x)) }}
-                    onRemove={()=>{ markDirty(); setAccommodationOptions(p=>p.filter(x=>x.id!==o.id)) }}
-                    onDuplicate={()=>{ const src=accommodationOptions.find(x=>x.id===o.id); if(src){ markDirty(); setAccommodationOptions(p=>[...p,{...src,id:uid(),hotel:''}]) } }}
-                  />
-                ))}
-                {accommodationOptions.length<6&&(
-                  <button onClick={()=>{ markDirty(); setAccommodationOptions(p=>[...p,newAccOption(sharedQuoteDefaults)]) }}
-                    style={{width:'100%',padding:'13px',border:'2px dashed var(--border)',borderRadius:'12px',background:'transparent',color:'var(--text-muted)',fontSize:'13px',cursor:'pointer',fontFamily:'Outfit,sans-serif'}}
-                    onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--accent)';e.currentTarget.style.color='var(--accent)'}}
-                    onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--border)';e.currentTarget.style.color='var(--text-muted)'}}>
-                    + Add Another Accommodation Option
-                  </button>
+                {showAccommodationSection && (
+                  <>
+                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'12px'}}>
+                      <div>
+                        <div style={{fontFamily:'Fraunces,serif',fontSize:'17px',fontWeight:'300'}}>Accommodation Options</div>
+                        <div style={{fontSize:'12px',color:'var(--text-muted)',marginTop:'2px'}}>
+                          {productType === 'accommodation_only'
+                            ? 'Accommodation-only options price from accommodation and extras only.'
+                            : productType === 'accommodation_transfer'
+                              ? 'Hotels stay separate from transfers, and each hotel can attach one or more transfer options.'
+                              : 'Hotels stay separate from flights, and each hotel can use the default flight and/or attach specific alternatives.'}
+                        </div>
+                      </div>
+                      <button className="btn btn-secondary btn-sm" onClick={()=>{ markDirty(); setAccommodationOptions(p=>[...p,newAccOption(sharedQuoteDefaults)]) }}>+ Add Accommodation Option</button>
+                    </div>
+                    {accommodationOptions.map((o,i)=>(
+                      <AssignedAccommodationOptionPanel key={o.id} option={o} index={i} totalOptions={accommodationOptions.length}
+                        flightOptions={flightOptions}
+                        defaultFlightOptionId={defaultFlightOptionId}
+                        enableFlightAssignments={productType !== 'accommodation_only'}
+                        assignmentHeading={productType === 'accommodation_transfer' ? 'Transfer Assignment' : 'Flight Assignment'}
+                        assignmentEmptyLabel={productType === 'accommodation_transfer' ? 'Add another transfer option above to attach alternatives to this hotel.' : 'No extra flight options yet. Add another flight option above to attach alternatives to this hotel.'}
+                        pricingFlightLabel={productType === 'accommodation_transfer' ? 'Pricing transfer' : 'Pricing flight'}
+                        onChange={updated=>{ markDirty(); setAccommodationOptions(p=>p.map(x=>x.id===updated.id?updated:x)) }}
+                        onRemove={()=>{ markDirty(); setAccommodationOptions(p=>p.filter(x=>x.id!==o.id)) }}
+                        onDuplicate={()=>{ const src=accommodationOptions.find(x=>x.id===o.id); if(src){ markDirty(); setAccommodationOptions(p=>[...p,{...src,id:uid(),hotel:''}]) } }}
+                      />
+                    ))}
+                    {accommodationOptions.length<6&&(
+                      <button onClick={()=>{ markDirty(); setAccommodationOptions(p=>[...p,newAccOption(sharedQuoteDefaults)]) }}
+                        style={{width:'100%',padding:'13px',border:'2px dashed var(--border)',borderRadius:'12px',background:'transparent',color:'var(--text-muted)',fontSize:'13px',cursor:'pointer',fontFamily:'Outfit,sans-serif'}}
+                        onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--accent)';e.currentTarget.style.color='var(--accent)'}}
+                        onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--border)';e.currentTarget.style.color='var(--text-muted)'}}>
+                        + Add Another Accommodation Option
+                      </button>
+                    )}
+                  </>
                 )}
               </div>
             )}
@@ -2350,7 +2599,7 @@ export default function NewQuotePage(){
           <div style={{position:'sticky',top:'80px',alignSelf:'flex-start',display:'flex',flexDirection:'column',gap:'12px'}}>
 
             {/* Live summary */}
-            {quoteMode==='single'&&accommodationOptions.map((o,i)=>{
+            {quoteMode==='single' && productType !== 'flight_only' && accommodationOptions.map((o,i)=>{
               const sellN=parseFloat(o.sellPrice)||0,profitN=parseFloat(o.profit)||0
               const marginN = sellN>0&&profitN>0&&profitN<sellN ? (profitN/(sellN-profitN))*100 : (parseFloat(o.margin)||0)
               const COLORS=['#8b5cf6','#3b82f6','#10b981','#f59e0b','#ec4899']
@@ -2360,6 +2609,25 @@ export default function NewQuotePage(){
                   <div style={{fontSize:'9px',textTransform:'uppercase',letterSpacing:'0.12em',color:col,marginBottom:'3px'}}>Option {i+1}</div>
                   <div style={{fontFamily:'Fraunces,serif',fontSize:'15px',fontWeight:'300',marginBottom:'2px'}}>{o.hotel||'—'}</div>
                   <div style={{fontSize:'11px',opacity:0.5,marginBottom:'10px'}}>{o.boardBasis} · {o.nights} nights{o.useDefaultFlight||o.assignedFlightOptionIds.length>0?` · ${(o.useDefaultFlight?1:0)+o.assignedFlightOptionIds.length} flight choice${((o.useDefaultFlight?1:0)+o.assignedFlightOptionIds.length)===1?'':'s'}`:''}</div>
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                    <span style={{fontSize:'10px',opacity:0.6}}>Total</span>
+                    <span style={{fontFamily:'Fraunces,serif',fontSize:'19px',fontWeight:'300',color:'#d4a84a'}}>{sellN>0?fmtS(sellN):'—'}</span>
+                  </div>
+                  {profitN>0&&<div style={{textAlign:'right',fontSize:'10px',color:'rgba(201,168,76,0.5)',marginTop:'2px'}}>Profit: {fmtS(profitN)} ({marginN.toFixed(1)}%)</div>}
+                </div>
+              )
+            })}
+
+            {quoteMode==='single' && productType === 'flight_only' && flightOptions.map((option,i)=>{
+              const sellN=numVal(option.sellPrice),profitN=numVal(option.profit)
+              const marginN = numVal(option.margin)||(sellN>0&&profitN>0&&profitN<sellN?(profitN/(sellN-profitN))*100:0)
+              const COLORS=['#8b5cf6','#3b82f6','#10b981','#f59e0b','#ec4899']
+              const col=COLORS[i%COLORS.length]
+              return(
+                <div key={option.id} style={{background:'#0d1b2a',borderRadius:'12px',padding:'16px',color:'white',borderLeft:`3px solid ${col}`}}>
+                  <div style={{fontSize:'9px',textTransform:'uppercase',letterSpacing:'0.12em',color:col,marginBottom:'3px'}}>Flight Option {i+1}</div>
+                  <div style={{fontFamily:'Fraunces,serif',fontSize:'15px',fontWeight:'300',marginBottom:'2px'}}>{option.label||getFlightOptionTitle(option,i)}</div>
+                  <div style={{fontSize:'11px',opacity:0.5,marginBottom:'10px'}}>{getFlightOptionSummary(option)}</div>
                   <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
                     <span style={{fontSize:'10px',opacity:0.6}}>Total</span>
                     <span style={{fontFamily:'Fraunces,serif',fontSize:'19px',fontWeight:'300',color:'#d4a84a'}}>{sellN>0?fmtS(sellN):'—'}</span>

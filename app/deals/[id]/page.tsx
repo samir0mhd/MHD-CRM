@@ -24,6 +24,7 @@ import {
   NEXT_ACTION_TYPES,
   validateNextActionInput,
 } from '@/lib/modules/deals/next-action'
+import { resolveQuoteModeFromRecord } from '@/lib/modules/bookings/booking-types'
 import { LOST_REASONS, getLostReasonLabel } from '@/lib/modules/lost/constants'
 
 const STAGES = ['NEW_LEAD','QUOTE_SENT','ENGAGED','FOLLOW_UP','DECISION_PENDING','BOOKED']
@@ -957,7 +958,7 @@ function QuoteCard({ quoteGroup, dealId, isBooked, isLost, originatingQuoteRef, 
   const allLegs = [...outLegs,...retLegs]
   const costs   = quote.cost_breakdown||{}
 
-  const isLegacyQuote = quote.quote_type !== 'multi_centre' && !(quote.flight_details as { builder_state?: unknown } | null)?.builder_state
+  const isLegacyQuote = resolveQuoteModeFromRecord(quote) !== 'multi_centre' && !(quote.flight_details as { builder_state?: unknown } | null)?.builder_state
 
   const checkinDisplay = quote.checkin_date
     ? quote.checkin_next_day

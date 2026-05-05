@@ -7,7 +7,13 @@ import {
   insertNotifications, initPassportRows, getBookingReadinessData,
 } from './portal.repository'
 import {
-  REQUEST_STATUS_LABEL, REQUEST_CATEGORY_LABEL, PASSPORT_STATUS_LABEL,
+  bookingTypeRequiresAccommodation,
+  bookingTypeRequiresFlights,
+  bookingTypeRequiresTransfers,
+  normalizeBookingType,
+} from '@/lib/modules/bookings/booking-types'
+import {
+  REQUEST_STATUS_LABEL, REQUEST_CATEGORY_LABEL,
   type PortalBookingView, type PortalReadinessResult, type PortalTokenMeta,
   type NotificationType, type RequestCategory, type RequestStatus,
 } from './portal.types'
@@ -55,12 +61,22 @@ export async function assemblePortalView(bookingId: number): Promise<PortalBooki
   ])
 
   const passportMap = new Map(passportUploads.map(p => [p.passenger_id, p]))
+  const derivedDepartureDate = booking.departure_date ?? accommodations[0]?.checkin_date ?? flights[0]?.departure_date ?? null
+  const latestAccommodationCheckout = accommodations.map(a => a.checkout_date).filter(Boolean).sort().slice(-1)[0] ?? null
+  const latestTransferDate = transfers.map(t => t.departure_date || t.arrival_date).filter(Boolean).sort().slice(-1)[0] ?? null
+  const latestFlightDate = flights.map(f => f.arrival_date || f.departure_date).filter(Boolean).sort().slice(-1)[0] ?? null
+  const derivedReturnDate =
+    booking.return_date
+    ?? latestAccommodationCheckout
+    ?? latestTransferDate
+    ?? latestFlightDate
+    ?? null
 
   return {
     booking_reference: booking.booking_reference ?? '',
     destination:       booking.destination,
-    departure_date:    booking.departure_date,
-    return_date:       booking.return_date,
+    departure_date:    derivedDepartureDate,
+    return_date:       derivedReturnDate,
     booking_notes:     booking.booking_notes,
 
     consultant: consultant ? {
@@ -122,7 +138,7 @@ export async function assemblePortalView(bookingId: number): Promise<PortalBooki
     }),
 
     balance: (() => {
-      const effectiveSell = Math.max(0, Number(booking.total_sell ?? 0) - Number((booking as any).discount ?? 0))
+      const effectiveSell = Math.max(0, Number(booking.total_sell ?? 0) - Number((booking as { discount?: number | null }).discount ?? 0))
       return {
         total_sell:       effectiveSell,
         total_paid:       totalPaid,
@@ -153,18 +169,23 @@ export async function assemblePortalView(bookingId: number): Promise<PortalBooki
 
 // ── Completeness gate ──────────────────────────────────────
 export async function checkPortalReadiness(bookingId: number): Promise<PortalReadinessResult> {
-  const { booking, hasPassengers, hasAccommodation } = await getBookingReadinessData(bookingId)
+  const { booking, hasPassengers, hasAccommodation, hasFlights, hasTransfers } = await getBookingReadinessData(bookingId)
 
   const missing: PortalReadinessResult['missing'] = []
 
   if (!booking) return { ready: false, missing: [{ field: 'booking', label: 'Booking not found', section: 'overview' }] }
 
+  const bookingType = normalizeBookingType((booking as { booking_type?: string | null }).booking_type, 'package')
+  const requiresFlights = bookingTypeRequiresFlights(bookingType)
+  const requiresAccommodation = bookingTypeRequiresAccommodation(bookingType)
+  const requiresTransfers = bookingTypeRequiresTransfers(bookingType)
+
   if (booking.status !== 'CONFIRMED')
     missing.push({ field: 'status', label: 'Booking must be confirmed', section: 'overview' })
-  if (!booking.return_date)
-    missing.push({ field: 'return_date', label: 'Set return date', section: 'overview' })
   if (!booking.departure_date)
     missing.push({ field: 'departure_date', label: 'Set departure date', section: 'overview' })
+  if (requiresFlights && !booking.return_date)
+    missing.push({ field: 'return_date', label: 'Set return date', section: 'overview' })
   if (!booking.total_sell)
     missing.push({ field: 'total_sell', label: 'Set booking total', section: 'costing' })
   if (!booking.balance_due_date)
@@ -173,10 +194,31 @@ export async function checkPortalReadiness(bookingId: number): Promise<PortalRea
     missing.push({ field: 'staff_id', label: 'Assign a consultant', section: 'overview' })
   if (!hasPassengers)
     missing.push({ field: 'passengers', label: 'Add at least one passenger', section: 'passengers' })
-  if (!hasAccommodation)
+  if (requiresAccommodation && !hasAccommodation)
     missing.push({ field: 'accommodation', label: 'Add accommodation', section: 'accommodation' })
+  if (requiresFlights && !hasFlights)
+    missing.push({ field: 'flights', label: 'Add flights', section: 'flights' })
+  if (requiresTransfers && !hasTransfers)
+    missing.push({ field: 'transfers', label: 'Add transfers', section: 'transfers' })
 
   return { ready: missing.length === 0, missing }
+}
+
+export async function getPortalGenerationContext(bookingId: number): Promise<{ clientId: number | null; tripEndDate: string | null }> {
+  const { booking, latestAccommodationCheckout, latestFlightDate } = await getBookingReadinessData(bookingId)
+  if (!booking) return { clientId: null, tripEndDate: null }
+
+  const dealRaw = (booking as { deals?: { client_id?: number | null } | { client_id?: number | null }[] | null }).deals
+  const clientId = (Array.isArray(dealRaw) ? dealRaw[0] : dealRaw)?.client_id ?? null
+
+  const tripEndDate =
+    (booking as { return_date?: string | null }).return_date
+    || latestAccommodationCheckout
+    || latestFlightDate
+    || (booking as { departure_date?: string | null }).departure_date
+    || null
+
+  return { clientId, tripEndDate }
 }
 
 // ── Token management ───────────────────────────────────────

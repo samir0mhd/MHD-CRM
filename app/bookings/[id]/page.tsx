@@ -85,6 +85,8 @@ type Payment = {
   id: number; booking_id: number; amount: number; payment_date: string
   debit_card: number; credit_card: number; amex: number; bank_transfer: number
   notes: string | null; invoice_sent: boolean; invoice_sent_at: string | null
+  payment_type: 'payment' | 'refund' | 'adjustment'
+  refund_reason: string | null
 }
 type BookingTask = {
   id: number; booking_id: number; task_name: string; task_key: string
@@ -2577,13 +2579,20 @@ function ExtrasTab({ bookingId, extras, onUpdate, showToast }: any) {
 // ── PAYMENTS TAB ─────────────────────────────────────────────
 function PaymentsTab({ booking, payments, balance, overpayment, onUpdate, showToast, currentStaff }: any) {
   const blank = { amount:'', payment_date: new Date().toISOString().split('T')[0], debit_card:'', credit_card:'', amex:'', bank_transfer:'', notes:'' }
+  const blankRefund = { amount:'', payment_date: new Date().toISOString().split('T')[0], debit_card:'', credit_card:'', amex:'', bank_transfer:'', refund_reason:'', notes:'' }
   const [adding, setAdding] = useState(false)
+  const [reconciling, setReconciling] = useState<'refund'|'adjust'|null>(null)
+  const [adjustTargetId, setAdjustTargetId] = useState<number|null>(null)
+  const [adjustAmount, setAdjustAmount] = useState('')
+  const [adjustReason, setAdjustReason] = useState('')
+  const [refundForm, setRefundForm] = useState<any>({ ...blankRefund })
   const [form, setForm]     = useState<any>({ ...blank })
   const [saving, setSaving] = useState(false)
   const totalPaid           = payments.reduce((a: number, p: Payment) => a + (p.amount || 0), 0)
   const sell                = Math.max(0, (booking.total_sell || booking.deals?.deal_value || 0) - Number(booking.discount || 0))
   const paymentLockActive   = !!booking.balance_cleared_at || balance <= 0
   const paymentLocked       = paymentLockActive && !isManager(currentStaff)
+  const regularPayments     = payments.filter((p: Payment) => p.payment_type !== 'refund')
 
   async function addPayment() {
     if (paymentLocked) { showToast('Payments are locked once the balance is cleared', 'error'); return }
@@ -2650,6 +2659,61 @@ function PaymentsTab({ booking, payments, balance, overpayment, onUpdate, showTo
     }
   }
 
+  async function submitRefund() {
+    const total = (Number(refundForm.debit_card)||0)+(Number(refundForm.credit_card)||0)+(Number(refundForm.amex)||0)+(Number(refundForm.bank_transfer)||0)
+    const amount = total || Number(refundForm.amount)
+    if (!amount) { showToast('Enter refund amount', 'error'); return }
+    if (!refundForm.refund_reason.trim()) { showToast('Refund reason is required', 'error'); return }
+    setSaving(true)
+    try {
+      const result = await apiRequest<{ message?: string }>(`/api/bookings/${booking.id}/payments`, {
+        method: 'POST',
+        body: JSON.stringify({
+          payment_type: 'refund',
+          amount,
+          payment_date: refundForm.payment_date,
+          refund_reason: refundForm.refund_reason,
+          debit_card: Number(refundForm.debit_card) || 0,
+          credit_card: Number(refundForm.credit_card) || 0,
+          amex: Number(refundForm.amex) || 0,
+          bank_transfer: Number(refundForm.bank_transfer) || 0,
+          notes: refundForm.notes || null,
+        }),
+      })
+      await onUpdate()
+      showToast(result.message || 'Refund recorded ✓')
+      setReconciling(null)
+      setRefundForm({ ...blankRefund })
+    } catch (error: any) {
+      showToast(`Failed: ${error.message}`, 'error')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function submitAdjust() {
+    if (!adjustTargetId) { showToast('Select a payment to adjust', 'error'); return }
+    if (!adjustAmount || Number(adjustAmount) <= 0) { showToast('Enter the corrected amount', 'error'); return }
+    if (!adjustReason.trim()) { showToast('Reason is required', 'error'); return }
+    setSaving(true)
+    try {
+      const result = await apiRequest<{ message?: string }>(`/api/bookings/${booking.id}/payments`, {
+        method: 'PUT',
+        body: JSON.stringify({ action: 'adjust_amount', paymentId: adjustTargetId, newAmount: Number(adjustAmount), reason: adjustReason }),
+      })
+      await onUpdate()
+      showToast(result.message || 'Payment adjusted ✓')
+      setReconciling(null)
+      setAdjustTargetId(null)
+      setAdjustAmount('')
+      setAdjustReason('')
+    } catch (error: any) {
+      showToast(`Failed: ${error.message}`, 'error')
+    } finally {
+      setSaving(false)
+    }
+  }
+
   const pctPaid = sell > 0 ? Math.min(100, Math.round((totalPaid / sell) * 100)) : 0
 
   return (
@@ -2660,8 +2724,65 @@ function PaymentsTab({ booking, payments, balance, overpayment, onUpdate, showTo
       </div>
 
       {overpayment > 0 && (
-        <div style={{ marginBottom:'16px', background:'#fef2f2', border:'1px solid #fecaca', borderRadius:'10px', padding:'14px 16px', fontSize:'12.5px', color:'#991b1b' }}>
-          <strong>Overpayment of {fmt(overpayment)} detected.</strong> Payments received exceed the invoice total by {fmt(overpayment)}. Please correct the payment records — delete the incorrect entry and re-enter the right amount. Overpayment is not counted as revenue or profit.
+        <div style={{ marginBottom:'16px', background:'#fef2f2', border:'1px solid #fecaca', borderRadius:'10px', padding:'16px 18px' }}>
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'16px' }}>
+            <div>
+              <div style={{ fontSize:'13px', fontWeight:'600', color:'#991b1b', marginBottom:'4px' }}>Overpayment of {fmt(overpayment)}</div>
+              <div style={{ fontSize:'12px', color:'#b91c1c', lineHeight:1.5 }}>
+                {isManager(currentStaff)
+                  ? 'Choose how to reconcile: record a refund if the surplus is being returned to the client, or adjust a payment if the amount was entered incorrectly.'
+                  : 'Payments exceed the invoice total. Contact a manager to reconcile this.'}
+              </div>
+            </div>
+            {isManager(currentStaff) && reconciling === null && (
+              <div style={{ display:'flex', gap:'8px', flexShrink:0 }}>
+                <button className="btn btn-secondary btn-xs" onClick={() => { setReconciling('refund'); setRefundForm((f: any) => ({ ...f, amount: String(overpayment) })) }}>Record Refund</button>
+                <button className="btn btn-secondary btn-xs" onClick={() => { setReconciling('adjust'); setAdjustTargetId(regularPayments[regularPayments.length-1]?.id || null); setAdjustAmount('') }}>Adjust Payment</button>
+              </div>
+            )}
+          </div>
+
+          {reconciling === 'refund' && (
+            <div style={{ marginTop:'14px', paddingTop:'14px', borderTop:'1px solid #fca5a5' }}>
+              <div style={{ fontSize:'12.5px', fontWeight:'600', color:'#991b1b', marginBottom:'10px' }}>Record Refund to Client</div>
+              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr 1fr', gap:'8px', marginBottom:'8px' }}>
+                <div><label className="label">Debit (£)</label><input className="input" type="number" min="0" step="0.01" placeholder="0.00" value={refundForm.debit_card} onChange={e=>setRefundForm((p:any)=>({...p,debit_card:e.target.value}))}/></div>
+                <div><label className="label">Credit (£)</label><input className="input" type="number" min="0" step="0.01" placeholder="0.00" value={refundForm.credit_card} onChange={e=>setRefundForm((p:any)=>({...p,credit_card:e.target.value}))}/></div>
+                <div><label className="label">Amex (£)</label><input className="input" type="number" min="0" step="0.01" placeholder="0.00" value={refundForm.amex} onChange={e=>setRefundForm((p:any)=>({...p,amex:e.target.value}))}/></div>
+                <div><label className="label">Bank (£)</label><input className="input" type="number" min="0" step="0.01" placeholder="0.00" value={refundForm.bank_transfer} onChange={e=>setRefundForm((p:any)=>({...p,bank_transfer:e.target.value}))}/></div>
+              </div>
+              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px', marginBottom:'10px' }}>
+                <div><label className="label">Refund Date</label><DateInput value={refundForm.payment_date} onChange={v=>setRefundForm((p:any)=>({...p,payment_date:v}))}/></div>
+                <div><label className="label">Reason (required)</label><input className="input" placeholder="e.g. Overpayment returned via bank transfer" value={refundForm.refund_reason} onChange={e=>setRefundForm((p:any)=>({...p,refund_reason:e.target.value}))}/></div>
+              </div>
+              <div style={{ display:'flex', gap:'8px', justifyContent:'flex-end' }}>
+                <button className="btn btn-secondary btn-xs" onClick={() => setReconciling(null)}>Cancel</button>
+                <button className="btn btn-cta btn-xs" onClick={submitRefund} disabled={saving}>{saving?'Recording…':'Record Refund'}</button>
+              </div>
+            </div>
+          )}
+
+          {reconciling === 'adjust' && (
+            <div style={{ marginTop:'14px', paddingTop:'14px', borderTop:'1px solid #fca5a5' }}>
+              <div style={{ fontSize:'12.5px', fontWeight:'600', color:'#991b1b', marginBottom:'10px' }}>Adjust Payment Amount</div>
+              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:'8px', marginBottom:'10px' }}>
+                <div>
+                  <label className="label">Payment to adjust</label>
+                  <select className="input" value={adjustTargetId || ''} onChange={e=>setAdjustTargetId(Number(e.target.value))}>
+                    {regularPayments.map((p: Payment, i: number) => (
+                      <option key={p.id} value={p.id}>Payment {i+1} — {fmt(p.amount)} on {fmtDate(p.payment_date)}</option>
+                    ))}
+                  </select>
+                </div>
+                <div><label className="label">Corrected amount (£)</label><input className="input" type="number" min="0" step="0.01" placeholder="e.g. 2800.00" value={adjustAmount} onChange={e=>setAdjustAmount(e.target.value)}/></div>
+                <div><label className="label">Reason (required)</label><input className="input" placeholder="e.g. Data entry error — correct amount is £2,800" value={adjustReason} onChange={e=>setAdjustReason(e.target.value)}/></div>
+              </div>
+              <div style={{ display:'flex', gap:'8px', justifyContent:'flex-end' }}>
+                <button className="btn btn-secondary btn-xs" onClick={() => setReconciling(null)}>Cancel</button>
+                <button className="btn btn-cta btn-xs" onClick={submitAdjust} disabled={saving}>{saving?'Saving…':'Save Adjustment'}</button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -2703,31 +2824,43 @@ function PaymentsTab({ booking, payments, balance, overpayment, onUpdate, showTo
       {/* Payment history */}
       <div style={{ display:'flex', flexDirection:'column', gap:'8px' }}>
         {payments.map((p: Payment, i: number) => {
+          const isRefund = p.payment_type === 'refund'
+          const isAdjustment = p.payment_type === 'adjustment'
+          const absAmt = Math.abs(p.amount)
           const breakdown = [
-            p.debit_card > 0 && `Debit: ${fmt(p.debit_card)}`,
-            p.credit_card > 0 && `Credit: ${fmt(p.credit_card)}`,
-            p.amex > 0 && `Amex: ${fmt(p.amex)}`,
-            p.bank_transfer > 0 && `Bank: ${fmt(p.bank_transfer)}`,
+            Math.abs(p.debit_card) > 0 && `Debit: ${fmt(Math.abs(p.debit_card))}`,
+            Math.abs(p.credit_card) > 0 && `Credit: ${fmt(Math.abs(p.credit_card))}`,
+            Math.abs(p.amex) > 0 && `Amex: ${fmt(Math.abs(p.amex))}`,
+            Math.abs(p.bank_transfer) > 0 && `Bank: ${fmt(Math.abs(p.bank_transfer))}`,
           ].filter(Boolean).join(' · ')
 
           return (
-            <div key={p.id} className="card" style={{ padding:'14px 18px' }}>
+            <div key={p.id} className="card" style={{ padding:'14px 18px', background: isRefund ? '#fef9f9' : undefined, borderColor: isRefund ? '#fecaca' : undefined }}>
               <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
                 <div>
                   <div style={{ display:'flex', alignItems:'center', gap:'10px', marginBottom:'4px' }}>
-                    <span style={{ fontSize:'15px', fontWeight:'600', color:'var(--green)' }}>{fmt(p.amount)}</span>
+                    <span style={{ fontSize:'15px', fontWeight:'600', color: isRefund ? 'var(--red)' : 'var(--green)' }}>
+                      {isRefund ? `− ${fmt(absAmt)}` : fmt(p.amount)}
+                    </span>
                     <span style={{ fontSize:'12px', color:'var(--text-muted)' }}>{fmtDate(p.payment_date)}</span>
-                    <span style={{ fontSize:'10px', background:'var(--bg-tertiary)', padding:'1px 7px', borderRadius:'10px', color:'var(--text-muted)' }}>Payment {i+1}</span>
+                    {isRefund ? (
+                      <span style={{ fontSize:'10px', background:'#fee2e2', padding:'1px 7px', borderRadius:'10px', color:'#b91c1c' }}>Refund</span>
+                    ) : isAdjustment ? (
+                      <span style={{ fontSize:'10px', background:'#fef3c7', padding:'1px 7px', borderRadius:'10px', color:'#92400e' }}>Adjusted</span>
+                    ) : (
+                      <span style={{ fontSize:'10px', background:'var(--bg-tertiary)', padding:'1px 7px', borderRadius:'10px', color:'var(--text-muted)' }}>Payment {i+1}</span>
+                    )}
                   </div>
                   {breakdown && <div style={{ fontSize:'12px', color:'var(--text-muted)' }}>{breakdown}</div>}
+                  {p.refund_reason && <div style={{ fontSize:'12px', color:'#b91c1c', marginTop:'2px' }}>Reason: {p.refund_reason}</div>}
                   {p.notes && <div style={{ fontSize:'12px', color:'var(--text-muted)', fontStyle:'italic', marginTop:'2px' }}>{p.notes}</div>}
                 </div>
                 <div style={{ display:'flex', gap:'6px', alignItems:'center' }}>
-                  {p.invoice_sent ? (
+                  {!isRefund && (p.invoice_sent ? (
                     <span style={{ fontSize:'11px', color:'var(--green)', background:'var(--green-light)', padding:'2px 8px', borderRadius:'4px' }}>Invoice Sent ✓</span>
                   ) : (
                     <button className="btn btn-secondary btn-xs" onClick={() => markInvoiceSent(p.id)}>Mark Invoice Sent</button>
-                  )}
+                  ))}
                   <button className="btn btn-ghost btn-xs" style={{ color:'var(--red)' }} onClick={() => deletePayment(p.id)} disabled={paymentLocked}>✕</button>
                 </div>
               </div>
@@ -2852,10 +2985,20 @@ function CostingTab({ booking, flights, accommodations, transfers, extras, payme
   const managerMode         = canEditCommercial  // alias kept so downstream references compile
   const effectiveClientTotal = sell - discount  // amount client owes after discount; cc_surcharge is an agency cost, not client-facing
   let running = 0
-  const receiptRows = payments.map((p: Payment, i: number) => {
+  let paymentIndex = 0
+  const receiptRows = payments.map((p: Payment) => {
     running += p.amount
     const owing = effectiveClientTotal - running
-    const type  = i === 0 ? 'Deposit' : (i === payments.length - 1 && owing <= 0) ? 'Balance' : 'Interim'
+    let type: string
+    if (p.payment_type === 'refund') {
+      type = 'Refund'
+    } else if (p.payment_type === 'adjustment') {
+      type = 'Adjusted'
+      paymentIndex++
+    } else {
+      paymentIndex++
+      type = paymentIndex === 1 ? 'Deposit' : owing <= 0 ? 'Balance' : 'Interim'
+    }
     return { ...p, amountOwing: Math.max(0, owing), type, runningTotal: running }
   })
   const balanceDue = effectiveClientTotal - totalPaid
@@ -3107,26 +3250,40 @@ function CostingTab({ booking, flights, accommodations, transfers, extras, payme
                 </tr>
               </thead>
               <tbody>
-                {receiptRows.map((r: any) => (
-                  <tr key={r.id} style={{ borderBottom:'1px solid var(--border)' }}>
-                    <td style={{ padding:'9px 10px', whiteSpace:'nowrap' }}>{fmtDate(r.payment_date)}</td>
-                    <td style={{ padding:'9px 10px' }}>
-                      <span style={{ fontSize:'11px', padding:'2px 7px', borderRadius:'4px',
-                        background: r.type==='Balance' ? '#e6f4ee' : r.type==='Deposit' ? '#fef3c7' : 'var(--bg-secondary)',
-                        color:      r.type==='Balance' ? 'var(--green)' : r.type==='Deposit' ? '#d97706' : 'var(--text-muted)',
-                        fontWeight:'500' }}>
-                        {r.type}
-                      </span>
-                    </td>
-                    <td style={{ padding:'9px 10px', textAlign:'right', fontFamily:'monospace' }}>{fmt(r.runningTotal)}</td>
-                    <td style={{ padding:'9px 10px', textAlign:'right', fontFamily:'monospace', color: r.amountOwing > 0 ? 'var(--red)' : 'var(--green)', fontWeight:'500' }}>{fmt(r.amountOwing)}</td>
-                    <td style={{ padding:'9px 10px', textAlign:'right', fontFamily:'monospace', color: r.debit_card > 0 ? 'var(--text-primary)' : 'var(--text-muted)' }}>{r.debit_card > 0 ? fmt(r.debit_card) : '—'}</td>
-                    <td style={{ padding:'9px 10px', textAlign:'right', fontFamily:'monospace', color: r.credit_card > 0 ? 'var(--text-primary)' : 'var(--text-muted)' }}>{r.credit_card > 0 ? fmt(r.credit_card) : '—'}</td>
-                    <td style={{ padding:'9px 10px', textAlign:'right', fontFamily:'monospace', color: r.amex > 0 ? 'var(--text-primary)' : 'var(--text-muted)' }}>{r.amex > 0 ? fmt(r.amex) : '—'}</td>
-                    <td style={{ padding:'9px 10px', textAlign:'right', fontFamily:'monospace', color: r.bank_transfer > 0 ? 'var(--text-primary)' : 'var(--text-muted)' }}>{r.bank_transfer > 0 ? fmt(r.bank_transfer) : '—'}</td>
-                    <td style={{ padding:'9px 10px', textAlign:'right', fontFamily:'monospace', fontWeight:'600' }}>{fmt(r.amount)}</td>
-                  </tr>
-                ))}
+                {receiptRows.map((r: any) => {
+                  const isRefund = r.payment_type === 'refund'
+                  const isAdjusted = r.payment_type === 'adjustment'
+                  const methodsMatchAmount = Math.abs((r.debit_card + r.credit_card + r.amex + r.bank_transfer) - r.amount) < 0.01
+                  const showMethods = !isAdjusted || methodsMatchAmount
+                  const typeBadgeStyle: React.CSSProperties = {
+                    fontSize:'11px', padding:'2px 7px', borderRadius:'4px', fontWeight:'500',
+                    background: r.type==='Balance' ? '#e6f4ee' : r.type==='Deposit' ? '#fef3c7' : r.type==='Refund' ? '#fee2e2' : r.type==='Adjusted' ? '#fef3c7' : 'var(--bg-secondary)',
+                    color:      r.type==='Balance' ? 'var(--green)' : r.type==='Deposit' ? '#d97706' : r.type==='Refund' ? '#b91c1c' : r.type==='Adjusted' ? '#92400e' : 'var(--text-muted)',
+                  }
+                  const absDebit  = Math.abs(r.debit_card)
+                  const absCredit = Math.abs(r.credit_card)
+                  const absAmex   = Math.abs(r.amex)
+                  const absBank   = Math.abs(r.bank_transfer)
+                  return (
+                    <tr key={r.id} style={{ borderBottom:'1px solid var(--border)', background: isRefund ? '#fef9f9' : undefined }}>
+                      <td style={{ padding:'9px 10px', whiteSpace:'nowrap' }}>{fmtDate(r.payment_date)}</td>
+                      <td style={{ padding:'9px 10px' }}><span style={typeBadgeStyle}>{r.type}</span></td>
+                      <td style={{ padding:'9px 10px', textAlign:'right', fontFamily:'monospace' }}>{fmt(r.runningTotal)}</td>
+                      <td style={{ padding:'9px 10px', textAlign:'right', fontFamily:'monospace', color: r.amountOwing > 0 ? 'var(--red)' : 'var(--green)', fontWeight:'500' }}>{fmt(r.amountOwing)}</td>
+                      {showMethods ? (<>
+                        <td style={{ padding:'9px 10px', textAlign:'right', fontFamily:'monospace', color: absDebit > 0 ? 'var(--text-primary)' : 'var(--text-muted)' }}>{absDebit > 0 ? fmt(absDebit) : '—'}</td>
+                        <td style={{ padding:'9px 10px', textAlign:'right', fontFamily:'monospace', color: absCredit > 0 ? 'var(--text-primary)' : 'var(--text-muted)' }}>{absCredit > 0 ? fmt(absCredit) : '—'}</td>
+                        <td style={{ padding:'9px 10px', textAlign:'right', fontFamily:'monospace', color: absAmex > 0 ? 'var(--text-primary)' : 'var(--text-muted)' }}>{absAmex > 0 ? fmt(absAmex) : '—'}</td>
+                        <td style={{ padding:'9px 10px', textAlign:'right', fontFamily:'monospace', color: absBank > 0 ? 'var(--text-primary)' : 'var(--text-muted)' }}>{absBank > 0 ? fmt(absBank) : '—'}</td>
+                      </>) : (
+                        <td colSpan={4} style={{ padding:'9px 10px', textAlign:'center', fontSize:'11px', color:'var(--text-muted)', fontStyle:'italic' }}>amount corrected — see notes</td>
+                      )}
+                      <td style={{ padding:'9px 10px', textAlign:'right', fontFamily:'monospace', fontWeight:'600', color: isRefund ? 'var(--red)' : undefined }}>
+                        {isRefund ? `− ${fmt(Math.abs(r.amount))}` : fmt(r.amount)}
+                      </td>
+                    </tr>
+                  )
+                })}
                 <tr style={{ background:'var(--bg-secondary)', borderTop:'2px solid var(--border)' }}>
                   <td colSpan={8} style={{ padding:'9px 10px', fontSize:'12px', color:'var(--text-muted)', fontWeight:'600', textAlign:'right' }}>Total :</td>
                   <td style={{ padding:'9px 10px', textAlign:'right', fontFamily:'monospace', fontWeight:'700' }}>{fmt(totalPaid)}</td>

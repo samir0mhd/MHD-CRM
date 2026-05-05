@@ -2,6 +2,7 @@ import * as repo from './deal.repository'
 import { buildFieldAuditEntries, logAuditEntries } from '@/lib/audit'
 import { isManager, type StaffUser } from '@/lib/access'
 import { replaceBookingCommissions, insertRepeatFlag } from '@/lib/modules/bookings/booking.repository'
+import { normalizeBookingType, resolveBookingTypeFromQuoteRecord } from '@/lib/modules/bookings/booking-types'
 import {
   getDisplayActionNote,
   getDisplayActionType,
@@ -255,6 +256,10 @@ export async function markBooked(
     .sort((a, b) => (b.profit || 0) - (a.profit || 0))[0]
     ?? allQuotes.sort((a, b) => (b.profit || 0) - (a.profit || 0))[0]
   const canonicalQuoteId = topQuote?.id ?? null
+  const bookingType = normalizeBookingType(
+    deal.booking_type || resolveBookingTypeFromQuoteRecord(topQuote),
+    'package'
+  )
 
   const consultantId = deal.staff_id || deal.clients?.owner_staff_id || currentStaff?.id || null
   const milestone = await resolveCelebrationMilestone(consultantId, Number(topQuote?.profit || 0))
@@ -262,6 +267,7 @@ export async function markBooked(
   const { data: booking, error: bookingError } = await repo.insertBooking({
     deal_id: deal.id,
     booking_reference: bookingRef,
+    booking_type: bookingType,
     departure_date: deal.departure_date,
     status: 'CONFIRMED',
     balance_due_date: balanceDueDate,
@@ -321,7 +327,7 @@ export async function markBooked(
     })
   }
 
-  await repo.updateDeal(deal.id, { stage: 'BOOKED' })
+  await repo.updateDeal(deal.id, { stage: 'BOOKED', booking_type: bookingType })
   await repo.insertActivity({ deal_id: deal.id, activity_type: 'BOOKING_CREATED', notes: `Booking confirmed — Ref: ${bookingRef}` })
 
   const clientName = deal.clients ? `${deal.clients.first_name} ${deal.clients.last_name}` : deal.title

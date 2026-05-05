@@ -7,6 +7,7 @@ export type Deal = {
   id: number
   title: string
   stage: string
+  booking_type?: string | null
   deal_value: number
   departure_date: string | null
   source: string | null
@@ -57,6 +58,7 @@ export type Quote = {
   child_ages?: number[] | null
   additional_services?: string | null
   quote_type?: string | null
+  quote_mode?: string | null
   flight_details?: {
     outbound?: FlightLeg[]
     return?: FlightLeg[]
@@ -117,6 +119,7 @@ export type Booking = {
   id: number
   deal_id: number
   booking_reference: string
+  booking_type?: string | null
   staff_id: number | null
   status?: string
   departure_date?: string | null
@@ -234,6 +237,7 @@ export async function insertDeal(values: {
   client_id: number
   staff_id: number | null
   stage: string
+  booking_type?: string
   deal_value: number | null
   departure_date: string | null
   source: string
@@ -317,6 +321,7 @@ export async function executeNextBookingRef() {
 export async function insertBooking(booking: {
   deal_id: number
   booking_reference: string
+  booking_type: string
   departure_date: string | null
   status: string
   balance_due_date: string | null

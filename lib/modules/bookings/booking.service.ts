@@ -2,6 +2,12 @@ import * as repo from './booking.repository'
 import { buildFieldAuditEntries, logAuditEntries } from '@/lib/audit'
 import { dbMutate } from '@/lib/api-client'
 import type { StaffUser } from '@/lib/access'
+import {
+  bookingTypeRequiresAccommodation,
+  bookingTypeRequiresFlights,
+  bookingTypeRequiresTransfers,
+  normalizeBookingType,
+} from './booking-types'
 import { getBookingSell, computePaymentSummary } from '@/lib/modules/payments/payment.utils'
 
 /** Returns 'YYYY-MM' from any ISO timestamp string. */
@@ -50,18 +56,29 @@ function getFlightDerivedDates(flights: repo.Flight[]) {
 function calculateTaskDerivedDone(tasks: repo.BookingTask[], flights: repo.Flight[], accommodations: repo.Accommodation[], transfers: repo.Transfer[], payments: repo.Payment[], booking: repo.Booking): Record<string, boolean> {
   const totalPaid = payments.reduce((sum, payment) => sum + (payment.amount || 0), 0)
   const totalSell = booking.total_sell || booking.deals?.deal_value || 0
+  const bookingType = normalizeBookingType(booking.booking_type, 'package')
+  const requiresFlights = bookingTypeRequiresFlights(bookingType)
+  const requiresAccommodation = bookingTypeRequiresAccommodation(bookingType)
+  const requiresTransfers = bookingTypeRequiresTransfers(bookingType)
 
   return {
     deposit_received: totalPaid > 0 || !!booking.deposit_received,
     balance_due_set: !!booking.balance_due_date,
     balance_received: totalSell > 0 ? totalPaid >= totalSell : false,
     final_costing: booking.total_net != null && (booking.final_profit != null || booking.gross_profit != null),
-    flights_ticketed: flights.length === 0 || flights.every(flight => !!flight.pnr),
-    hotel_confirmation: accommodations.length === 0 || accommodations.every(stay => !!stay.hotel_confirmation || ['confirmed', 'ref_received'].includes(stay.reservation_status)),
-    special_requests: accommodations.length === 0 || accommodations.every(stay => !stay.special_requests || ['confirmed', 'ref_received'].includes(stay.reservation_status)),
+    flights_ticketed: requiresFlights
+      ? flights.length > 0 && flights.every(flight => !!flight.pnr)
+      : true,
+    hotel_confirmation: requiresAccommodation
+      ? accommodations.length > 0 && accommodations.every(stay => !!stay.hotel_confirmation || ['confirmed', 'ref_received'].includes(stay.reservation_status))
+      : true,
+    special_requests: requiresAccommodation
+      ? accommodations.length > 0 && accommodations.every(stay => !stay.special_requests || ['confirmed', 'ref_received'].includes(stay.reservation_status))
+      : true,
     transfer_confirmation:
-      transfers.length === 0 ||
-      transfers.every(transfer => !!transfer.supplier_name && (!!transfer.arrival_flight || !!transfer.departure_flight || !!transfer.inter_hotel_dates || !!transfer.notes)),
+      requiresTransfers
+        ? transfers.length > 0 && transfers.every(transfer => !!transfer.supplier_name && (!!transfer.arrival_flight || !!transfer.departure_flight || !!transfer.inter_hotel_dates || !!transfer.notes))
+        : true,
   }
 }
 
@@ -844,6 +861,130 @@ export async function deletePaymentFromBooking(booking: repo.Booking, paymentId:
     return { success: true, message: 'Payment removed' }
   } catch (error) {
     return { success: false, message: error instanceof Error ? error.message : 'Failed to delete payment' }
+  }
+}
+
+export async function recordRefund(
+  booking: repo.Booking,
+  refundData: { amount: number; payment_date: string; refund_reason: string; debit_card?: number; credit_card?: number; amex?: number; bank_transfer?: number; notes?: string | null },
+  currentStaff?: StaffUser | null,
+) {
+  try {
+    if (!refundData.amount || refundData.amount <= 0) {
+      return { success: false, message: 'Refund amount must be greater than zero' }
+    }
+    if (!refundData.refund_reason?.trim()) {
+      return { success: false, message: 'Refund reason is required' }
+    }
+
+    const refundEntry = {
+      booking_id: booking.id,
+      amount: -Math.abs(refundData.amount),
+      payment_date: refundData.payment_date,
+      payment_type: 'refund',
+      refund_reason: refundData.refund_reason.trim(),
+      debit_card: -(refundData.debit_card || 0),
+      credit_card: -(refundData.credit_card || 0),
+      amex: -(refundData.amex || 0),
+      bank_transfer: -(refundData.bank_transfer || 0),
+      notes: refundData.notes || null,
+      invoice_sent: false,
+    }
+
+    const refund = await repo.insertPayment(refundEntry)
+    const { payments } = await repo.getBookingWithAllData(booking.id)
+    const totalPaid = payments.reduce((sum, p) => sum + (p.amount || 0), 0)
+
+    const confirmedSell = Math.max(0, Number(booking.total_sell || 0) - Number(booking.discount || 0))
+    await repo.updateBooking(booking.id, {
+      balance_cleared_at: confirmedSell > 0 && totalPaid >= confirmedSell
+        ? (booking.balance_cleared_at || new Date().toISOString())
+        : null,
+    })
+
+    await logAuditEntries([{
+      entity_type: 'booking',
+      entity_id: booking.id,
+      action: 'payment_refunded',
+      field_name: 'booking_payments',
+      new_value: { payment_id: refund.id, amount: refund.amount, refund_reason: refundData.refund_reason },
+      performed_by_staff_id: currentStaff?.id ?? null,
+      performed_by_role: currentStaff?.role ?? null,
+      notes: `Refund recorded: ${refundData.refund_reason}`,
+    }])
+
+    const refreshed = await repo.getBookingWithAllData(booking.id)
+    if (refreshed.booking) {
+      await reconcileTasks(refreshed.booking, refreshed.flights, refreshed.accommodations, refreshed.transfers, refreshed.payments, refreshed.tasks)
+    }
+
+    return { success: true, message: 'Refund recorded ✓' }
+  } catch (error) {
+    return { success: false, message: error instanceof Error ? error.message : 'Failed to record refund' }
+  }
+}
+
+export async function adjustPaymentAmount(
+  booking: repo.Booking,
+  paymentId: number,
+  newAmount: number,
+  reason: string,
+  currentStaff?: StaffUser | null,
+) {
+  try {
+    if (!newAmount || newAmount <= 0) {
+      return { success: false, message: 'Adjusted amount must be greater than zero' }
+    }
+    if (!reason?.trim()) {
+      return { success: false, message: 'Reason for adjustment is required' }
+    }
+
+    const { payments } = await repo.getBookingWithAllData(booking.id)
+    const original = payments.find(p => p.id === paymentId)
+    if (!original) {
+      return { success: false, message: 'Payment not found' }
+    }
+    if (original.payment_type === 'refund') {
+      return { success: false, message: 'Cannot adjust a refund entry — delete it and record a new one' }
+    }
+
+    await repo.updatePayment(paymentId, {
+      amount: newAmount,
+      payment_type: 'adjustment',
+      notes: reason.trim(),
+    })
+
+    const { payments: updatedPayments } = await repo.getBookingWithAllData(booking.id)
+    const totalPaid = updatedPayments.reduce((sum, p) => sum + (p.amount || 0), 0)
+
+    const confirmedSell = Math.max(0, Number(booking.total_sell || 0) - Number(booking.discount || 0))
+    await repo.updateBooking(booking.id, {
+      deposit_received: totalPaid > 0,
+      balance_cleared_at: confirmedSell > 0 && totalPaid >= confirmedSell
+        ? (booking.balance_cleared_at || new Date().toISOString())
+        : null,
+    })
+
+    await logAuditEntries([{
+      entity_type: 'booking',
+      entity_id: booking.id,
+      action: 'payment_adjusted',
+      field_name: 'booking_payments',
+      old_value: { payment_id: original.id, amount: original.amount },
+      new_value: { payment_id: paymentId, amount: newAmount, reason },
+      performed_by_staff_id: currentStaff?.id ?? null,
+      performed_by_role: currentStaff?.role ?? null,
+      notes: `Payment adjusted: ${reason}`,
+    }])
+
+    const refreshed = await repo.getBookingWithAllData(booking.id)
+    if (refreshed.booking) {
+      await reconcileTasks(refreshed.booking, refreshed.flights, refreshed.accommodations, refreshed.transfers, refreshed.payments, refreshed.tasks)
+    }
+
+    return { success: true, message: 'Payment adjusted ✓' }
+  } catch (error) {
+    return { success: false, message: error instanceof Error ? error.message : 'Failed to adjust payment' }
   }
 }
 
